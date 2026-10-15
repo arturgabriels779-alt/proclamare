@@ -1014,6 +1014,130 @@ html[data-announcing="true"] .onstage::before { display: none; }
   color: var(--text-3);
 }
 
+/* ---- YouTube: botões do link e tile "Fila" ---- */
+.ytq-form { display: flex; flex-wrap: wrap; gap: 10px; }
+.ytq-form .btn { flex: 1 1 160px; }
+
+.ytq__section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ytq__heading {
+  display: flex; align-items: center; gap: 8px;
+  font: 600 13px/18px var(--font);
+  letter-spacing: -0.005em;
+  color: var(--text-2);
+}
+.ytq__count {
+  min-width: 22px; padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font: 600 12px/18px var(--font);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.ytq__list {
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  background: var(--tile-inset);
+  border-radius: var(--r-card);
+}
+.ytq__list:empty { display: none; }
+.ytq__empty {
+  padding: 16px;
+  border-radius: var(--r-card);
+  background: var(--tile-inset);
+  font-size: 14px; line-height: 20px;
+  text-align: center;
+  color: var(--text-3);
+}
+.ytq__empty b { color: var(--text-2); font-weight: 600; }
+.ytq__empty[hidden] { display: none; }
+
+.ytq__row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+.ytq__row--now { grid-template-columns: 64px minmax(0, 1fr); padding: 0; min-height: 36px; }
+.ytq__item + .ytq__item > .ytq__row::before {
+  content: "";
+  position: absolute;
+  top: 0; right: 0; left: 88px;
+  height: 1px;
+  background: var(--separator);
+}
+.ytq__text { display: flex; flex-direction: column; min-width: 0; }
+.ytq__title {
+  font: 500 15px/20px var(--font);
+  color: var(--text-1);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.ytq__row--now .ytq__title { font-weight: 600; }
+.ytq__sub { font-size: 12px; line-height: 16px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ytq__acts { display: flex; align-items: center; gap: 8px; }
+.ytq__acts .btn--icon { background: transparent; }
+.ytq__acts .btn--icon[aria-disabled="true"] { opacity: 0.3; cursor: default; }
+.ytq-form .btn[aria-disabled="true"] { opacity: 0.55; cursor: progress; }
+.ytq__acts .btn--icon[data-act="play"] { color: var(--accent-text); }
+@media (hover: hover) {
+  .ytq__acts .btn--icon:hover { background: var(--fill-2); color: var(--text-1); }
+  .ytq__acts .btn--icon[data-act="play"]:hover { color: var(--accent-text); }
+}
+
+/* miniatura 16:9 (a imagem vem de i.ytimg.com, já permitido no CSP) */
+.thumb--yt { width: 64px; height: 36px; }
+.thumb--yt .icon { width: 18px; height: 18px; }
+
+/* entrada / saída dos itens: só transform + opacity */
+.ytq__item.is-new { animation: rise-sm var(--dur-2) var(--ease) backwards; }
+.ytq__item.is-leaving { opacity: 0; transform: translateX(12px); pointer-events: none;
+  transition: opacity var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in); }
+
+/* próximas da playlist: secundárias, itens inteiros clicáveis */
+.ytq__section--pl .ytq__heading { color: var(--text-3); }
+.ytq__list--pl { background: transparent; border: 1px solid var(--separator); }
+.ytq__pl {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 12px;
+  text-align: left;
+  color: var(--text-2);
+  transition: background-color var(--dur-1) var(--ease);
+}
+.ytq__pl .ytq__title { font-size: 14px; line-height: 19px; font-weight: 400; color: var(--text-2); }
+.ytq__pl .icon { width: 16px; height: 16px; color: var(--accent-text); opacity: 0; transition: opacity var(--dur-1) var(--ease); }
+.ytq__pl-item + .ytq__pl-item .ytq__pl { box-shadow: inset 0 1px 0 var(--separator); }
+.ytq__pl:focus-visible { outline-offset: -2px; }
+.ytq__pl:focus-visible .icon { opacity: 1; }
+.ytq__pl:active { background: var(--fill-2); }
+@media (hover: hover) {
+  .ytq__pl:hover { background: var(--fill-1); }
+  .ytq__pl:hover .icon { opacity: 1; }
+}
+@media (hover: none) { .ytq__pl .icon { opacity: 0.8; } }
+
+#btn-yt-queue-clear.is-confirm { color: var(--live); background: var(--live-soft); }
+
+@media (max-width: 560px) {
+  /* ações descem para uma linha própria: título com espaço e alvos de 44px */
+  .ytq__item .ytq__row { grid-template-columns: 64px minmax(0, 1fr); row-gap: 6px; }
+  .ytq__item .ytq__acts { grid-column: 1 / -1; justify-content: flex-end; gap: 10px; }
+  .ytq__item .ytq__acts .btn--icon { background: var(--fill-1); }
+  .ytq__item + .ytq__item > .ytq__row::before { left: 12px; }
+}
+
 /* ---- Cabeçalho "Música": tile compacto, só título + fonte ---- */
 .tile--music-head { padding-block: 16px; }
 .tile--music-head .tile__caption { display: none; }

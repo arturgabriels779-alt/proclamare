@@ -1,6 +1,6 @@
 """
-Proclamare — servidor local (v2.2: desempenho, segurança e acesso por PIN)
-==========================================================================
+Proclamare — servidor local (v2.2.1 (fila do YouTube); base v2.2 com PIN)
+=========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
 
@@ -31,6 +31,29 @@ da loja. Serve a interface (static/) e cuida de três coisas:
                                computadores também consigam controlá-la.
                                A aba tocadora recebe os comandos por
                                long-poll (latência quase instantânea).
+
+Contrato v2.2.1 (fila do YouTube)
+---------------------------------
+  * O servidor interpreta o link (parse_youtube_url): vídeo, playlist, índice
+    (&index=, 1-based no link -> 0-based) e início (t=/start=: 90, 90s, 1m30s...).
+    Mix automático (list=RD... ou start_radio) é ignorado e toca só o vídeo; link
+    só de Mix é recusado (400). Link inválido -> 400 em português.
+  * POST /api/youtube/command  "load" recebe {"url"} e repassa ao tocador SÓ
+    {"video_id","list_id","index","start"} validados (nunca a URL crua). Nova ação
+    "play_index" {"index": 0..199} (pula para um item da playlist em reprodução).
+  * POST /api/youtube/queue    fila do Proclamare (máx. 50, SÓ em memória: some se o
+    servidor reiniciar). {"op": "add","url"} | {"op":"remove","item_id"} |
+    {"op":"clear"} | {"op":"move","item_id","to"} | {"op":"play_now","item_id"}
+    (tira da fila e manda "load" ao tocador) | {"op":"pop"} (tira e devolve o 1º).
+    Item: {id, kind, video_id, list_id, index, start, title, added_at}.
+    Erros: 400 (op/link), 404 (item), 409 (fila cheia).
+  * POST /api/youtube/state    (aba tocadora) aceita também video_id, list_id,
+    playlist_ids (até 200) e playlist_index; valores inválidos -> 400.
+  * GET /api/youtube/state     devolve também video_id, list_id, queue,
+    queue_version e playlist {index, items:[{video_id,title}]} | null (até 15
+    próximas). Títulos vêm do oEmbed público do YouTube, buscados em segundo plano
+    (title=null até resolver; cache LRU ~500, falhas ~10 min).
+  * Todas as rotas novas ficam atrás do PIN, como o resto de /api/*.
 
 O que mudou na v2.2 (resumo)
 ----------------------------
@@ -119,14 +142,14 @@ import tempfile
 import threading
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturoTimeout
 from contextlib import contextmanager
 from http.cookiejar import DefaultCookiePolicy
 from pathlib import Path
 from typing import Any, Callable, Iterator
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import json
 
@@ -2051,13 +2074,28 @@ def spotify_restore(volume_anterior: int | None) -> None:
 # YouTube — relé de comandos (precisa de uma aba "tocadora" aberta na loja)
 # deque limitado + Condition: a aba tocadora usa long-poll e recebe o comando
 # no instante em que ele é enfileirado.
+# v2.2.1: parser de link no servidor, fila do Proclamare e títulos via oEmbed.
 # ---------------------------------------------------------------------------
 YOUTUBE_PLAYER_TIMEOUT = 6.0  # segundos sem heartbeat = considera tocador offline
 YOUTUBE_WAIT_MAX = 25
-YOUTUBE_ACOES_CLIENTE = frozenset({"load", "play", "pause", "next", "prev", "volume"})
+YOUTUBE_ACOES_CLIENTE = frozenset(
+    {"load", "play", "pause", "next", "prev", "volume", "play_index"}
+)
 YOUTUBE_HOSTS = frozenset(
     {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
 )
+YOUTUBE_FILA_MAX = 50           # itens na fila do Proclamare
+YOUTUBE_PLAYLIST_MAX = 200      # ids de playlist aceitos no heartbeat
+YOUTUBE_OEMBED_PENDENTES_MAX = 32  # buscas de título em andamento/esperando (anti-inflação)
+YOUTUBE_OEMBED_TAXA_MAX = 30         # consultas ao oEmbed por minuto (global)
+YOUTUBE_PROXIMAS_MAX = 15       # "próximas da playlist" devolvidas no estado
+YOUTUBE_OEMBED_TIMEOUT = 4.0    # segundos
+YOUTUBE_OEMBED_MAX_BYTES = 64 * 1024
+YOUTUBE_OEMBED_CACHE_MAX = 500
+YOUTUBE_OEMBED_FALHA_TTL = 600.0  # falhas ficam em cache ~10 min (não martelar o YouTube)
+_RE_VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
+_RE_LIST_ID = re.compile(r"[A-Za-z0-9_-]{2,64}")
+_RE_TEMPO = re.compile(r"(?:(\d{1,5})h)?(?:(\d{1,5})m)?(?:(\d{1,6})s?)?")
 
 _yt_cond = threading.Condition()
 YOUTUBE_POLLS_MAX = 4  # long-polls simultâneos (uso normal: 1 aba tocadora)
@@ -2067,7 +2105,21 @@ _yt_ultimo_id = 0
 _yt_estado_lock = threading.Lock()
 _yt_estado: dict[str, Any] = {
     "now_playing": "", "is_playing": False, "volume": 70, "last_heartbeat": None,
+    "video_id": None, "list_id": None, "playlist_ids": [], "playlist_index": None,
 }
+
+# Fila do Proclamare: SÓ em memória (não sobrevive a reinício do servidor).
+_yt_fila_lock = threading.Lock()
+_yt_fila: list[dict[str, Any]] = []
+_yt_fila_prox_id = 0
+_yt_fila_versao = 0
+
+# Cache de títulos (oEmbed): chave = URL canônica -> (título|None, expira_em|None).
+# Sucesso não expira (só sai por LRU); falha expira em ~10 min.
+_yt_titulos_lock = threading.Lock()
+_yt_titulos: OrderedDict[str, tuple[str | None, float | None]] = OrderedDict()
+_yt_titulos_pendentes: set[str] = set()
+_yt_titulos_pool: ThreadPoolExecutor | None = None
 
 
 def youtube_enqueue(action: str, params: dict | None = None) -> int:
@@ -2080,7 +2132,27 @@ def youtube_enqueue(action: str, params: dict | None = None) -> int:
         return _yt_ultimo_id
 
 
-def _validar_url_youtube(valor: Any) -> str:
+# --- A) Parser de link ------------------------------------------------------
+def _segundos_do_tempo(texto: str) -> int | None:
+    """Converte '90', '90s', '1m30s', '1h2m3s' em segundos (0..86400) ou None."""
+    texto = texto.strip().lower()
+    if not texto:
+        return None
+    m = _RE_TEMPO.fullmatch(texto)
+    if not m or not any(m.groups()):
+        return None
+    h, mi, s = (int(g) if g else 0 for g in m.groups())
+    total = h * 3600 + mi * 60 + s
+    return total if 0 <= total <= 86400 else None
+
+
+def parse_youtube_url(valor: Any) -> dict[str, Any]:
+    """
+    Interpreta um link do YouTube e devolve
+    {"video_id", "list_id", "index" (0-based), "start" (segundos)} (None se ausente).
+    Mix/rádio automático (list=RD... ou start_radio) é IGNORADO e toca só o vídeo;
+    link que é só de Mix é recusado. Levanta ErroApi(400) para link inválido.
+    """
     url = validar_str(valor, "url", 300, min_len=1)
     if any(ord(c) < 33 or ord(c) == 127 for c in url):
         raise ErroApi("Campo 'url' inválido.")
@@ -2089,14 +2161,274 @@ def _validar_url_youtube(valor: Any) -> str:
         porta = partes.port
     except ValueError:
         raise ErroApi("Campo 'url' inválido.") from None
+    host = partes.hostname or ""
     if (
         partes.scheme != "https"
-        or (partes.hostname or "") not in YOUTUBE_HOSTS
+        or host not in YOUTUBE_HOSTS
         or partes.username is not None
+        or partes.password is not None
         or porta not in (None, 443)
     ):
         raise ErroApi("Somente links https do YouTube são aceitos.")
-    return url
+
+    consulta = parse_qs(partes.query, keep_blank_values=True)
+
+    def _q(nome: str) -> str | None:
+        """Primeiro valor do parâmetro; vazio (v=, list=) conta como ausente."""
+        v = consulta.get(nome)
+        return v[0] if v and v[0] != "" else None
+
+    # --- id do vídeo: ?v= (watch) ou segmento do caminho (youtu.be, shorts...) ---
+    segmentos = [s for s in partes.path.split("/") if s]
+    bruto_video: str | None = None
+    if host == "youtu.be":
+        bruto_video = segmentos[0] if segmentos else None
+    elif segmentos and segmentos[0] in ("shorts", "live", "embed"):
+        bruto_video = segmentos[1] if len(segmentos) > 1 else None
+    elif segmentos and segmentos[0] == "watch":
+        bruto_video = _q("v")
+    video_id: str | None = None
+    if bruto_video is not None:
+        if not _RE_VIDEO_ID.fullmatch(bruto_video):
+            raise ErroApi("Link do YouTube inválido: não encontrei o vídeo.")
+        video_id = bruto_video
+
+    # --- lista: Mix automático é ignorado ---
+    list_id: str | None = None
+    bruto_lista = _q("list")
+    mix = "start_radio" in consulta or (bruto_lista or "").upper().startswith("RD")
+    if bruto_lista is not None and not mix:
+        if _RE_LIST_ID.fullmatch(bruto_lista):
+            list_id = bruto_lista
+        elif video_id is None:
+            raise ErroApi("Link do YouTube inválido: lista não reconhecida.")
+    if video_id is None and list_id is None:
+        if mix:
+            raise ErroApi(
+                "Esse link é um Mix automático do YouTube; abra uma música dele "
+                "e copie o link dela."
+            )
+        raise ErroApi("Link do YouTube inválido: não encontrei vídeo nem playlist.")
+
+    # --- índice (1-based no link -> 0-based) e início ---
+    indice: int | None = None
+    bruto_idx = _q("index")
+    if list_id is not None and bruto_idx and re.fullmatch(r"\d{1,4}", bruto_idx):
+        n = int(bruto_idx) - 1
+        if 0 <= n < YOUTUBE_PLAYLIST_MAX:
+            indice = n
+    inicio: int | None = None
+    frag = parse_qs(partes.fragment) if "=" in partes.fragment else {}
+    bruto_t = _q("t") or _q("start") or (frag.get("t") or [None])[0]
+    if bruto_t:
+        inicio = _segundos_do_tempo(bruto_t)
+    return {"video_id": video_id, "list_id": list_id, "index": indice, "start": inicio}
+
+
+# --- B) Títulos via oEmbed (fora da thread da requisição) -------------------
+def _yt_url_canonica(video_id: str | None, list_id: str | None) -> str | None:
+    """URL montada SÓ a partir de ids já validados (nunca da URL do usuário)."""
+    if video_id:
+        return f"https://www.youtube.com/watch?v={video_id}"
+    if list_id:
+        return f"https://www.youtube.com/playlist?list={list_id}"
+    return None
+
+
+def _limpar_titulo(valor: Any) -> str | None:
+    """Título seguro: str, sem caracteres de controle, até 200 caracteres."""
+    if not isinstance(valor, str):
+        return None
+    limpo = "".join(c for c in valor if c.isprintable()).strip()[:200]
+    return limpo or None
+
+
+def _oembed_buscar(url: str) -> str | None:
+    """Consulta o oEmbed público (sem chave). Qualquer problema -> None."""
+    try:
+        with requests.get(
+            "https://www.youtube.com/oembed",
+            params={"format": "json", "url": url},
+            timeout=YOUTUBE_OEMBED_TIMEOUT,
+            allow_redirects=False,  # não segue para outro host
+            stream=True,
+            headers={"User-Agent": "Proclamare/2.2"},
+        ) as r:
+            if r.status_code != 200:
+                return None
+            dados = bytearray()
+            for pedaco in r.iter_content(chunk_size=8192):
+                dados += pedaco
+                if len(dados) > YOUTUBE_OEMBED_MAX_BYTES:
+                    return None  # resposta grande demais
+        obj = json.loads(bytes(dados).decode("utf-8"))
+        return _limpar_titulo(obj.get("title")) if isinstance(obj, dict) else None
+    except Exception:  # noqa: BLE001 — rede/JSON/encoding: o título é opcional
+        log.debug("oEmbed falhou.")
+        return None
+
+
+def _titulo_em_cache(url: str | None) -> tuple[bool, str | None]:
+    """(achou, título). Falhas vencidas saem do cache."""
+    if url is None:
+        return True, None
+    with _yt_titulos_lock:
+        entrada = _yt_titulos.get(url)
+        if entrada is None:
+            return False, None
+        titulo, expira = entrada
+        if expira is not None and expira <= time.monotonic():
+            del _yt_titulos[url]
+            return False, None
+        _yt_titulos.move_to_end(url)
+        return True, titulo
+
+
+def _resolver_titulo(url: str) -> None:
+    """Tarefa de segundo plano: busca e guarda o título no cache."""
+    global _yt_fila_versao
+    titulo = _oembed_buscar(url)
+    with _yt_titulos_lock:
+        expira = None if titulo else time.monotonic() + YOUTUBE_OEMBED_FALHA_TTL
+        _yt_titulos[url] = (titulo, expira)
+        _yt_titulos.move_to_end(url)
+        while len(_yt_titulos) > YOUTUBE_OEMBED_CACHE_MAX:
+            _yt_titulos.popitem(last=False)
+        _yt_titulos_pendentes.discard(url)
+    if titulo:
+        with _yt_fila_lock:  # título novo muda o que o front mostra
+            _yt_fila_versao += 1
+
+
+def _pedir_titulo(url: str | None) -> None:
+    """Agenda a busca do título se ainda não está em cache nem em andamento."""
+    global _yt_titulos_pool
+    if url is None or _titulo_em_cache(url)[0]:
+        return
+    with _yt_titulos_lock:
+        if url in _yt_titulos_pendentes:
+            return
+        if len(_yt_titulos_pendentes) >= YOUTUBE_OEMBED_PENDENTES_MAX:
+            return  # fila de buscas cheia: descarta sem gravar falha; o próximo GET tenta de novo
+        if excedeu_limite("oembed", YOUTUBE_OEMBED_TAXA_MAX, 60.0):
+            return  # teto global de consultas ao YouTube por minuto
+        _yt_titulos_pendentes.add(url)
+        if _yt_titulos_pool is None:
+            _yt_titulos_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="yt-titulo")
+        pool = _yt_titulos_pool
+    try:
+        pool.submit(_resolver_titulo, url)
+    except RuntimeError:  # pool encerrado (desligando o servidor)
+        with _yt_titulos_lock:
+            _yt_titulos_pendentes.discard(url)
+
+
+# --- B) Fila do Proclamare --------------------------------------------------
+def _item_url(item: dict[str, Any]) -> str | None:
+    return _yt_url_canonica(item["video_id"], item["list_id"])
+
+
+def _item_publico(item: dict[str, Any]) -> dict[str, Any]:
+    """Cópia do item com o título do cache (se já resolvido)."""
+    return {**item, "title": _titulo_em_cache(_item_url(item))[1]}
+
+
+def _params_load(item: dict[str, Any]) -> dict[str, Any]:
+    return {k: item.get(k) for k in ("video_id", "list_id", "index", "start")}
+
+
+def _achar_item(item_id: int) -> int:
+    """Posição do item na fila (chamar COM _yt_fila_lock). 404 se não existir."""
+    for pos, it in enumerate(_yt_fila):
+        if it["id"] == item_id:
+            return pos
+    raise ErroApi("Item não encontrado na fila.", 404)
+
+
+@app.post("/api/youtube/queue")
+def youtube_queue() -> Response:
+    """Operações da fila: add, remove, clear, move, play_now, pop."""
+    global _yt_fila_prox_id, _yt_fila_versao
+    body = corpo_json()
+    op = body.get("op")
+    if not isinstance(op, str) or op not in {"add", "remove", "clear", "move", "play_now", "pop"}:
+        raise ErroApi("Operação inválida.")
+
+    if op == "add":
+        if excedeu_limite("ytq:" + (request.remote_addr or "?"), 20, 10.0):
+            raise ErroApi("Muitas adições seguidas. Aguarde alguns segundos.", 429)
+        alvo = parse_youtube_url(body.get("url"))  # valida ANTES de pegar o lock
+        with _yt_fila_lock:
+            if len(_yt_fila) >= YOUTUBE_FILA_MAX:
+                raise ErroApi(f"A fila está cheia (máximo {YOUTUBE_FILA_MAX}).", 409)
+            _yt_fila_prox_id += 1
+            item = {
+                "id": _yt_fila_prox_id,
+                "kind": "playlist" if alvo["list_id"] else "video",
+                "video_id": alvo["video_id"],
+                "list_id": alvo["list_id"],
+                "index": alvo["index"],  # extra do contrato: necessário para tocar o item
+                "start": alvo["start"],
+                "title": None,
+                "added_at": int(time.time()),
+            }
+            _yt_fila.append(item)
+            _yt_fila_versao += 1
+            versao = _yt_fila_versao
+        _pedir_titulo(_item_url(item))
+        return jsonify({"ok": True, "item": _item_publico(item), "queue_version": versao})
+
+    if op == "clear":
+        with _yt_fila_lock:
+            _yt_fila.clear()
+            _yt_fila_versao += 1
+            versao = _yt_fila_versao
+        return jsonify({"ok": True, "queue_version": versao})
+
+    if op == "pop":
+        with _yt_fila_lock:
+            item = _yt_fila.pop(0) if _yt_fila else None
+            if item is not None:
+                _yt_fila_versao += 1
+            versao = _yt_fila_versao
+        return jsonify({
+            "ok": True, "item": _item_publico(item) if item else None,
+            "queue_version": versao,
+        })
+
+    item_id = validar_int(body.get("item_id"), "item_id", 0, 2**62)
+    if op == "move":
+        with _yt_fila_lock:
+            pos = _achar_item(item_id)
+            destino = validar_int(body.get("to"), "to", 0, len(_yt_fila) - 1, limitar=True)
+            _yt_fila.insert(destino, _yt_fila.pop(pos))
+            _yt_fila_versao += 1
+            versao = _yt_fila_versao
+        return jsonify({"ok": True, "queue_version": versao})
+
+    # remove / play_now: tiram o item da fila
+    if op == "play_now":
+        # Só consome o item se há tocador vivo (senão o comando ficaria retido e tocaria
+        # muito depois). Ordem de locks: estado -> fila (único lugar que aninha os dois).
+        with _yt_estado_lock:
+            beat = _yt_estado["last_heartbeat"]
+            vivo = beat is not None and (time.monotonic() - beat) < YOUTUBE_PLAYER_TIMEOUT
+            if not vivo:
+                raise ErroApi("Nenhum tocador aberto. Abra o modo Tocador da loja primeiro.", 409)
+            with _yt_fila_lock:
+                item = _yt_fila.pop(_achar_item(item_id))
+                _yt_fila_versao += 1
+                versao = _yt_fila_versao
+    else:
+        with _yt_fila_lock:
+            item = _yt_fila.pop(_achar_item(item_id))
+            _yt_fila_versao += 1
+            versao = _yt_fila_versao
+    if op == "play_now":
+        cmd_id = youtube_enqueue("load", _params_load(item))
+        return jsonify({"ok": True, "item": _item_publico(item), "id": cmd_id,
+                        "queue_version": versao})
+    return jsonify({"ok": True, "queue_version": versao})
 
 
 @app.post("/api/youtube/command")
@@ -2113,9 +2445,13 @@ def youtube_command() -> Response:
         raise ErroApi("Campo 'params' inválido.")
     params: dict[str, Any] = {}  # lista branca: só repassa o que foi validado
     if action == "load":
-        params["url"] = _validar_url_youtube(bruto.get("url"))
+        # O servidor interpreta o link e repassa só os campos validados (nunca a URL crua).
+        params = parse_youtube_url(bruto.get("url"))
+        _pedir_titulo(_yt_url_canonica(params["video_id"], params["list_id"]))
     elif action == "volume":
         params["value"] = validar_int(bruto.get("value"), "value", 0, 100)
+    elif action == "play_index":
+        params["index"] = validar_int(bruto.get("index"), "index", 0, YOUTUBE_PLAYLIST_MAX - 1)
     return jsonify({"ok": True, "id": youtube_enqueue(action, params)})
 
 
@@ -2149,8 +2485,27 @@ def youtube_commands_poll() -> Response:
     return jsonify({"ok": True, "commands": pendentes, "last_id": ultimo})
 
 
+def _id_obrigatorio(valor: Any, nome: str, regex: re.Pattern[str]) -> str:
+    """Como _id_opcional, mas None também é inválido."""
+    if not isinstance(valor, str) or not regex.fullmatch(valor):
+        raise ErroApi(f"Campo '{nome}' inválido.")
+    return valor
+
+
+def _id_opcional(valor: Any, nome: str, regex: re.Pattern[str]) -> str | None:
+    """Id do YouTube validado por regex, ou None. Qualquer outra coisa -> 400."""
+    if valor is None:
+        return None
+    if not isinstance(valor, str) or not regex.fullmatch(valor):
+        raise ErroApi(f"Campo '{nome}' inválido.")
+    return valor
+
+
 @app.post("/api/youtube/state")
 def youtube_state_push() -> Response:
+    # Heartbeat legítimo: ~1 a cada 3 s (+ mudanças de estado). Teto folgado anti-abuso.
+    if excedeu_limite("ytstate:" + (request.remote_addr or "?"), 60, 10.0):
+        raise ErroApi("Muitas atualizações seguidas.", 429)
     body = corpo_json()
     novo: dict[str, Any] = {}
     if "now_playing" in body:
@@ -2161,6 +2516,25 @@ def youtube_state_push() -> Response:
         novo["is_playing"] = body["is_playing"]
     if "volume" in body:
         novo["volume"] = validar_int(body["volume"], "volume", 0, 100)
+    if "video_id" in body:
+        novo["video_id"] = _id_opcional(body["video_id"], "video_id", _RE_VIDEO_ID)
+    if "list_id" in body:
+        novo["list_id"] = _id_opcional(body["list_id"], "list_id", _RE_LIST_ID)
+    if "playlist_ids" in body:
+        ids = body["playlist_ids"]
+        if ids is None:
+            ids = []
+        if not isinstance(ids, list) or len(ids) > YOUTUBE_PLAYLIST_MAX:
+            raise ErroApi("Campo 'playlist_ids' inválido.")
+        novo["playlist_ids"] = [
+            _id_obrigatorio(i, "playlist_ids", _RE_VIDEO_ID) for i in ids
+        ]
+    if "playlist_index" in body:
+        pi = body["playlist_index"]
+        novo["playlist_index"] = (
+            None if pi is None
+            else validar_int(pi, "playlist_index", 0, YOUTUBE_PLAYLIST_MAX - 1)
+        )
     with _yt_estado_lock:
         _yt_estado.update(novo)
         _yt_estado["last_heartbeat"] = time.monotonic()
@@ -2172,14 +2546,50 @@ def youtube_state_get() -> Response:
     with _yt_estado_lock:
         beat = _yt_estado["last_heartbeat"]
         vivo = beat is not None and (time.monotonic() - beat) < YOUTUBE_PLAYER_TIMEOUT
-        return jsonify(
-            {
-                "now_playing": _yt_estado["now_playing"],
-                "is_playing": _yt_estado["is_playing"],
-                "volume": _yt_estado["volume"],
-                "player_alive": vivo,
-            }
-        )
+        snap = {k: _yt_estado[k] for k in (
+            "now_playing", "is_playing", "volume", "video_id", "list_id",
+            "playlist_ids", "playlist_index",
+        )}
+    # Fila (com títulos já resolvidos) e versão lidas juntas, de forma consistente.
+    with _yt_fila_lock:
+        itens = list(_yt_fila)
+        versao = _yt_fila_versao
+    fila = [_item_publico(i) for i in itens]
+    for i in itens:  # itens sem título em cache: resolve em segundo plano
+        _pedir_titulo(_item_url(i))
+
+    # Próximas da playlist em reprodução (até 15 a partir do índice atual).
+    playlist = None
+    if not vivo:  # tocador offline: não mostra (nem busca título de) dados velhos
+        snap["video_id"] = None
+        snap["list_id"] = None
+        snap["playlist_ids"] = []
+    ids, idx = snap["playlist_ids"], snap["playlist_index"]
+    if vivo and ids and idx is not None and idx < len(ids):
+        proximos = ids[idx + 1: idx + 1 + YOUTUBE_PROXIMAS_MAX]
+        playlist = {
+            "index": idx,
+            "items": [
+                {"video_id": v,
+                 "title": _titulo_em_cache(_yt_url_canonica(v, None))[1]}
+                for v in proximos
+            ],
+        }
+        for v in proximos:
+            _pedir_titulo(_yt_url_canonica(v, None))
+    return jsonify(
+        {
+            "now_playing": snap["now_playing"],
+            "is_playing": snap["is_playing"],
+            "volume": snap["volume"],
+            "player_alive": vivo,
+            "video_id": snap["video_id"],
+            "list_id": snap["list_id"],
+            "queue": fila,
+            "queue_version": versao,
+            "playlist": playlist,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

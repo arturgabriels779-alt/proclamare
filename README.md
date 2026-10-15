@@ -39,7 +39,7 @@ de fundo **abaixa sozinha** durante o anúncio e volta ao volume normal no final
 
 ### 🎵 Música ambiente
 - **Spotify (via Spotify Connect):** busca músicas e playlists, toca, pausa, avança, volta e ajusta volume do app oficial do Spotify no PC da loja — com capa do álbum e barra de progresso.
-- **YouTube:** carrega vídeos ou playlists por link; uma aba fica como "tocador" no PC da loja e os demais aparelhos viram controle remoto, com comandos chegando quase na hora.
+- **YouTube:** toca vídeos ou playlists por link (começando na música do link, até em links de "Mix"), com **fila visível** — adicionar, reordenar, remover e ver as próximas da playlist; uma aba fica como "tocador" no PC da loja e os demais aparelhos viram controle remoto, com comandos chegando quase na hora.
 - **Abaixa a música automaticamente** durante cada anúncio (Spotify e YouTube) e restaura o volume no final.
 
 ### 🖥️ Controle de qualquer lugar da rede

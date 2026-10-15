@@ -313,7 +313,33 @@ A lâmpada ao lado do seletor mostra se existe um "tocador" ativo agora
 
 Não precisa de login nem de chave de API: cole o link de um vídeo ou de uma
 playlist do YouTube (`https://www.youtube.com/watch?v=...` ou
-`https://www.youtube.com/playlist?list=...`) e clique em **Carregar**.
+`https://www.youtube.com/playlist?list=...`) e clique em **Tocar agora**
+(ou aperte Enter).
+
+- **Link de uma música dentro de uma playlist** (`watch?v=...&list=PL...`):
+  a playlist começa **nessa música**, não na primeira.
+- **Link de "Mix" do YouTube** (aqueles com `list=RD...` ou `start_radio=1`,
+  que o YouTube monta sozinho): toca **só a música do link** — o Mix é
+  personalizado e não funciona fora do site do YouTube. Um link só de Mix,
+  sem `v=`, é recusado com uma mensagem explicando.
+- **Tempo de início** (`t=90`, `t=1m30s`): respeitado.
+
+### Fila
+
+O botão **Adicionar à fila** guarda o link para tocar em seguida. O bloco
+**Fila** mostra o que está tocando agora, os próximos da fila (com botões para
+tocar já, subir, descer e remover, além de **Limpar fila**) e, quando uma
+playlist está tocando, as próximas músicas dela (clique para pular).
+
+- A fila passa na frente da playlist: quando a música atual termina, toca o
+  próximo da fila; quando a fila esvazia, a playlist continua de onde parou.
+- O botão **Próximo** também toca o próximo da fila, se houver.
+- Item da fila que não pode tocar fora do YouTube (privado ou com reprodução
+  externa bloqueada pelo dono) mostra um aviso e a fila segue para o próximo,
+  sem travar. Se for algo que você mandou **tocar agora**, aparece só o aviso.
+- Celulares e outros computadores (controle remoto) veem e mexem na mesma fila.
+- A fila fica na memória do Proclamare: se o programa for reiniciado, ela some.
+- Os títulos e miniaturas vêm do próprio YouTube (sem login nem chave de API).
 
 Os comandos de um computador remoto chegam à aba tocadora de forma quase
 instantânea: ela fica conectada ao servidor por *long-poll* (a requisição
@@ -421,6 +447,8 @@ Proclamare.bat", faça a instalação antes.
   tocador aberto" nesse caso).
 - **YouTube não carrega:** confira se o link é de um vídeo ou playlist do
   YouTube (`watch?v=`, `youtu.be/`, `shorts/`, `live/`, `embed/` ou `list=`).
+  Link só de Mix (`list=RD...` sem `v=`) não é aceito: abra uma música do Mix
+  e copie o link dela.
   Se o player mostrar o "Erro 153", o navegador não está enviando o Referer ao
   YouTube — o servidor já usa `Referrer-Policy: strict-origin-when-cross-origin`
   para isso; confira se não há extensão bloqueando referrer.
