@@ -376,6 +376,28 @@ sudo systemctl disable --now NOME_DO_SERVICO_ANTIGO
 sudo systemctl enable --now proclamare
 ```
 
+### Diagnóstico do som (para suporte)
+
+Para a equipe de suporte entender como o som da loja está ligado (qual saída é
+a das caixas, volume, mudo, rede e firewall), dê duplo clique em
+`Diagnosticar Som.bat` e escolha:
+
+- **[1] Diagnóstico (só leitura):** apenas lê informações do computador. Não
+  toca som, não muda volume, mudo, saída padrão nem qualquer configuração.
+- **[2] Diagnóstico + teste audível:** além do acima, **TOCA SOM nas caixas**
+  (um bipe em cada saída que você escolher e a voz "Teste do Proclamare").
+  Faça **somente com a loja fechada**; o programa pede confirmação S/N antes.
+
+Ao terminar, abre a pasta `logs\` com dois arquivos,
+`diagnostico-AAAAMMDD-HHMMSS.txt` (para ler) e `.json`. Envie o `.txt` à
+equipe. O relatório **não contém** endereço IP, nome do Wi-Fi, senhas, o
+`config.json`, IDs completos de dispositivos nem endereço Bluetooth completo
+(só os 4 últimos dígitos). Ele **contém** nomes de tarefas agendadas e de
+arquivos de áudio (sem pastas nem argumentos) e nomes de aparelhos Bluetooth
+de áudio; dê uma olhada antes de enviar. Deixe o Spotify tocando durante o
+diagnóstico para ele ver em qual saída o som sai. Se aparecer "Rode primeiro o Instalar
+Proclamare.bat", faça a instalação antes.
+
 ---
 
 ## 7. Solução de problemas
