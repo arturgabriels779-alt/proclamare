@@ -1232,7 +1232,7 @@ html[data-vt="theme"]::view-transition-new(root) { animation: fade-in 280ms var(
 
 /* Entradas (fallback sem View Transitions e componentes que aparecem) */
 .panel.is-entering, .pane.is-entering, .pane__stack.is-entering,
-.tile.is-entering, .yt-screen.is-entering, .np__cover.is-entering {
+.app.is-entering, .tile.is-entering, .yt-screen.is-entering, .np__cover.is-entering {
   animation: rise var(--dur-3) var(--ease) both;
 }
 
@@ -1471,6 +1471,123 @@ html[data-vt="theme"]::view-transition-new(root) { animation: fade-in 280ms var(
 
 /* Mensagens prontas e botões: dica de teclado só faz sentido com mouse */
 @media (hover: none) { .hint--kbd { display: none; } }
+
+/* =====================================================================
+   9b. ACESSO POR PIN (porta de entrada + seção nas Configurações)
+   ===================================================================== */
+
+/* Enquanto a porta está ativa (boot/pin/off), o painel inteiro fica fora do ar */
+html[data-gate] .app,
+html[data-gate] .tabbar,
+html[data-gate] .skip-link { display: none; }
+
+.gate {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+           max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  background: radial-gradient(70% 55% at 50% 0%, var(--accent-soft), transparent 72%);
+  transition: opacity var(--dur-2) var(--ease);
+}
+.gate.is-leaving { opacity: 0; pointer-events: none; }
+
+.gate__tile {
+  width: min(400px, 100%);
+  align-items: center;
+  gap: 24px;
+  padding: 36px 32px 32px;
+  text-align: center;
+  box-shadow: var(--shadow-tile), var(--shadow-float);
+  animation: rise var(--dur-4) var(--ease) both;
+}
+.gate__brand { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.gate__logo { width: 64px; height: 64px; border-radius: 15px; box-shadow: var(--shadow-cover); }
+.gate__name { font: 600 22px/28px var(--font); letter-spacing: -0.02em; }
+
+.gate__view { display: flex; flex-direction: column; align-items: center; gap: 14px; width: 100%; }
+.gate__lead { max-width: 28ch; font-size: 15px; line-height: 1.45; color: var(--text-2); text-wrap: balance; }
+.gate__form { display: flex; flex-direction: column; gap: 14px; width: 100%; }
+
+.gate__input input {
+  height: 60px;
+  padding-inline: 14px;
+  border-radius: 16px;
+  text-align: center;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: 0.35em;
+  text-indent: 0.35em;                 /* compensa o espaço depois do último caractere */
+  font-variant-numeric: tabular-nums;
+}
+.gate__input input::placeholder { color: var(--placeholder); font-weight: 400; }
+.gate__input input:disabled { opacity: 0.5; cursor: not-allowed; }
+.gate__input.is-error input { border-color: var(--live); box-shadow: 0 0 0 4px var(--live-soft); }
+.gate__input.is-shake { animation: shake 420ms var(--ease) both; }
+
+.gate__feedback { display: flex; flex-direction: column; align-items: center; gap: 4px; min-height: 24px; }
+.gate__msg { max-width: 30ch; font-size: 14px; line-height: 20px; color: var(--text-3); text-wrap: balance; }
+.gate__msg.is-error { color: var(--live); }
+.gate__count { font: 600 22px/28px var(--font); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; color: var(--text-1); }
+.gate__submit { width: 100%; }
+.gate__view--off .btn { margin-top: 6px; }
+.gate__view--off .callout__text { text-wrap: balance; }
+
+@keyframes shake {
+  0%, 100% { transform: none; }
+  18% { transform: translateX(-9px); }
+  36% { transform: translateX(8px); }
+  54% { transform: translateX(-5px); }
+  72% { transform: translateX(3px); }
+}
+
+/* ---- Ação dentro do toast (ex.: "Definir PIN") ---- */
+.toast__action {
+  align-self: center;
+  flex: none;
+  min-height: 44px;
+  margin: -12px -8px -12px 0;
+  padding: 0 12px;
+  border-radius: var(--r-pill);
+  color: var(--accent-text);
+  font: 600 14px/1 var(--font);
+  white-space: nowrap;
+}
+.toast__action:active { transform: scale(0.96); }
+
+/* ---- Configurações: seção "Acesso pela rede" ---- */
+.sheet__fields { display: flex; flex-direction: column; gap: 16px; }
+.sheet__section { font: 600 13px/18px var(--font); letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+.sheet--net { padding-top: 24px; border-top: 1px solid var(--separator); }
+.sheet--net > div { display: flex; flex-direction: column; gap: 14px; }
+.net__form { display: flex; flex-direction: column; gap: 14px; }
+.net__pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+.net__state {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; line-height: 20px; color: var(--text-2);
+}
+.net__state::before {
+  content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text-3); opacity: 0.6;
+}
+.net__state--on::before, .net__state.is-on::before { background: var(--ok-dot); opacity: 1; }
+.net__confirm {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 16px; border-radius: var(--r-card);
+  background: var(--live-soft);
+  animation: rise-sm var(--dur-3) var(--ease) both;
+}
+.net__alert { padding: 8px 12px; border-radius: 12px; background: var(--warn-soft); color: var(--warn); font-size: 13px; line-height: 18px; }
+.net__confirm-title { font-weight: 600; font-size: 15px; }
+.btn--danger { color: var(--live); }
+.btn--danger-solid { background: var(--live-solid); color: #fff; }
+
+@media (max-width: 767.98px) {
+  .gate__tile { padding: 30px 22px 24px; }
+  .sheet--net { padding-top: 20px; padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+  .sheet--net::before { display: none; }              /* a alça do sheet fica só no topo */
+  .sheet:not(.sheet--net) { padding-bottom: 24px; }
+}
 
 /* =====================================================================
    10. MOVIMENTO REDUZIDO

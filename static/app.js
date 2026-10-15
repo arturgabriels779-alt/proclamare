@@ -1,4 +1,4 @@
-/* Proclamare — interface do painel de controle (v2.1)
+/* Proclamare — interface do painel de controle (v2.2: acesso por PIN)
    -----------------------------------------------------------------------
    Sem frameworks e sem build: um único IIFE.
 
@@ -171,6 +171,13 @@
     }
   })();
 
+  // ---- Estado de acesso (PIN) — preenchido por boot() ----
+  // authLocked = true enquanto a porta (PIN / acesso desativado) está fechada.
+  let authLocked = false;
+  const auth = { supported: true, local: true, pinConfigured: false, authenticated: true, falhas: 0, bloqueioS: 0 };
+  const REMOTE_SPOTIFY_MSG = "As credenciais do Spotify são configuradas no computador da loja.";
+  const isRemote = () => auth.supported && !auth.local;
+
   // ---- Helper único de API ----
   /**
    * Faz a requisição e devolve { ok, status, data } (data sempre é objeto).
@@ -179,6 +186,12 @@
    */
   async function request(method, url, body, opts) {
     const o = opts || {};
+    // Porta fechada (sem sessão/PIN): nenhuma chamada sai — não martela o servidor.
+    if (authLocked && !o.auth) {
+      const locked = new Error("Acesso bloqueado");
+      locked.name = "AuthLockedError";
+      throw locked;
+    }
     const ctrl = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, o.timeout || 10000);
@@ -202,7 +215,16 @@
       const res = await fetch(url, init);
       let data = null;
       try { data = await res.json(); } catch (e) { data = null; }
-      return { ok: res.ok, status: res.status, data: data && typeof data === "object" ? data : {} };
+      const out = { ok: res.ok, status: res.status, data: data && typeof data === "object" ? data : {} };
+      // Sessão expirada / PIN trocado / acesso remoto desativado: centralizado aqui.
+      // (chamadas de /api/auth/* passam `auth: true` e tratam a própria resposta)
+      if (!o.auth) {
+        const code = out.data.auth;
+        if ((res.status === 401 && code === "pin_requerido") || (res.status === 403 && code === "pin_nao_configurado")) {
+          lockApp(code);
+        }
+      }
+      return out;
     } catch (err) {
       if (timedOut) {
         const e = new Error("Tempo esgotado");
@@ -285,6 +307,7 @@
    * (quando a mesma informação já está numa região aria-live).
    */
   function toast(message, kind, opts) {
+    if (authLocked) return; // porta fechada: erros de rede/sessão não devem aparecer por cima da tela de PIN
     const k = TOAST_ICON[kind] ? kind : "info";
     const o = opts || {};
     const text = truncate(String(message), 220);
@@ -308,6 +331,19 @@
     msg.className = "toast__msg";
     msg.textContent = text;
     el.append(makeIcon(TOAST_ICON[k]), msg);
+    // ação opcional (botão de texto dentro do aviso): { label, onClick }
+    if (o.action && typeof o.action.onClick === "function") {
+      const act = document.createElement("button");
+      act.type = "button";
+      act.className = "toast__action";
+      act.textContent = String(o.action.label || "Abrir");
+      act.addEventListener("click", (e) => {
+        e.stopPropagation();
+        dismissToast(el);
+        o.action.onClick();
+      });
+      el.appendChild(act);
+    }
     el.addEventListener("click", () => dismissToast(el));
     toastHost.appendChild(el);
     void el.offsetWidth; // reflow: garante a transição de entrada
@@ -380,6 +416,11 @@
         t.kicked = true;
         t.due = Date.now();
         plan();
+      },
+      /** Remove todas as tarefas (porta de PIN fechou): nada mais roda. */
+      clear() {
+        if (timer) { clearTimeout(timer); timer = 0; }
+        tasks.clear();
       },
       /** Reavalia o que está ativo (após mudar de aba/fonte/modo). */
       refresh: plan,
@@ -603,6 +644,45 @@
   const settingsError = $("settings-error");
   const btnSettingsSave = $("btn-settings-save");
   const btnSettingsCancel = $("btn-settings-cancel");
+  // acesso por PIN: porta de entrada
+  const gate = $("gate");
+  const appEl = document.querySelector(".app");
+  const gatePinView = $("gate-pin");
+  const gateOffView = $("gate-off");
+  const gatePinForm = $("gate-pin-form");
+  const gatePinBox = $("gate-pin-box");
+  const gatePinInput = $("gate-pin-input");
+  const gatePinMsg = $("gate-pin-msg");
+  const gatePinCount = $("gate-pin-count");
+  const btnGateLogin = $("btn-gate-login");
+  const gateOffTitle = $("gate-off-title");
+  const gateOffText = $("gate-off-text");
+  const btnGateRetry = $("btn-gate-retry");
+  // acesso por PIN: configurações
+  const netSection = $("net-section");
+  const netLocal = $("net-local");
+  const netRemote = $("net-remote");
+  const netState = $("net-state");
+  const pinForm = $("pin-form");
+  const pinNew = $("pin-new");
+  const pinConfirm = $("pin-confirm");
+  const pinError = $("pin-error");
+  const btnPinSave = $("btn-pin-save");
+  const btnPinDisable = $("btn-pin-disable");
+  const pinDisableConfirm = $("pin-disable-confirm");
+  const btnPinDisableYes = $("btn-pin-disable-yes");
+  const btnPinDisableNo = $("btn-pin-disable-no");
+  const btnLogout = $("btn-logout");
+  const netAlertFails = $("net-alert-fails");
+  const netAlertBlock = $("net-alert-block");
+  const netRevokeRow = $("net-revoke-row");
+  const btnRevoke = $("btn-revoke");
+  const revokeConfirm = $("revoke-confirm");
+  const btnRevokeYes = $("btn-revoke-yes");
+  const btnRevokeNo = $("btn-revoke-no");
+  const spotifyRemoteNote = $("spotify-remote-note");
+  const spotifyFields = $("spotify-fields");
+  const redirectHint = $("redirect-hint");
 
   // ======================================================================
   // 8. Estado de tela (aba ativa, fonte ativa) — usado pelos pollers
@@ -632,11 +712,13 @@
   }
 
   let defaultOfflineVoiceId = null;
-  getJSON("/api/voices", { timeout: 8000 })
-    .then(({ data }) => {
-      if (data.ok && typeof data.default === "string") defaultOfflineVoiceId = data.default;
-    })
-    .catch(() => { /* a voz offline padrão é opcional */ });
+  function loadVoices() {
+    getJSON("/api/voices", { timeout: 8000 })
+      .then(({ data }) => {
+        if (data.ok && typeof data.default === "string") defaultOfflineVoiceId = data.default;
+      })
+      .catch(() => { /* a voz offline padrão é opcional */ });
+  }
 
   // ======================================================================
   // 10. Abas (celular) — Anúncio | Música
@@ -1062,6 +1144,8 @@
   }
 
   btnSpotifyConnect.addEventListener("click", () => {
+    // aparelho remoto não conecta o Spotify: o login só vale no PC da loja
+    if (isRemote()) { toast(REMOTE_SPOTIFY_MSG, "info"); return; }
     window.location.href = "/spotify/login";
   });
 
@@ -1928,26 +2012,58 @@
     }, 200);
   }
 
-  async function openSettings() {
+  /** Porta do Redirect URI devolvido pelo servidor (cai para a da página). */
+  function redirectPort(uri) {
+    try {
+      const u = new URL(uri);
+      if (u.port) return u.port;
+    } catch (e) { /* usa a da página */ }
+    return window.location.port || "80";
+  }
+
+  /** `target === "net"` rola até "Acesso pela rede" e foca o campo do PIN. */
+  async function openSettings(target) {
     if (settingsDialog.open) return;
     showSettingsError("");
+    resetNetForm();
+    renderNetSection();
     settingsClientSecret.value = "";
-    settingsRedirectUri.textContent = window.location.origin + "/spotify/callback";
+    // nada de pré-preencher com o endereço da página: só mostra o que o servidor devolver
+    settingsRedirectUri.textContent = "carregando…";
+    settingsRedirectUri.dataset.ready = "";
+    const remote = isRemote();
+    spotifyFields.hidden = remote;
+    spotifyRemoteNote.hidden = !remote;
+    btnSettingsSave.hidden = remote;
+    btnSettingsCancel.textContent = remote ? "Fechar" : "Cancelar";
+    if (auth.supported && auth.local) refreshLocalAuthInfo(); // atualiza falhas recentes / bloqueio
     settingsClientId.readOnly = true;
     settingsClientSecret.readOnly = true;
     btnSettingsSave.setAttribute("aria-disabled", "true"); // só libera se a config carregar
     let loaded = false;
     settingsDialog.showModal();
+    if (target === "net" && !netSection.hidden && !netLocal.hidden) {
+      netSection.scrollIntoView({ block: "nearest" });
+      pinNew.focus({ preventScroll: true });
+    }
+    if (remote) return;
     try {
       const { data } = await getJSON("/api/spotify/config", { timeout: 8000 });
       settingsClientId.value = typeof data.client_id === "string" ? data.client_id : "";
       settingsClientSecret.placeholder = data.has_secret
         ? "já configurado — deixe em branco para manter"
         : "cole o Client Secret aqui";
-      if (typeof data.redirect_uri === "string" && data.redirect_uri) settingsRedirectUri.textContent = data.redirect_uri;
+      if (typeof data.redirect_uri === "string" && data.redirect_uri) {
+        settingsRedirectUri.textContent = data.redirect_uri;
+        settingsRedirectUri.dataset.ready = "1";
+        setText(redirectHint, "Cadastre exatamente este endereço no painel do Spotify. Para conectar, use o computador da loja abrindo http://127.0.0.1:" + redirectPort(data.redirect_uri) + " — o Spotify não aceita localhost nem o IP da rede.");
+      } else {
+        settingsRedirectUri.textContent = "não foi possível carregar";
+      }
       loaded = true;
     } catch (e) {
       // não libera a edição: salvar sem ter lido a config poderia apagar o Client ID salvo
+      settingsRedirectUri.textContent = "não foi possível carregar";
       showSettingsError("Não foi possível carregar a configuração atual. Feche e abra de novo.");
     } finally {
       if (loaded) {
@@ -1960,7 +2076,7 @@
 
   settingsForm.addEventListener("submit", async (e) => {
     e.preventDefault();
-    if (btnSettingsSave.getAttribute("aria-disabled") === "true") return;
+    if (btnSettingsSave.getAttribute("aria-disabled") === "true" || isRemote()) return;
     const clientId = settingsClientId.value.trim();
     const secret = settingsClientSecret.value.trim();
     if (clientId.length > 128 || secret.length > 128) {
@@ -1995,10 +2111,12 @@
     }
   });
 
-  btnSettings.addEventListener("click", openSettings);
+  btnSettings.addEventListener("click", () => openSettings());
   document.addEventListener("click", (e) => {
     const trigger = e.target.closest("[data-open-settings]");
-    if (trigger) openSettings();
+    if (!trigger) return;
+    if (isRemote()) { toast(REMOTE_SPOTIFY_MSG, "info"); return; }
+    openSettings();
   });
   btnSettingsCancel.addEventListener("click", closeSettings);
   // Esc: fecha com animação
@@ -2007,6 +2125,7 @@
   settingsDialog.addEventListener("click", (e) => { if (e.target === settingsDialog) closeSettings(); });
 
   btnCopyUri.addEventListener("click", async () => {
+    if (settingsRedirectUri.dataset.ready !== "1") return; // ainda carregando (ou falhou)
     const text = settingsRedirectUri.textContent || "";
     try {
       await navigator.clipboard.writeText(text);
@@ -2023,6 +2142,421 @@
   });
 
   // ======================================================================
+  // 17b. Acesso por PIN (porta de entrada + seção nas Configurações)
+  // ======================================================================
+  // O servidor guarda a sessão num cookie HttpOnly: aqui o PIN só passa pela
+  // memória até o POST e o campo é limpo logo em seguida (nunca vai ao storage).
+  const PIN_RE = /^[0-9]{6,8}$/;
+  const PIN_HINT_KEY = "proclamare_pin_hint"; // sessionStorage: aviso "defina um PIN" uma vez por sessão
+  let gateMode = ""; // "" (painel liberado) | boot | pin | off
+  let loginBusy = false;
+  let blockTimer = 0;
+  let netBusy = false;
+
+  /** Para tudo que fala com o servidor (polls, long-poll, player, buscas). */
+  function stopAll() {
+    authLocked = true;
+    scheduler.clear();
+    stopYoutubeLoop();
+    if (ytPlayer || ytCreating) destroyYoutubePlayer();
+    ytMode = "control"; // o modo salvo é restaurado por startApp()
+    ytPendingLoad = null;
+    if (searchCtrl) { searchCtrl.abort(); searchCtrl = null; }
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    toastHost.replaceChildren();
+    if (settingsDialog.open) settingsDialog.close();
+  }
+
+  /** Mostra a porta: "pin" (digitar), "off" (desativado/sem conexão) ou "boot" (verificando). */
+  function showGate(mode, opts) {
+    const o = opts || {};
+    gateMode = mode;
+    rootEl.dataset.gate = mode;
+    gate.classList.remove("is-leaving");
+    gate.hidden = mode === "boot";
+    gatePinView.hidden = mode !== "pin";
+    gateOffView.hidden = mode !== "off";
+    if (mode === "pin") {
+      endBlock(true);
+      gatePinInput.value = "";
+      setPinFeedback(o.notice || "", false);
+      gatePinInput.focus();
+    } else if (mode === "off") {
+      if (o.unreachable) {
+        setText(gateOffTitle, "Sem conexão com o servidor");
+        setText(gateOffText, "Confira se o computador da loja está ligado e se este aparelho está na mesma rede.");
+      } else {
+        setText(gateOffTitle, "Acesso pela rede desativado");
+        setText(gateOffText, "Para controlar as caixas por este aparelho, defina um PIN no computador da loja, em Configurações → Acesso pela rede.");
+      }
+      btnGateRetry.focus();
+    }
+  }
+
+  /** Chamado pelo helper de API quando o servidor recusa por falta de sessão/PIN. */
+  function lockApp(code) {
+    if (authLocked) return;
+    stopAll();
+    auth.authenticated = false;
+    if (code === "pin_nao_configurado") {
+      auth.pinConfigured = false;
+      showGate("off");
+    } else {
+      showGate("pin", { notice: "Sua sessão terminou. Digite o PIN de novo." });
+    }
+  }
+
+  // ---- Tela de PIN ----
+  function setPinFeedback(text, isError) {
+    setText(gatePinMsg, text);
+    gatePinMsg.classList.toggle("is-error", !!isError);
+    gatePinBox.classList.toggle("is-error", !!isError);
+  }
+
+  function shakePin() {
+    gatePinBox.classList.remove("is-shake");
+    void gatePinBox.offsetWidth; // reinicia a animação
+    gatePinBox.classList.add("is-shake");
+  }
+  gatePinBox.addEventListener("animationend", () => gatePinBox.classList.remove("is-shake"));
+
+  function setLoginBusy(on) {
+    loginBusy = on;
+    btnGateLogin.classList.toggle("is-loading", on);
+    btnGateLogin.setAttribute("aria-disabled", String(on || !!blockTimer));
+    if (on) btnGateLogin.setAttribute("aria-busy", "true");
+    else btnGateLogin.removeAttribute("aria-busy");
+  }
+
+  /** Encerra o bloqueio por excesso de tentativas (silent = sem aviso nem foco). */
+  function endBlock(silent) {
+    if (blockTimer) { clearInterval(blockTimer); blockTimer = 0; }
+    gatePinInput.disabled = false;
+    gatePinCount.hidden = true;
+    btnGateLogin.setAttribute("aria-disabled", String(loginBusy));
+    if (!silent) {
+      setPinFeedback("Você já pode tentar de novo.", false);
+      gatePinInput.focus();
+    }
+  }
+
+  function startBlock(seconds) {
+    const end = Date.now() + clamp(Math.ceil(seconds), 1, 86400) * 1000;
+    if (blockTimer) clearInterval(blockTimer);
+    gatePinInput.value = "";
+    gatePinInput.disabled = true;
+    btnGateLogin.setAttribute("aria-disabled", "true");
+    setPinFeedback("Muitas tentativas. Aguarde para tentar de novo.", true);
+    gatePinCount.hidden = false;
+    const tick = () => {
+      const left = Math.ceil((end - Date.now()) / 1000);
+      if (left <= 0) { endBlock(false); return; }
+      setText(gatePinCount, formatTime(left * 1000));
+    };
+    blockTimer = setInterval(tick, 1000);
+    tick();
+  }
+
+  gatePinInput.addEventListener("input", () => {
+    // só dígitos (colar "12 34" ou letras no celular não passa)
+    const clean = gatePinInput.value.replace(/\D/g, "");
+    if (clean !== gatePinInput.value) gatePinInput.value = clean;
+    if (gatePinBox.classList.contains("is-error") && !blockTimer) setPinFeedback("", false);
+  });
+
+  gatePinForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (loginBusy || blockTimer) return;
+    const pin = gatePinInput.value;
+    if (!PIN_RE.test(pin)) {
+      setPinFeedback("O PIN tem de 6 a 8 números.", true);
+      shakePin();
+      gatePinInput.focus();
+      return;
+    }
+    gatePinInput.value = ""; // o PIN não fica no campo depois do envio
+    setPinFeedback("", false);
+    setLoginBusy(true);
+    try {
+      const { ok, status, data } = await postJSON("/api/auth/login", { pin }, { auth: true, timeout: 10000 });
+      if (ok && data.ok) {
+        setLoginBusy(false);
+        auth.authenticated = true;
+        auth.pinConfigured = true;
+        enterApp();
+        return;
+      }
+      if (status === 429) {
+        startBlock(Number(data.bloqueado_por_s) || 60);
+      } else if (status === 403 && data.auth === "pin_nao_configurado") {
+        auth.pinConfigured = false;
+        showGate("off");
+      } else if (status === 401) {
+        const base = typeof data.error === "string" && data.error ? data.error : "PIN incorreto.";
+        const left = Number.isInteger(data.tentativas_restantes) ? data.tentativas_restantes : null;
+        const extra = left === null ? "" : left === 1 ? " Resta 1 tentativa." : " Restam " + left + " tentativas.";
+        setPinFeedback(base + extra, true);
+        shakePin();
+        gatePinInput.focus();
+      } else {
+        setPinFeedback(typeof data.error === "string" && data.error ? data.error : "Não foi possível entrar. Tente de novo.", true);
+        shakePin();
+        gatePinInput.focus();
+      }
+    } catch (err) {
+      setPinFeedback("Sem conexão com o servidor. Tente de novo.", true);
+      gatePinInput.focus();
+    } finally {
+      setLoginBusy(false);
+    }
+  });
+
+  btnGateRetry.addEventListener("click", () => { if (!booting) boot(); });
+
+  /** Fecha a porta com um fade e inicia o painel. */
+  function enterApp() {
+    const fromGate = gateMode === "pin" || gateMode === "off";
+    const finish = () => {
+      gateMode = "";
+      delete rootEl.dataset.gate;
+      gate.hidden = true;
+      gate.classList.remove("is-leaving");
+      if (fromGate) playEnter(appEl);
+      startApp();
+    };
+    if (fromGate && !prefersReducedMotion()) {
+      gate.classList.add("is-leaving");
+      setTimeout(finish, 200);
+    } else {
+      finish();
+    }
+  }
+
+  // ---- Configurações: "Acesso pela rede" ----
+  function renderNetSection() {
+    const showLocal = auth.supported && auth.local;
+    const showRemote = auth.supported && !auth.local && auth.authenticated;
+    netSection.hidden = !(showLocal || showRemote);
+    netLocal.hidden = !showLocal;
+    netRemote.hidden = !showRemote;
+    if (showLocal) {
+      setText(netState, auth.pinConfigured
+        ? "PIN definido — outros aparelhos da rede entram com ele."
+        : "Acesso pela rede desativado — só este computador controla o painel.");
+      netState.classList.toggle("is-on", auth.pinConfigured);
+      btnPinDisable.hidden = !auth.pinConfigured;
+      if (!auth.pinConfigured) pinDisableConfirm.hidden = true;
+      netRevokeRow.hidden = !auth.pinConfigured;
+      if (!auth.pinConfigured) revokeConfirm.hidden = true;
+      const f = auth.falhas;
+      netAlertFails.hidden = !(f > 0);
+      if (f > 0) setText(netAlertFails, f + (f === 1 ? " tentativa de PIN errada" : " tentativas de PIN erradas") + " nas últimas 24 horas.");
+      const b = auth.bloqueioS;
+      netAlertBlock.hidden = !(b > 0);
+      if (b > 0) setText(netAlertBlock, "Login pela rede bloqueado por " + Math.max(1, Math.ceil(b / 60)) + " min por excesso de tentativas.");
+    }
+  }
+
+  function showPinError(message) {
+    pinError.textContent = message;
+    pinError.hidden = !message;
+  }
+
+  function resetNetForm() {
+    pinNew.value = "";
+    pinConfirm.value = "";
+    showPinError("");
+    pinDisableConfirm.hidden = true;
+    revokeConfirm.hidden = true;
+  }
+
+  /** Guarda os campos extras que o status traz só para o PC local. */
+  function readLocalAuthInfo(d) {
+    auth.falhas = Number.isInteger(d.falhas_recentes) && d.falhas_recentes > 0 ? d.falhas_recentes : 0;
+    auth.bloqueioS = Number.isInteger(d.bloqueio_global_s) && d.bloqueio_global_s > 0 ? d.bloqueio_global_s : 0;
+  }
+
+  async function refreshLocalAuthInfo() {
+    try {
+      const r = await getJSON("/api/auth/status", { auth: true, timeout: 5000 });
+      if (r.ok && r.data.local === true) { readLocalAuthInfo(r.data); renderNetSection(); }
+    } catch (e) { /* mantém o que já se sabe */ }
+  }
+
+  for (const input of [pinNew, pinConfirm]) {
+    input.addEventListener("input", () => {
+      const clean = input.value.replace(/\D/g, "");
+      if (clean !== input.value) input.value = clean;
+      if (!pinError.hidden) showPinError("");
+    });
+  }
+
+  /** Envia o novo PIN (string) ou null (desativar). Devolve true em sucesso. */
+  async function sendPin(pin, successMessage) {
+    if (netBusy) return false;
+    netBusy = true;
+    btnPinSave.classList.add("is-loading");
+    btnPinSave.setAttribute("aria-disabled", "true");
+    btnPinDisable.setAttribute("aria-disabled", "true");
+    try {
+      const { ok, data } = await postJSON("/api/auth/pin", { pin });
+      if (ok && data.ok) {
+        auth.pinConfigured = data.pin_configurado === true;
+        resetNetForm();
+        renderNetSection();
+        toast(successMessage, "success");
+        return true;
+      }
+      showPinError(typeof data.error === "string" && data.error ? data.error : "Não foi possível salvar o PIN.");
+    } catch (err) {
+      showPinError("Não foi possível falar com o servidor. Tente de novo.");
+    } finally {
+      netBusy = false;
+      btnPinSave.classList.remove("is-loading");
+      btnPinSave.removeAttribute("aria-disabled");
+      btnPinDisable.removeAttribute("aria-disabled");
+    }
+    return false;
+  }
+
+  pinForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (netBusy) return;
+    const pin = pinNew.value;
+    if (!PIN_RE.test(pin)) {
+      showPinError("O PIN deve ter de 6 a 8 números.");
+      pinNew.focus();
+      return;
+    }
+    if (pin !== pinConfirm.value) {
+      showPinError("Os dois PINs não são iguais.");
+      pinConfirm.focus();
+      return;
+    }
+    pinNew.value = ""; // limpa os campos assim que o envio começa
+    pinConfirm.value = "";
+    showPinError("");
+    sendPin(pin, "PIN salvo. Os outros aparelhos foram desconectados.");
+  });
+
+  btnPinDisable.addEventListener("click", () => {
+    pinDisableConfirm.hidden = false;
+    revokeConfirm.hidden = true;
+    playEnter(pinDisableConfirm);
+    btnPinDisableNo.focus();
+  });
+  btnPinDisableNo.addEventListener("click", () => {
+    pinDisableConfirm.hidden = true;
+    btnPinDisable.focus();
+  });
+  btnPinDisableYes.addEventListener("click", async () => {
+    const done = await sendPin(null, "Acesso pela rede desativado.");
+    if (!done) pinDisableConfirm.hidden = true;
+  });
+
+  btnRevoke.addEventListener("click", () => {
+    revokeConfirm.hidden = false;
+    pinDisableConfirm.hidden = true;
+    playEnter(revokeConfirm);
+    btnRevokeNo.focus();
+  });
+  btnRevokeNo.addEventListener("click", () => {
+    revokeConfirm.hidden = true;
+    btnRevoke.focus();
+  });
+  btnRevokeYes.addEventListener("click", async () => {
+    if (btnRevokeYes.getAttribute("aria-disabled") === "true") return;
+    btnRevokeYes.setAttribute("aria-disabled", "true");
+    try {
+      const { ok, data } = await postJSON("/api/auth/revogar", {});
+      if (ok && data.ok) {
+        revokeConfirm.hidden = true;
+        toast("Todos os aparelhos foram desconectados.", "success");
+        btnRevoke.focus();
+      } else {
+        showPinError(typeof data.error === "string" && data.error ? data.error : "Não foi possível desconectar os aparelhos.");
+        revokeConfirm.hidden = true;
+      }
+    } catch (err) {
+      showPinError("Não foi possível falar com o servidor. Tente de novo.");
+      revokeConfirm.hidden = true;
+    } finally {
+      btnRevokeYes.removeAttribute("aria-disabled");
+    }
+  });
+
+  btnLogout.addEventListener("click", async () => {
+    if (btnLogout.getAttribute("aria-disabled") === "true") return;
+    btnLogout.setAttribute("aria-disabled", "true");
+    try {
+      await postJSON("/api/auth/logout", {}, { auth: true, timeout: 8000 });
+      boot();
+    } catch (err) {
+      toast("Não foi possível sair agora. Tente de novo.", "error");
+    } finally {
+      btnLogout.removeAttribute("aria-disabled");
+    }
+  });
+
+  /** Aviso discreto no PC da loja: sem PIN, o celular não consegue controlar. */
+  function maybeShowPinHint() {
+    if (!(auth.supported && auth.local && !auth.pinConfigured)) return;
+    try {
+      if (window.sessionStorage.getItem(PIN_HINT_KEY)) return;
+      window.sessionStorage.setItem(PIN_HINT_KEY, "1");
+    } catch (e) { /* sessionStorage indisponível: avisa assim mesmo */ }
+    setTimeout(() => {
+      toast("Defina um PIN para liberar o controle pelo celular.", "info", {
+        duration: 12000,
+        action: { label: "Definir PIN", onClick: () => openSettings("net") },
+      });
+    }, 1200);
+  }
+
+  /** Descobre quem somos (local/remoto, PIN) e abre a porta certa. */
+  let booting = false;
+  async function boot() {
+    if (booting) return; // evita boot/startApp duplicados (duplo clique, retry + logout)
+    booting = true;
+    btnGateRetry.setAttribute("aria-disabled", "true");
+    btnLogout.setAttribute("aria-disabled", "true");
+    try {
+      await bootInner();
+    } finally {
+      booting = false;
+      btnGateRetry.removeAttribute("aria-disabled");
+      btnLogout.removeAttribute("aria-disabled");
+    }
+  }
+
+  async function bootInner() {
+    stopAll();
+    if (gateMode === "") showGate("boot");
+    let st = null;
+    let unreachable = false;
+    try {
+      const r = await getJSON("/api/auth/status", { auth: true, timeout: 6000 });
+      if (r.ok && typeof r.data.local === "boolean") st = r.data;
+      else if (r.status === 404) st = { legacy: true }; // servidor sem PIN: segue como antes
+      else unreachable = true;
+    } catch (err) {
+      unreachable = true;
+    }
+    if (unreachable) {
+      showGate("off", { unreachable: true });
+      return;
+    }
+    auth.supported = !st.legacy;
+    auth.local = st.legacy ? true : st.local === true;
+    auth.pinConfigured = !st.legacy && st.pin_configurado === true;
+    auth.authenticated = st.legacy ? true : st.autenticado === true;
+    if (auth.local) readLocalAuthInfo(st);
+    if (auth.local || auth.authenticated) enterApp();
+    else if (!auth.pinConfigured) showGate("off");
+    else showGate("pin");
+  }
+
+  // ======================================================================
   // 18. Inicialização
   // ======================================================================
   loadPrefs();
@@ -2037,29 +2571,40 @@
   handleSpotifyRedirectBack(); // pode forçar aba Música + fonte Spotify
   tabGroup.set(activeTab, true);
 
-  showSpotifyState("loading");
-  setYoutubeLamp("unknown");
-  setLamp(lampInternetBulb, "off");
-  setText(lampInternetLabel, "Verificando…");
+  // ---- Tudo que fala com o servidor começa aqui (só depois da porta de PIN) ----
+  function startApp() {
+    authLocked = false;
+    sp.connected = null; // reavalia o Spotify do zero (inclusive após novo login)
+    showSpotifyState("loading");
+    setYoutubeLamp("unknown");
+    setLamp(lampInternetBulb, "off");
+    setText(lampInternetLabel, "Verificando…");
 
-  // Modo salvo neste navegador (padrão: controle remoto)
-  const savedMode = store.get(LS.ytMode) === "player" ? "player" : "control";
-  applyYoutubeMode(savedMode, false);
-  syncPanes();
+    // Modo salvo neste navegador (padrão: controle remoto)
+    const savedMode = store.get(LS.ytMode) === "player" ? "player" : "control";
+    applyYoutubeMode(savedMode, false);
+    syncPanes();
+    loadVoices();
 
-  // Tarefas de polling (todas passam pelo agendador único)
-  scheduler.add("status", pollStatus, 15000, { immediate: true });
-  scheduler.add("spotify-now", pollSpotifyNow, 4000, { enabled: spotifyActive });
-  // Reconfere a conexão do Spotify (falha transitória no 1º carregamento, token revogado, login em outro PC)
-  // (a linha de status do topo é visível em qualquer aba/fonte, então a lâmpada não pode ficar velha)
-  scheduler.add("spotify-status", refreshSpotifyStatus, 15000);
-  scheduler.add("yt-state", pollYoutubeState, 4000, { enabled: youtubeActive, immediate: true });
-  // Com o YouTube fora de vista, só confere a lâmpada "Tocador YouTube" com calma
-  scheduler.add("yt-lamp", pollYoutubeState, 15000, { enabled: () => !youtubeActive(), immediate: true });
-  // O tocador NUNCA pausa em segundo plano: precisa obedecer comandos e manter o heartbeat.
-  scheduler.add("yt-heartbeat", pushYoutubeState, 3000, { always: true, immediate: true, enabled: () => ytMode === "player" });
+    // Tarefas de polling (todas passam pelo agendador único)
+    scheduler.add("status", pollStatus, 15000, { immediate: true });
+    scheduler.add("spotify-now", pollSpotifyNow, 4000, { enabled: spotifyActive });
+    // Reconfere a conexão do Spotify (falha transitória no 1º carregamento, token revogado, login em outro PC)
+    // (a linha de status do topo é visível em qualquer aba/fonte, então a lâmpada não pode ficar velha)
+    scheduler.add("spotify-status", refreshSpotifyStatus, 15000);
+    scheduler.add("yt-state", pollYoutubeState, 4000, { enabled: youtubeActive, immediate: true });
+    // Com o YouTube fora de vista, só confere a lâmpada "Tocador YouTube" com calma
+    scheduler.add("yt-lamp", pollYoutubeState, 15000, { enabled: () => !youtubeActive(), immediate: true });
+    // O tocador NUNCA pausa em segundo plano: precisa obedecer comandos e manter o heartbeat.
+    scheduler.add("yt-heartbeat", pushYoutubeState, 3000, { always: true, immediate: true, enabled: () => ytMode === "player" });
 
-  refreshSpotifyStatus();
+    refreshSpotifyStatus();
+
+    // O script da API do YouTube é "defer" e roda depois deste arquivo; se por
+    // algum motivo ele já estiver pronto, cria o player agora.
+    if (ytMode === "player") ensureYoutubePlayer();
+    maybeShowPinHint();
+  }
 
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
@@ -2076,7 +2621,6 @@
     ensureProgressLoop();
   });
 
-  // O script da API do YouTube é "defer" e roda depois deste arquivo; se por
-  // algum motivo ele já estiver pronto, cria o player agora.
-  if (ytMode === "player") ensureYoutubePlayer();
+  // Antes de qualquer poll/agendador/YouTube: pergunta ao servidor se este aparelho pode entrar.
+  boot();
 })();

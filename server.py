@@ -1,6 +1,6 @@
 """
-Proclamare — servidor local (v2.1, focada em desempenho e segurança)
-====================================================================
+Proclamare — servidor local (v2.2: desempenho, segurança e acesso por PIN)
+==========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
 
@@ -17,6 +17,12 @@ da loja. Serve a interface (static/) e cuida de três coisas:
                                música sem precisar manter nenhuma aba aberta
                                com login próprio.
 
+  /api/auth/*                — acesso pela rede com PIN (v2.2): status, login,
+                               logout, definir/trocar/remover o PIN e revogar
+                               sessões. O computador da loja (loopback) nunca
+                               pede PIN; sem PIN definido o acesso remoto à API
+                               fica desligado.
+
   /api/youtube/*             — o YouTube não tem um protocolo equivalente ao
                                Spotify Connect, então uma aba precisa ficar
                                aberta TOCANDO no computador da loja; esta
@@ -26,7 +32,22 @@ da loja. Serve a interface (static/) e cuida de três coisas:
                                A aba tocadora recebe os comandos por
                                long-poll (latência quase instantânea).
 
-O que mudou na v2.1 (resumo)
+O que mudou na v2.2 (resumo)
+----------------------------
+  * Autenticação por PIN (6 a 8 dígitos) para aparelhos remotos: hash PBKDF2,
+    cookie de sessão assinado (HMAC, 14 dias com renovação), limite de
+    tentativas por IP e global (com escalada), revogação de sessões.
+  * "Local" = loopback + Host de loopback + sem cabeçalho Via (proxy/túnel no
+    PC da loja não vira "local"). PROCLAMARE_CONFIAR_LOOPBACK=0 desliga o "local".
+  * CLI sem subir o servidor:  python server.py --definir-pin | --remover-pin
+  * Lançador de duplo clique (Proclamare.pyw): log rotativo (PROCLAMARE_LOG_FILE)
+    e arquivo de PID (PROCLAMARE_PID_FILE) para desligar o processo certo.
+  * Porta de escuta exclusiva (SO_EXCLUSIVEADDRUSE no Windows): um 2º servidor
+    na mesma porta falha em vez de roubar conexões.
+  * config.json ilegível é preservado (cópia "corrompido") e, no Windows, grava
+    com permissões só para o usuário atual, SYSTEM e Administradores.
+
+Da v2.1 (continua valendo)
 ----------------------------
   * Configuração (config.json) em cache na memória, com escrita atômica.
   * Sessão HTTP única (pool de conexões/keep-alive) para a API do Spotify,
@@ -49,6 +70,12 @@ Variáveis de ambiente (todas opcionais)
   PROCLAMARE_HOST        endereço de escuta (padrão 0.0.0.0)
   PROCLAMARE_PORT        porta de escuta (padrão 8502)
   PROCLAMARE_LOG_LEVEL   nível de log: DEBUG, INFO, WARNING... (padrão INFO)
+  PROCLAMARE_LOG_FILE    caminho de um arquivo de log (com rotação: 5 MB, 3 antigos).
+                         Sem ela, o log vai para o console.
+  PROCLAMARE_PID_FILE    caminho de um arquivo JSON onde o servidor registra
+                         {"pid", "porta", "criado_em", "executavel"} ao começar a
+                         servir (usado pelo lançador para desligar o processo certo);
+                         é removido ao encerrar normalmente.
   PROCLAMARE_SPOTIFY_REDIRECT
                          Redirect URI do Spotify (padrão
                          http://127.0.0.1:<porta>/spotify/callback). O Spotify só
@@ -57,17 +84,33 @@ Variáveis de ambiente (todas opcionais)
                          nomes de host extras aceitos no cabeçalho Host, separados
                          por vírgula (defesa contra DNS rebinding). IPs literais,
                          localhost e o nome deste computador já são aceitos.
+  PROCLAMARE_CONFIAR_LOOPBACK
+                         "1" (padrão): conexões de loopback com Host 127.0.0.1/
+                         localhost/::1 e sem cabeçalho Via são "locais" (sem PIN).
+                         "0": ninguém é local — todos precisam de PIN e a troca do
+                         PIN / config do Spotify pela web ficam indisponíveis (use
+                         a CLI). OBRIGATÓRIO se houver proxy reverso (Caddy/nginx), túnel
+                         (SSH, cloudflared) ou redirecionamento de porta (netsh portproxy,
+                         WSL) no PC da loja: sem isso qualquer aparelho se passa pelo PC
+                         da loja e ignora o PIN.
 
-Veja o README.md para instruções de instalação, execução e acesso remoto.
+Veja docs/GUIA.md para instalação, execução, acesso remoto e PIN.
 """
 
 from __future__ import annotations
 
 import asyncio
 import atexit
+import base64
 import contextlib
+import getpass
+import hashlib
+import hmac
 import ipaddress
 import logging
+import logging.handlers
+import signal
+import sys
 import os
 import re
 import secrets
@@ -111,6 +154,9 @@ INTERVALO_LIMPEZA_S = 3600.0  # a limpeza de mp3 órfãos é só uma "rede de se
 CONFIG_PATH = APP_DIR / "config.json"
 
 
+_PORTA_INVALIDA = False
+
+
 def _porta_do_ambiente() -> int:
     """Lê PROCLAMARE_PORT (1..65535); valor inválido volta ao padrão 8502."""
     bruto = _env("PORT", "8502").strip()
@@ -119,9 +165,8 @@ def _porta_do_ambiente() -> int:
     except ValueError:
         porta = 0
     if not 1 <= porta <= 65535:
-        logging.getLogger("proclamare").warning(
-            "PROCLAMARE_PORT inválida; usando a porta padrão 8502."
-        )
+        global _PORTA_INVALIDA
+        _PORTA_INVALIDA = True  # o aviso é emitido em main(), depois de configurar o log
         return 8502
     return porta
 
@@ -166,7 +211,8 @@ def _tratar_http(e: HTTPException) -> Any:
 @app.errorhandler(Exception)
 def _tratar_excecao(e: Exception) -> tuple[Response, int]:
     # Detalhe e stack trace só no log do servidor; o cliente recebe algo genérico.
-    log.exception("Erro não tratado em %s %s", request.method, request.path)
+    # %r: o path vem do cliente; repr escapa quebras de linha (evita linha forjada no log).
+    log.exception("Erro não tratado em %r %r", request.method, request.path)
     return _resp_erro("Erro interno do servidor.", 500)
 
 
@@ -295,12 +341,30 @@ def excedeu_limite(chave: str, maximo: int, janela_s: float) -> bool:
         return False
 
 
+HOSTS_LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _confiar_loopback() -> bool:
+    """PROCLAMARE_CONFIAR_LOOPBACK (padrão "1"); "0" = nenhuma requisição é local."""
+    return _env("CONFIAR_LOOPBACK", "1").strip() != "0"
+
+
 def _requisicao_local() -> bool:
-    """True se o cliente está no próprio computador (loopback)."""
+    """
+    True só se a requisição vem MESMO do próprio computador: endereço de origem
+    em loopback E cabeçalho Host de loopback E sem cabeçalho Via. Um proxy, túnel
+    ou "netsh portproxy" no PC da loja faz todo mundo chegar por loopback, mas
+    normalmente com Host de rede/nome ou Via; sem isso o PIN seria contornado.
+    """
+    if not _confiar_loopback():
+        return False
     try:
-        return ipaddress.ip_address(request.remote_addr or "").is_loopback
+        if not ipaddress.ip_address(request.remote_addr or "").is_loopback:
+            return False
+        nome = urlsplit("//" + request.host).hostname
     except ValueError:
         return False
+    return (nome or "").lower() in HOSTS_LOOPBACK and "Via" not in request.headers
 
 
 @app.before_request
@@ -330,7 +394,9 @@ def _verificar_requisicao() -> tuple[Response, int] | None:
         and request.mimetype != "application/json"
     ):
         return _resp_erro("Content-Type deve ser application/json.", 415)
-    return None
+    # v2.2: depois de todas as checagens acima, /api/* (exceto as públicas)
+    # exige PIN quando o cliente não está no próprio computador.
+    return _exigir_sessao()
 
 
 @app.after_request
@@ -363,6 +429,73 @@ def _assinatura_arquivo() -> tuple[int, int] | None:
     return (st.st_mtime_ns, st.st_size)
 
 
+_corrompidos_copiados: set[tuple[int, int]] = set()  # (hash do conteúdo, tamanho)
+
+
+def _preservar_config_corrompido() -> None:
+    """
+    Se o config.json existe mas não é um JSON-objeto válido, copia-o UMA vez para
+    config.json.corrompido-<timestamp> (antes de qualquer gravação por cima).
+    """
+    if _assinatura_arquivo() is None:
+        return
+    try:
+        dados = CONFIG_PATH.read_bytes()
+        # chave inclui o conteúdo: duas corrupções seguidas de mesmo tamanho/mtime não se confundem
+        assinatura = (hash(dados), len(dados))
+        if assinatura in _corrompidos_copiados:
+            return
+        try:
+            if isinstance(json.loads(dados.decode("utf-8")), dict):
+                return  # está íntegro
+        except ValueError:
+            pass
+        destino = CONFIG_PATH.with_name(f"config.json.corrompido-{time.strftime('%Y%m%d-%H%M%S')}")
+        n = 1
+        while destino.exists():  # nunca sobrescreve uma cópia anterior
+            destino = destino.with_name(f"{destino.name.split('.corrompido-')[0]}.corrompido-"
+                                        f"{time.strftime('%Y%m%d-%H%M%S')}-{n}")
+            n += 1
+        destino.write_bytes(dados)
+        with contextlib.suppress(OSError):
+            os.chmod(destino, 0o600)
+        _restringir_acl_windows(destino)
+        _corrompidos_copiados.add(assinatura)
+        log.error("config.json corrompido: cópia guardada em %s.", destino.name)
+    except OSError as exc:
+        log.error("Não foi possível copiar o config.json corrompido (%s).", type(exc).__name__)
+
+
+def _restringir_acl_windows(caminho: Path) -> None:
+    """
+    (Windows, best-effort) Deixa o arquivo acessível só ao usuário atual, ao SYSTEM
+    e aos Administradores, sem herdar permissões da pasta. Falhas só são logadas.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ntsecuritycon as con  # type: ignore[import-not-found]
+        import win32api  # type: ignore[import-not-found]
+        import win32security  # type: ignore[import-not-found]
+
+        token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), con.TOKEN_QUERY)
+        sid_usuario = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+        dacl = win32security.ACL()
+        for sid in (
+            sid_usuario,
+            win32security.ConvertStringSidToSid("S-1-5-18"),      # SYSTEM
+            win32security.ConvertStringSidToSid("S-1-5-32-544"),  # Administradores
+        ):
+            dacl.AddAccessAllowedAce(win32security.ACL_REVISION, con.FILE_ALL_ACCESS, sid)
+        win32security.SetNamedSecurityInfo(
+            str(caminho), win32security.SE_FILE_OBJECT,
+            win32security.DACL_SECURITY_INFORMATION | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+            None, None, dacl, None,
+        )
+    except Exception as exc:  # noqa: BLE001  (pywin32 ausente, sem permissão...)
+        log.warning("Não foi possível restringir as permissões de %s (%s).", caminho.name, type(exc).__name__)
+
+
 def load_config() -> dict:
     """
     Devolve uma CÓPIA da configuração. Só relê o disco se o arquivo mudou
@@ -376,10 +509,19 @@ def load_config() -> dict:
             if assinatura is not None:
                 try:
                     lido = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-                    if isinstance(lido, dict):
-                        novo = lido
-                except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-                    log.warning("config.json ilegível; usando configuração vazia.")
+                    if not isinstance(lido, dict):
+                        raise ValueError("config.json não é um objeto")
+                    novo = lido
+                except (ValueError, OSError):  # JSONDecodeError/UnicodeDecodeError são ValueError
+                    # Arquivo ilegível: guarda uma cópia (uma vez), registra ERROR e
+                    # MANTÉM o último dicionário válido em memória (não zera segredos).
+                    _preservar_config_corrompido()
+                    log.error(
+                        "config.json ilegível; mantendo a última configuração válida em memória. "
+                        "Uma cópia do arquivo foi guardada como config.json.corrompido-*."
+                    )
+                    _config_assinatura = assinatura
+                    return dict(_config_cache)
             _config_cache = novo
             _config_assinatura = assinatura
         return dict(_config_cache)
@@ -388,8 +530,11 @@ def load_config() -> dict:
 def _gravar_config_atomico(cfg: dict) -> None:
     """Grava em arquivo temporário (0600) na mesma pasta e troca com os.replace."""
     global _config_cache, _config_assinatura
+    _preservar_config_corrompido()  # nunca sobrescreve um arquivo ilegível sem guardar cópia
     fd, tmp_nome = tempfile.mkstemp(dir=str(CONFIG_PATH.parent), prefix=".config.", suffix=".tmp")
     try:
+        # DACL restrita ANTES de escrever os dados; o os.replace mantém a DACL do temporário.
+        _restringir_acl_windows(Path(tmp_nome))
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
             f.flush()
@@ -426,6 +571,511 @@ def update_config(**changes: Any) -> dict:
             cfg.update(changes)
             _gravar_config_atomico(cfg)
         return cfg
+
+
+# ---------------------------------------------------------------------------
+# Autenticação por PIN (contrato v2.2)
+# O computador da loja (local: veja _requisicao_local) NUNCA pede PIN. Aparelhos
+# remotos precisam de uma sessão (cookie assinado com HMAC) obtida digitando o
+# PIN. Sem PIN configurado, o acesso remoto à API fica desligado.
+# config.json guarda: acesso_pin_hash, acesso_chave (segredo HMAC) e
+# acesso_versao (incrementa ao trocar/remover o PIN ou ao revogar; derruba todas
+# as sessões). Esses campos NUNCA são devolvidos em respostas nem vão para o log.
+# ---------------------------------------------------------------------------
+COOKIE_SESSAO = "proclamare_sessao"
+SESSAO_DURACAO_S = 14 * 24 * 3600  # 14 dias
+SESSAO_TETO_S = 90 * 24 * 3600  # teto absoluto desde o login (a renovação não passa disso)
+SESSAO_RENOVAR_ABAIXO_S = 7 * 24 * 3600  # renovação deslizante: reemite se faltar menos que isto
+PBKDF2_ITERACOES = 200_000
+RE_PIN = re.compile(r"[0-9]{6,8}")
+MSG_PIN_FORMATO = "PIN inválido: use de 6 a 8 números."
+# Rotas /api/ abertas mesmo para aparelhos remotos sem sessão. /api/auth/pin e
+# /api/auth/revogar ficam aqui só para o remoto receber o 403 "somente local" da
+# própria rota (e não um 401 que sugira que o PIN resolveria).
+API_PUBLICAS = frozenset({
+    "/api/status", "/api/auth/status", "/api/auth/login", "/api/auth/logout",
+    "/api/auth/pin", "/api/auth/revogar",
+})
+
+# Limite de tentativas de login (em memória, com limpeza)
+LOGIN_IP_MAX_ERROS = 5
+LOGIN_IP_BLOQUEIO_S = 300.0
+LOGIN_GLOBAL_MAX_ERROS = 20
+LOGIN_GLOBAL_JANELA_S = 600.0  # janela de contagem e 1º bloqueio; dobra a cada bloqueio seguido
+LOGIN_GLOBAL_BLOQUEIO_MAX_S = 24 * 3600.0
+LOGIN_IP_MAX_CHAVES = 1024
+FALHAS_JANELA_S = 24 * 3600.0
+_login_lock = threading.Lock()
+_login_ips: dict[str, dict[str, Any]] = {}  # ip -> {"t": deque[monotonic], "bloq": monotonic}
+_login_global: deque = deque()
+_login_global_bloq = 0.0  # monotonic até quando o login remoto está bloqueado para todos
+_login_global_nivel = 0  # nível de escalada do bloqueio global (define a duração)
+_login_global_fim = 0.0  # monotonic do fim do último bloqueio global (base do decaimento)
+LOGIN_GLOBAL_DECAI_S = 24 * 3600.0  # desce um nível a cada período sem bloqueio global
+_login_falhas: deque = deque(maxlen=5000)  # time.time() de cada PIN errado (remoto), p/ o painel
+_versao_vista: int | None = None
+
+
+def _b64u(dados: bytes) -> str:
+    return base64.urlsafe_b64encode(dados).decode("ascii").rstrip("=")
+
+
+def _b64u_dec(texto: str) -> bytes:
+    return base64.urlsafe_b64decode(texto + "=" * (-len(texto) % 4))
+
+
+def _hash_pin(pin: str, salt: bytes, iteracoes: int = PBKDF2_ITERACOES) -> bytes:
+    return hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), salt, iteracoes)
+
+
+def _novo_hash_pin(pin: str) -> str:
+    salt = secrets.token_bytes(16)
+    return f"pbkdf2_sha256${PBKDF2_ITERACOES}${_b64u(salt)}${_b64u(_hash_pin(pin, salt))}"
+
+
+def _ler_hash_pin(armazenado: Any) -> tuple[int, bytes, bytes] | None:
+    """Decodifica 'pbkdf2_sha256$it$salt$hash'; None se ausente/malformado."""
+    if not isinstance(armazenado, str):
+        return None
+    partes = armazenado.split("$")
+    if len(partes) != 4 or partes[0] != "pbkdf2_sha256":
+        return None
+    try:
+        it = int(partes[1])
+        salt, esperado = _b64u_dec(partes[2]), _b64u_dec(partes[3])
+    except (ValueError, TypeError):
+        return None
+    if not 1 <= it <= 5_000_000 or not salt or not esperado:
+        return None
+    return it, salt, esperado
+
+
+def _chave_acesso(cfg: dict) -> bytes | None:
+    try:
+        chave = _b64u_dec(cfg.get("acesso_chave", ""))
+    except (ValueError, TypeError):
+        return None
+    return chave if len(chave) >= 16 else None
+
+
+def pin_configurado(cfg: dict | None = None) -> bool:
+    cfg = load_config() if cfg is None else cfg
+    return _ler_hash_pin(cfg.get("acesso_pin_hash")) is not None and _chave_acesso(cfg) is not None
+
+
+def _versao_acesso(cfg: dict) -> int:
+    v = cfg.get("acesso_versao", 0)
+    return v if isinstance(v, int) and not isinstance(v, bool) else 0
+
+
+def _assinar(chave: bytes, parte: str) -> str:
+    return _b64u(hmac.new(chave, parte.encode("ascii"), hashlib.sha256).digest())
+
+
+def _emitir_token(cfg: dict, iat: float | None = None) -> tuple[str, int]:
+    """
+    Emite o token e devolve (token, segundos_de_vida). `iat` = momento do login
+    original (mantido nas renovações); exp = min(agora + 14 dias, iat + 90 dias).
+    """
+    chave = _chave_acesso(cfg)
+    assert chave is not None
+    agora = int(time.time())
+    iat_i = agora if iat is None else int(iat)
+    exp = min(agora + SESSAO_DURACAO_S, iat_i + SESSAO_TETO_S)
+    carga = json.dumps({"exp": exp, "iat": iat_i, "v": _versao_acesso(cfg)}, separators=(",", ":"))
+    parte = _b64u(carga.encode("utf-8"))
+    return parte + "." + _assinar(chave, parte), max(0, exp - agora)
+
+
+def _expiracao_token(token: str | None, cfg: dict) -> float | None:
+    carga = _carga_token(token, cfg)
+    return None if carga is None else carga[0]
+
+
+def _carga_token(token: str | None, cfg: dict) -> tuple[float, float] | None:
+    """
+    Confere formato, assinatura (tempo constante), expiração, versão e o teto de
+    90 dias; devolve (exp, iat). Tokens sem `iat` são inválidos.
+    """
+    if not token or len(token) > 400 or not pin_configurado(cfg):
+        return None
+    chave = _chave_acesso(cfg)
+    partes = token.split(".")
+    if chave is None or len(partes) != 2:
+        return None
+    try:
+        if not hmac.compare_digest(partes[1].encode("ascii"), _assinar(chave, partes[0]).encode("ascii")):
+            return None
+        carga = json.loads(_b64u_dec(partes[0]))
+    except (ValueError, TypeError, UnicodeError):
+        return None
+    if not isinstance(carga, dict):
+        return None
+    exp, iat, v = carga.get("exp"), carga.get("iat"), carga.get("v")
+    for n in (exp, iat):
+        if isinstance(n, bool) or not isinstance(n, (int, float)):
+            return None
+    agora = time.time()
+    if agora >= exp or agora >= iat + SESSAO_TETO_S or iat > agora + 300:
+        return None
+    if not (isinstance(v, int) and not isinstance(v, bool) and v == _versao_acesso(cfg)):
+        return None
+    return float(exp), float(iat)
+
+
+def _token_valido_sessao(token: str | None, cfg: dict) -> bool:
+    return _expiracao_token(token, cfg) is not None
+
+
+def _sessao_ok(cfg: dict | None = None) -> bool:
+    """True se o cliente é local OU traz um cookie de sessão válido."""
+    if _requisicao_local():
+        return True
+    cfg = load_config() if cfg is None else cfg
+    return _token_valido_sessao(request.cookies.get(COOKIE_SESSAO), cfg)
+
+
+def _exigir_sessao() -> tuple[Response, int] | None:
+    """Chamado no before_request: bloqueia /api/* protegidas para remotos sem sessão."""
+    if not request.path.startswith("/api/") or request.path in API_PUBLICAS:
+        return None
+    if _requisicao_local():
+        return None
+    cfg = load_config()
+    if _token_valido_sessao(request.cookies.get(COOKIE_SESSAO), cfg):
+        return None
+    return _resp_sem_sessao(cfg)
+
+
+def _resp_sem_sessao(cfg: dict) -> tuple[Response, int]:
+    if not pin_configurado(cfg):
+        return jsonify({
+            "ok": False, "auth": "pin_nao_configurado",
+            "error": "Acesso pela rede desativado. Defina um PIN no computador da loja.",
+        }), 403
+    return jsonify({"ok": False, "auth": "pin_requerido", "error": "Digite o PIN para continuar."}), 401
+
+
+def _definir_cookie_sessao(resp: Response, token: str, max_age: int = SESSAO_DURACAO_S) -> None:
+    resp.set_cookie(
+        COOKIE_SESSAO, token, max_age=max_age,
+        httponly=True, samesite="Strict", path="/",
+    )
+
+
+@app.after_request
+def _renovar_sessao(resp: Response) -> Response:
+    """
+    Renovação deslizante: numa requisição /api/ remota com sessão válida, se faltar
+    menos de 7 dias para expirar, reemite o cookie (mesmos atributos) por mais 14 dias.
+    """
+    if (
+        request.path.startswith("/api/")
+        and request.path not in ("/api/auth/login", "/api/auth/logout")
+        and resp.status_code < 400
+        and not _requisicao_local()
+    ):
+        cfg = load_config()
+        carga = _carga_token(request.cookies.get(COOKIE_SESSAO), cfg)
+        if carga is not None and carga[0] - time.time() < SESSAO_RENOVAR_ABAIXO_S:
+            novo, vida = _emitir_token(cfg, iat=carga[1])
+            if vida > carga[0] - time.time() + 60:  # no teto de 90 dias não há o que renovar
+                _definir_cookie_sessao(resp, novo, vida)
+    return resp
+
+
+# --- PIN: validação e gravação (usadas pela API e pela CLI) -----------------------
+# Sequências de teclado/padrões muito comuns (além das regras gerais de _pin_trivial)
+PINS_TECLADO = frozenset({
+    "112233", "147258", "159753", "102030", "246810", "000123", "258369", "147369",
+    "741852", "852963", "963852", "789456", "321654", "135790",
+})
+
+
+def _pin_trivial(pin: str) -> bool:
+    """
+    PIN fácil de adivinhar: todos iguais; sequência crescente/decrescente (com
+    volta 9->0, ex.: 123456, 654321, 789012); repetição de bloco de 1 a 3 dígitos
+    (121212, 123123, 112112); espelho/palíndromo (123321, 112211).
+    """
+    if len(set(pin)) == 1:
+        return True
+    passos = {(int(b) - int(a)) % 10 for a, b in zip(pin, pin[1:])}
+    if passos == {1} or passos == {9}:
+        return True
+    for k in (1, 2, 3):
+        if k < len(pin) and pin == (pin[:k] * len(pin))[:len(pin)]:
+            return True
+    if pin == pin[::-1] or pin in PINS_TECLADO:
+        return True
+    # Grupos de 2 ou 3 posições em progressão: 112233 / 222333 (um dígito repetido por
+    # grupo, em passo fixo) e 102030 / 121416 (números de 2 ou 3 dígitos em passo fixo).
+    for k in (2, 3):
+        if len(pin) % k or len(pin) // k < 3:
+            continue
+        grupos = [pin[i:i + k] for i in range(0, len(pin), k)]
+        if all(len(set(g)) == 1 for g in grupos):
+            nums = [int(g[0]) for g in grupos]
+            if len({(b - a) % 10 for a, b in zip(nums, nums[1:])}) == 1:
+                return True
+        nums = [int(g) for g in grupos]
+        if nums[1] != nums[0] and len({b - a for a, b in zip(nums, nums[1:])}) == 1:
+            return True
+    return False
+
+
+def validar_pin_novo(pin: Any) -> str:
+    """Valida o formato e rejeita PINs triviais (ErroApi com mensagem amigável)."""
+    if not isinstance(pin, str) or not RE_PIN.fullmatch(pin):
+        raise ErroApi(MSG_PIN_FORMATO)
+    if _pin_trivial(pin):
+        raise ErroApi(
+            "PIN fácil demais de adivinhar. Evite números repetidos (111111), "
+            "sequências (123456), blocos repetidos (121212) e espelhos (123321)."
+        )
+    return pin
+
+
+def aplicar_pin(pin: str | None) -> bool:
+    """
+    Define/troca (str já validada) ou remove (None) o PIN: nova chave HMAC e
+    acesso_versao + 1 (desconecta todos os aparelhos). Devolve pin_configurado.
+    """
+    novo_hash = _novo_hash_pin(pin) if pin is not None else None  # custo fora do lock
+    with _config_lock:
+        cfg = load_config()
+        if novo_hash is None:
+            cfg.pop("acesso_pin_hash", None)
+            cfg.pop("acesso_chave", None)
+        else:
+            cfg["acesso_pin_hash"] = novo_hash
+            cfg["acesso_chave"] = _b64u(secrets.token_bytes(32))
+        cfg["acesso_versao"] = _versao_acesso(cfg) + 1
+        _gravar_config_atomico(cfg)
+        configurado = pin_configurado(cfg)
+    _login_resetar_global()
+    return configurado
+
+
+# --- Limite de tentativas ---------------------------------------------------------
+def _login_resetar_global() -> None:
+    """
+    Zera TODOS os bloqueios e contadores de login (global, escalada e por IP) em
+    troca/remoção do PIN, revogação local ou mudança de acesso_versao por fora.
+    """
+    global _login_global_bloq, _login_global_nivel, _login_global_fim
+    with _login_lock:
+        _login_ips.clear()
+        _login_global.clear()
+        _login_global_bloq = 0.0
+        _login_global_nivel = 0
+        _login_global_fim = 0.0
+
+
+def _sincronizar_versao(cfg: dict) -> None:
+    """Se a versão de acesso mudou por fora (CLI), zera o bloqueio global."""
+    global _versao_vista
+    v = _versao_acesso(cfg)
+    if _versao_vista is not None and v != _versao_vista:
+        _login_resetar_global()
+    _versao_vista = v
+
+
+def _login_limpar(agora: float) -> None:
+    """(com _login_lock) Descarta registros vencidos; limita o tamanho do dicionário."""
+    while _login_global and agora - _login_global[0] > LOGIN_GLOBAL_JANELA_S:
+        _login_global.popleft()
+    for ip in list(_login_ips):
+        reg = _login_ips[ip]
+        t = reg["t"]
+        while t and agora - t[0] > LOGIN_IP_BLOQUEIO_S:
+            t.popleft()
+        if not t and agora >= reg["bloq"]:
+            del _login_ips[ip]
+    while len(_login_ips) >= LOGIN_IP_MAX_CHAVES:  # só sob ataque de muitos IPs
+        del _login_ips[min(_login_ips, key=lambda k: _login_ips[k]["bloq"])]
+    while _login_falhas and time.time() - _login_falhas[0] > FALHAS_JANELA_S:
+        _login_falhas.popleft()
+
+
+def _segundos(restante: float) -> int:
+    return max(1, int(restante + 0.999))
+
+
+def _login_bloquear_global(agora: float) -> int:
+    """(com _login_lock) Inicia o bloqueio global com duração escalonada; devolve os segundos."""
+    global _login_global_bloq, _login_global_nivel, _login_global_fim
+    if _login_global_nivel > 0 and _login_global_fim:  # decaimento: -1 nível por 24 h sem bloqueio
+        decaido = int((agora - _login_global_fim) // LOGIN_GLOBAL_DECAI_S)
+        _login_global_nivel = max(0, _login_global_nivel - max(0, decaido))
+    duracao = min(LOGIN_GLOBAL_JANELA_S * (2 ** _login_global_nivel), LOGIN_GLOBAL_BLOQUEIO_MAX_S)
+    _login_global_nivel += 1
+    _login_global_bloq = agora + duracao
+    _login_global_fim = _login_global_bloq
+    _login_global.clear()
+    log.warning("Muitos PINs errados vindos da rede: login remoto bloqueado para "
+                "todos por %d min (bloqueio global nº %d).", int(duracao // 60), _login_global_nivel)
+    return int(duracao)
+
+
+def _login_reservar(ip: str) -> tuple[bool, int]:
+    """
+    Registra uma tentativa ANTES de verificar o PIN (uma rajada paralela não passa
+    do limite). Devolve (permitida, segundos_bloqueado). Tentativa já bloqueada
+    não é contada nem logada (sem inundar o log).
+    """
+    agora = time.monotonic()
+    with _login_lock:
+        _login_limpar(agora)
+        if agora < _login_global_bloq:
+            return False, _segundos(_login_global_bloq - agora)
+        if len(_login_global) >= LOGIN_GLOBAL_MAX_ERROS:
+            # Limite global já esgotado (inclui tentativas ainda em verificação):
+            # nega ANTES do PBKDF2, sem depender de _login_falhou.
+            return False, _login_bloquear_global(agora)
+        reg = _login_ips.setdefault(ip, {"t": deque(), "bloq": 0.0})
+        if agora < reg["bloq"]:
+            return False, _segundos(reg["bloq"] - agora)
+        if len(reg["t"]) >= LOGIN_IP_MAX_ERROS:  # tentativas pendentes já esgotaram o limite
+            return False, _segundos(LOGIN_IP_BLOQUEIO_S)
+        reg["t"].append(agora)
+        _login_global.append(agora)
+        return True, 0
+
+
+def _login_falhou(ip: str) -> tuple[int, int]:
+    """
+    PIN errado. Devolve (segundos_de_bloqueio, tentativas_restantes). Se ESTA
+    tentativa dispara o bloqueio (por IP ou global), os segundos vêm > 0 e o
+    cliente recebe 429 já agora. Loga uma vez por bloqueio, nunca por requisição.
+    """
+    agora = time.monotonic()
+    bloqueado = 0
+    with _login_lock:
+        _login_falhas.append(time.time())
+        reg = _login_ips.setdefault(ip, {"t": deque(), "bloq": 0.0})
+        restantes = max(0, LOGIN_IP_MAX_ERROS - len(reg["t"]))
+        if len(reg["t"]) >= LOGIN_IP_MAX_ERROS and agora >= reg["bloq"]:
+            reg["bloq"] = agora + LOGIN_IP_BLOQUEIO_S
+            reg["t"].clear()  # a contagem recomeça depois do bloqueio
+            bloqueado = int(LOGIN_IP_BLOQUEIO_S)
+            log.warning("Login remoto bloqueado por %d min: muitos PINs errados (IP %s).",
+                        int(LOGIN_IP_BLOQUEIO_S // 60), ip)
+        if len(_login_global) >= LOGIN_GLOBAL_MAX_ERROS and agora >= _login_global_bloq:
+            bloqueado = max(bloqueado, _login_bloquear_global(agora))
+    return bloqueado, restantes
+
+
+def _login_sucesso(ip: str) -> None:
+    """
+    Acerto remoto: zera o contador DAQUELE IP e devolve a tentativa reservada ao
+    contador global. NÃO zera a escalada global (só ação local ou decaimento).
+    """
+    with _login_lock:
+        _login_ips.pop(ip, None)
+        if _login_global:
+            _login_global.pop()
+
+
+def _apagar_cookie(resp: Response) -> Response:
+    resp.set_cookie(COOKIE_SESSAO, "", max_age=0, expires=0, httponly=True, samesite="Strict", path="/")
+    return resp
+
+
+def _resp_429(segundos: int) -> tuple[Response, int]:
+    minutos = max(1, -(-segundos // 60))
+    return jsonify({
+        "ok": False, "bloqueado_por_s": segundos,
+        "error": f"Muitas tentativas. Tente novamente em {minutos} min.",
+    }), 429
+
+
+@app.get("/api/auth/status")
+def auth_status() -> Response:
+    cfg = load_config()
+    _sincronizar_versao(cfg)
+    local = _requisicao_local()
+    resp: dict[str, Any] = {
+        "local": local,
+        "pin_configurado": pin_configurado(cfg),
+        "autenticado": local or _token_valido_sessao(request.cookies.get(COOKIE_SESSAO), cfg),
+    }
+    if local:  # só o PC da loja vê sinais de ataque
+        agora = time.monotonic()
+        with _login_lock:
+            _login_limpar(agora)
+            resp["falhas_recentes"] = len(_login_falhas)
+            resp["bloqueio_global_s"] = _segundos(_login_global_bloq - agora) if agora < _login_global_bloq else 0
+    return jsonify(resp)
+
+
+@app.post("/api/auth/login")
+def auth_login() -> Any:
+    pin = corpo_json().get("pin")
+    if not isinstance(pin, str) or not RE_PIN.fullmatch(pin):
+        raise ErroApi(MSG_PIN_FORMATO)
+    cfg = load_config()
+    _sincronizar_versao(cfg)
+    if not pin_configurado(cfg):
+        return _resp_sem_sessao(cfg)
+    ip = request.remote_addr or "?"
+    local = _requisicao_local()
+    restantes = LOGIN_IP_MAX_ERROS
+    if not local:  # o computador da loja não precisa de PIN: sem limite de tentativas
+        permitida, bloqueado_s = _login_reservar(ip)
+        if not permitida:
+            return _resp_429(bloqueado_s)
+    it, salt, esperado = _ler_hash_pin(cfg["acesso_pin_hash"])  # type: ignore[misc]
+    # Mesmo custo de PBKDF2 em acerto e erro; comparação em tempo constante.
+    certo = hmac.compare_digest(_hash_pin(pin, salt, it), esperado)
+    if not certo:
+        if not local:
+            bloqueado_s, restantes = _login_falhou(ip)
+            if bloqueado_s:
+                return _resp_429(bloqueado_s)
+        log.warning("Login com PIN incorreto (IP %s).", ip)
+        return jsonify({"ok": False, "error": "PIN incorreto.", "tentativas_restantes": restantes}), 401
+    if not local:
+        _login_sucesso(ip)
+    log.info("Login com PIN bem-sucedido (IP %s).", ip)
+    resp = jsonify({"ok": True})
+    novo, vida = _emitir_token(cfg)
+    _definir_cookie_sessao(resp, novo, vida)
+    return resp
+
+
+@app.post("/api/auth/logout")
+def auth_logout() -> Response:
+    return _apagar_cookie(jsonify({"ok": True}))
+
+
+@app.post("/api/auth/pin")
+def auth_pin() -> Response:
+    """Define/troca (str) ou remove (null) o PIN. Somente no computador da loja."""
+    if not _requisicao_local():
+        raise ErroApi("Defina o PIN no computador da loja.", 403)
+    dados = corpo_json()
+    if "pin" not in dados:
+        raise ErroApi("Campo 'pin' ausente.")
+    pin = dados["pin"]
+    configurado = aplicar_pin(None if pin is None else validar_pin_novo(pin))
+    log.info("PIN de acesso pela rede %s.", "definido/trocado" if pin is not None else "removido")
+    return jsonify({"ok": True, "pin_configurado": configurado})
+
+
+@app.post("/api/auth/revogar")
+def auth_revogar() -> Response:
+    """Derruba todas as sessões (acesso_versao + 1) sem trocar o PIN. Somente local."""
+    if not _requisicao_local():
+        raise ErroApi("Revogue as sessões no computador da loja.", 403)
+    corpo_json()
+    with _config_lock:
+        cfg = load_config()
+        cfg["acesso_versao"] = _versao_acesso(cfg) + 1
+        _gravar_config_atomico(cfg)
+    _login_resetar_global()
+    log.info("Todas as sessões de acesso pela rede foram revogadas.")
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------
@@ -775,7 +1425,7 @@ def _criar_sessao_http() -> requests.Session:
     sessao.mount("https://api.spotify.com", adaptador)
     sessao.mount("https://accounts.spotify.com", adaptador)
     sessao.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
-    sessao.headers["User-Agent"] = "Proclamare/2.1"
+    sessao.headers["User-Agent"] = "Proclamare/2.2"
     return sessao
 
 
@@ -1083,7 +1733,12 @@ def _oauth_consumir_state(recebido: str) -> str | None:
 
 @app.get("/spotify/login")
 def spotify_login() -> Any:
-    client_id = load_config().get("spotify_client_id")
+    cfg = load_config()
+    if not _sessao_ok(cfg):  # local OU sessão válida (o callback não exige sessão: cookie Strict)
+        if pin_configurado(cfg):
+            return "Digite o PIN no painel antes de conectar o Spotify.", 401
+        return "Acesso pela rede desativado. Defina um PIN no computador da loja.", 401
+    client_id = cfg.get("spotify_client_id")
     if not client_id:
         return "Configure o Client ID do Spotify primeiro (botão 'Configurar Spotify').", 400
     if _redirect_e_loopback() and not _requisicao_local():
@@ -1639,33 +2294,332 @@ def announce() -> Response | tuple[Response, int]:
 # ---------------------------------------------------------------------------
 # Inicialização
 # ---------------------------------------------------------------------------
-def main() -> None:
+LOG_FORMATO = "%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s"
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUPS = 3
+
+
+def _configurar_log() -> None:
+    """
+    Log no arquivo PROCLAMARE_LOG_FILE (rotativo) quando definido; senão no console.
+    O handler vai no logger RAIZ, então cobre também waitress/werkzeug. Com pythonw
+    sys.stderr é None: sem arquivo, usamos NullHandler (nada quebra).
+    """
+    handlers: list[logging.Handler] = []
+    erro_arquivo: str | None = None
+    caminho = _env("LOG_FILE", "").strip()
+    if caminho:
+        try:
+            destino = Path(caminho)
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            handlers.append(
+                logging.handlers.RotatingFileHandler(
+                    destino, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS,
+                    encoding="utf-8", delay=True,
+                )
+            )
+        except (OSError, ValueError) as exc:
+            erro_arquivo = type(exc).__name__
+    if not handlers:
+        handlers.append(logging.StreamHandler() if sys.stderr is not None else logging.NullHandler())
+    for h in handlers:
+        h.setFormatter(logging.Formatter(LOG_FORMATO))
+    nivel = logging.getLevelName(_env("LOG_LEVEL", "INFO").upper())
     logging.basicConfig(
-        level=_env("LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s",
+        level=nivel if isinstance(nivel, int) else logging.INFO, handlers=handlers, force=True
     )
+    if erro_arquivo:
+        log.warning("Não foi possível abrir PROCLAMARE_LOG_FILE (%s); usando o console.", erro_arquivo)
+
+
+def _criado_em_filetime() -> int | None:
+    """Horário de criação do PRÓPRIO processo (FILETIME: 100 ns desde 1601); só Windows."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.GetCurrentProcess.argtypes = []
+        k32.GetProcessTimes.restype = wintypes.BOOL
+        k32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+        criacao, saida, kernel, usuario = (wintypes.FILETIME() for _ in range(4))
+        if not k32.GetProcessTimes(
+            k32.GetCurrentProcess(), ctypes.byref(criacao), ctypes.byref(saida),
+            ctypes.byref(kernel), ctypes.byref(usuario),
+        ):
+            return None
+        return (criacao.dwHighDateTime << 32) | criacao.dwLowDateTime
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _caminho_pid_file() -> Path | None:
+    bruto = _env("PID_FILE", "").strip()
+    return Path(bruto) if bruto else None
+
+
+def _gravar_pid_file(caminho: Path, porta: int) -> bool:
+    """Grava o JSON de identificação de forma atômica (temporário + os.replace)."""
+    info = {
+        "pid": os.getpid(), "porta": porta,
+        "criado_em": _criado_em_filetime(), "executavel": sys.executable,
+    }
+    tmp = caminho.with_name(f"{caminho.name}.{os.getpid()}.tmp")
+    try:
+        caminho.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(info), encoding="utf-8")
+        os.replace(tmp, caminho)
+        return True
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        log.error("Não foi possível gravar PROCLAMARE_PID_FILE (%s).", type(exc).__name__)
+        return False
+
+
+def _remover_pid_file() -> None:
+    """Remove o arquivo SOMENTE se ele ainda contém o pid deste processo."""
+    caminho = _caminho_pid_file()
+    if caminho is None:
+        return
+    try:
+        dados = json.loads(caminho.read_text(encoding="utf-8"))
+        if isinstance(dados, dict) and dados.get("pid") == os.getpid():
+            caminho.unlink(missing_ok=True)
+    except (OSError, ValueError):
+        pass  # ausente, ilegível ou de outro processo: não mexe
+
+
+def _instalar_encerramento() -> None:
+    """atexit + sinais (SIGINT/SIGTERM/SIGBREAK): garantem a remoção do pid file."""
+    atexit.register(_remover_pid_file)
+
+    def _ao_sinal(_numero: int, _frame: Any) -> None:
+        _remover_pid_file()
+        raise KeyboardInterrupt  # waitress/werkzeug encerram o laço normalmente
+
+    for nome in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sinal = getattr(signal, nome, None)
+        if sinal is not None:
+            with contextlib.suppress(ValueError, OSError):  # fora da thread principal etc.
+                signal.signal(sinal, _ao_sinal)
+
+
+def _boas_vindas(linhas: list[str]) -> None:
+    """Mensagem de início: no log e, se houver console (não é pythonw), na tela."""
+    for linha in linhas:
+        log.info(linha)
+        if sys.stdout is not None and sys.stderr is not None and not _log_no_console():
+            with contextlib.suppress(Exception):
+                print(linha)
+
+
+def _log_no_console() -> bool:
+    """True se o log já sai no console (evita mensagem duplicada na tela)."""
+    return any(type(h) is logging.StreamHandler for h in logging.getLogger().handlers)
+
+
+def _criar_socket_escuta(host: str, porta: int) -> socket.socket:
+    """
+    Cria o socket de escuta já com bind+listen. No Windows usa SO_EXCLUSIVEADDRUSE
+    (SO_REUSEADDR permitiria dois servidores na mesma porta, com o 2º roubando
+    conexões); nos outros sistemas, SO_REUSEADDR (que lá não permite isso).
+    Falha com OSError se a porta estiver em uso.
+    """
+    familia, tipo, proto, _, endereco = socket.getaddrinfo(
+        host, porta, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+    )[0]
+    sock = socket.socket(familia, tipo, proto)
+    try:
+        if os.name == "nt":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(endereco)
+        sock.listen(1024)
+    except BaseException:
+        sock.close()
+        raise
+    return sock
+
+
+def _sondar_porta_livre(host: str, porta: int) -> None:
+    """
+    Só para o fallback werkzeug (que cria o próprio socket com SO_REUSEADDR): no
+    Windows tenta antes um bind exclusivo e falha com OSError se a porta estiver em uso.
+    """
+    if os.name != "nt":
+        return
+    familia, tipo, proto, _, endereco = socket.getaddrinfo(
+        host, porta, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+    )[0]
+    with socket.socket(familia, tipo, proto) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        s.bind(endereco)
+
+
+def main() -> None:
+    _configurar_log()
+    if _PORTA_INVALIDA:
+        log.warning("PROCLAMARE_PORT inválida; usando a porta padrão 8502.")
     host = _env("HOST", "0.0.0.0").strip() or "0.0.0.0"
     limpar_audios_antigos(forcar=True)
 
-    # Mensagem de boas-vindas (único print do programa).
-    print(f"Proclamare rodando — abra http://127.0.0.1:{PORT} neste computador")
-    print(f"ou http://{ip_local()}:{PORT} de outro computador na mesma rede.")
+    _boas_vindas([
+        f"Proclamare rodando — abra http://127.0.0.1:{PORT} neste computador",
+        f"ou http://{ip_local()}:{PORT} de outro computador na mesma rede.",
+    ])
 
     try:
-        from waitress import serve
+        from waitress import create_server
     except ImportError:
         log.warning(
             "waitress não instalado (pip install waitress): usando o servidor de "
             "desenvolvimento do Flask, que não é recomendado para uso contínuo."
         )
-        app.run(host=host, port=PORT, debug=False, threaded=True)
-        return
-    # threads altas: cada long-poll do YouTube e cada anúncio segura uma thread.
-    serve(
-        app, host=host, port=PORT, threads=32, channel_timeout=300,
-        max_request_body_size=64 * 1024, ident="proclamare",
-    )
+        from werkzeug.serving import make_server
+
+        def criar() -> Any:
+            _sondar_porta_livre(host, PORT)  # servidor de desenvolvimento: só a sondagem protege
+            return make_server(host, PORT, app, threaded=True)
+
+        def rodar(srv: Any) -> None:
+            srv.serve_forever()
+    else:
+        def criar() -> Any:
+            # Socket próprio e EXCLUSIVO (sem janela entre a checagem e o bind).
+            # threads altas: cada long-poll do YouTube e cada anúncio segura uma thread.
+            return create_server(
+                app, sockets=[_criar_socket_escuta(host, PORT)], threads=32, channel_timeout=300,
+                max_request_body_size=64 * 1024, ident="proclamare",
+            )
+
+        def rodar(srv: Any) -> None:
+            srv.run()
+
+    # O bind acontece aqui; se falhar, sai com erro SEM tocar no pid file de outro servidor.
+    try:
+        servidor = criar()
+    except OSError as exc:
+        log.error("Não foi possível escutar em %r porta %s (%s). A porta já está em uso?",
+                  host, PORT, exc.strerror or type(exc).__name__)
+        sys.exit(1)
+
+    _instalar_encerramento()
+    caminho_pid = _caminho_pid_file()
+    if caminho_pid is not None and not _gravar_pid_file(caminho_pid, PORT):
+        log.error("Seguindo sem arquivo de PID (já registrado acima); o lançador pode não "
+                  "conseguir desligar este servidor sozinho.")
+    try:
+        rodar(servidor)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        _remover_pid_file()
+
+
+def _processo_vivo(pid: int) -> bool:
+    """True se existe um processo com este pid (outro que não o atual)."""
+    if pid <= 0 or pid == os.getpid():
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.OpenProcess.restype = ctypes.c_void_p
+            h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return False
+            try:
+                codigo = ctypes.c_ulong()
+                return bool(k32.GetExitCodeProcess(ctypes.c_void_p(h), ctypes.byref(codigo))) and codigo.value == 259
+            finally:
+                k32.CloseHandle(ctypes.c_void_p(h))
+        except Exception:  # noqa: BLE001
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # existe, mas sem permissão para sinalizar
+
+
+def _servidor_no_ar() -> bool:
+    """
+    True se há um Proclamare rodando: pid file válido (PROCLAMARE_PID_FILE ou
+    logs/proclamare.pid) com processo vivo, OU /api/status respondendo em
+    127.0.0.1:<porta>. A CLI de PIN não deve gravar o config.json com o servidor no ar.
+    """
+    for caminho in (_caminho_pid_file(), APP_DIR / "logs" / "proclamare.pid"):
+        if caminho is None:
+            continue
+        try:
+            dados = json.loads(caminho.read_text(encoding="utf-8"))
+            if isinstance(dados, dict) and isinstance(dados.get("pid"), int) and _processo_vivo(dados["pid"]):
+                return True
+        except (OSError, ValueError):
+            continue
+    try:
+        with requests.Session() as sessao:
+            sessao.trust_env = False  # sem proxy do ambiente: o endereço é sempre local
+            r = sessao.get(f"http://127.0.0.1:{PORT}/api/status", timeout=1.5)
+            return r.status_code == 200 and isinstance(r.json(), dict) and "internet" in r.json()
+    except (requests.RequestException, ValueError):
+        return False
+
+
+def _ler_pin(pergunta: str) -> str:
+    """Lê o PIN sem eco no terminal; com stdin redirecionado (script/teste) lê uma linha."""
+    if sys.stdin is not None and sys.stdin.isatty():
+        return getpass.getpass(pergunta)
+    linha = sys.stdin.readline() if sys.stdin is not None else ""
+    if not linha:
+        raise EOFError
+    return linha.strip()
+
+
+def _cli_pin(remover: bool) -> int:
+    """
+    CLI: `python server.py --definir-pin` (pede o PIN duas vezes, sem eco) ou
+    `--remover-pin`. Funciona sem subir o servidor, com as mesmas funções de
+    validação e gravação da API. Um servidor já rodando percebe a mudança sozinho.
+    """
+    if _servidor_no_ar():
+        print("Desligue o Proclamare antes (Menu Iniciar → Desligar Proclamare) ou use as "
+              "Configurações no PC da loja.")
+        return 1
+    try:
+        if remover:
+            aplicar_pin(None)
+            print("PIN removido: o acesso pela rede está desligado e todas as sessões foram encerradas.")
+            return 0
+        pin = _ler_pin("Novo PIN (6 a 8 números): ")
+        validar_pin_novo(pin)
+        if _ler_pin("Repita o PIN: ") != pin:
+            print("Os dois PINs não são iguais. Nada foi alterado.")
+            return 1
+        aplicar_pin(pin)
+        print("PIN definido. Todos os aparelhos conectados precisarão digitar o PIN de novo.")
+        return 0
+    except ErroApi as exc:
+        print(exc.mensagem)
+        return 1
+    except (OSError, EOFError, KeyboardInterrupt) as exc:
+        print(f"Não foi possível concluir ({type(exc).__name__}).")
+        return 1
 
 
 if __name__ == "__main__":
+    _args = sys.argv[1:]
+    if _args == ["--definir-pin"] or _args == ["--remover-pin"]:
+        sys.exit(_cli_pin(remover=_args[0] == "--remover-pin"))
+    if _args:
+        print("Uso: python server.py [--definir-pin | --remover-pin]   (sem argumentos: inicia o servidor)")
+        sys.exit(2)
     main()
