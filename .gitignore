@@ -1,2 +1,17 @@
 /.claude
 /CLAUDE.md
+
+# Segredos e dados locais — NUNCA publicar (config.json guarda o Client Secret do Spotify)
+config.json
+**/config.json
+*.tmp
+
+# Artefatos de execução
+audios_temp/
+__pycache__/
+*.py[cod]
+
+# Ambientes virtuais
+venv/
+.venv/
+env/
