@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="light" data-theme-pref="claro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f5f5f7">
+<title>Proclamare</title>
+<meta name="description" content="Proclamare: anúncios por voz e música de fundo para a sua loja.">
+<meta name="application-name" content="Proclamare">
+<meta name="apple-mobile-web-app-title" content="Proclamare">
+<!-- Tema: síncrono e ANTES do CSS, para não piscar o tema errado (a CSP proíbe script inline) -->
+<script src="/static/theme.js"></script>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400..700&display=swap">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<a class="skip-link" href="#main">Ir para o conteúdo</a>
+
+<!-- Sprite de ícones (SVG inline, sem requisições externas) -->
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-volume" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></symbol>
+    <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><polygon points="7 4 20 12 7 20 7 4" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4.5" height="16" rx="1.2" fill="currentColor" stroke="none"/><rect x="13.5" y="4" width="4.5" height="16" rx="1.2" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20" fill="currentColor" stroke="none"/><rect x="5" y="4" width="3" height="16" rx="1.2" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4" fill="currentColor" stroke="none"/><rect x="16" y="4" width="3" height="16" rx="1.2" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+    <symbol id="i-reuse" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="i-video" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="4"/><polygon points="10 9 16 12 10 15 10 9" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></symbol>
+    <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M3 10v4a1 1 0 0 0 1 1h3l6 4.5v-15L7 9H4a1 1 0 0 0-1 1z" fill="currentColor" stroke="none"/><path d="M17 8.5a5 5 0 0 1 0 7M19.5 5.5a9 9 0 0 1 0 13"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></symbol>
+    <symbol id="i-auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  </defs>
+</svg>
+
+<noscript><p class="noscript">Este painel precisa do JavaScript ativado para funcionar.</p></noscript>
+
+<div class="app">
+
+  <!-- =============================== TOPO =============================== -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand__mark"><img src="/static/favicon.svg" class="brand__logo" alt="" width="36" height="36"></span>
+      <h1 class="brand__name">Proclamare</h1>
+    </div>
+
+    <div class="topbar__actions">
+      <!-- Tema: Claro / Escuro / Automático (segue o sistema) -->
+      <div class="seg seg--icons" id="theme-switch" role="radiogroup" aria-label="Tema">
+        <button type="button" class="seg__opt" data-value="claro" role="radio" aria-checked="true" aria-label="Claro" title="Claro">
+          <svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg>
+        </button>
+        <button type="button" class="seg__opt" data-value="escuro" role="radio" aria-checked="false" aria-label="Escuro" title="Escuro">
+          <svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg>
+        </button>
+        <button type="button" class="seg__opt" data-value="auto" role="radio" aria-checked="false" aria-label="Automático (segue o sistema)" title="Automático — segue o sistema">
+          <svg class="icon" aria-hidden="true"><use href="#i-auto"/></svg>
+        </button>
+      </div>
+      <button type="button" class="btn btn--icon" id="btn-settings" aria-label="Configurar Spotify" title="Configurar Spotify">
+        <svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ============================== STATUS ============================== -->
+  <section class="status-row" aria-label="Status do sistema">
+    <div class="st" id="lamp-internet">
+      <span class="st__icon" aria-hidden="true"><svg class="icon"><use href="#i-wifi"/></svg></span>
+      <span class="st__text">
+        <span class="st__label">Servidor</span>
+        <span class="st__value" id="lamp-internet-label">Verificando…</span>
+      </span>
+      <span class="lamp" id="lamp-internet-bulb"></span>
+    </div>
+
+    <!-- "No ar": acende enquanto um anúncio toca (o texto troca por CSS via html[data-announcing]) -->
+    <div class="st st--onair" id="onair" aria-hidden="true">
+      <span class="st__icon"><svg class="icon"><use href="#i-mic"/></svg></span>
+      <span class="st__text">
+        <span class="st__label">Anúncio</span>
+        <span class="st__value"><span class="st__idle">Fora do ar</span><span class="st__live">No ar</span></span>
+      </span>
+      <span class="lamp lamp--air"></span>
+    </div>
+
+    <div class="st" id="lamp-spotify">
+      <span class="st__icon" aria-hidden="true"><svg class="icon"><use href="#i-music"/></svg></span>
+      <span class="st__text">
+        <span class="st__label">Spotify</span>
+        <span class="st__value" id="lamp-spotify-label">Verificando…</span>
+      </span>
+      <span class="lamp" id="lamp-spotify-bulb"></span>
+    </div>
+
+    <div class="st" id="lamp-youtube">
+      <span class="st__icon" aria-hidden="true"><svg class="icon"><use href="#i-video"/></svg></span>
+      <span class="st__text">
+        <span class="st__label">Tocador YouTube</span>
+        <span class="st__value" id="lamp-youtube-label">Verificando…</span>
+      </span>
+      <span class="lamp" id="lamp-youtube-bulb"></span>
+    </div>
+  </section>
+
+  <!-- ============================== CONTEÚDO ============================ -->
+  <main class="stage" id="main">
+
+    <!-- ===================== COLUNA: ANÚNCIO ===================== -->
+    <section class="panel bento-col bento-col--announce" id="panel-announce" aria-labelledby="title-announce" data-active="true">
+
+      <!-- Tile herói -->
+      <div class="tile tile--hero tile--announce">
+        <div class="tile__head">
+          <div class="tile__heading">
+            <h2 class="tile__title tile__title--hero" id="title-announce">Anúncio</h2>
+            <p class="tile__caption">Fale nas caixas da loja. A música abaixa sozinha enquanto o anúncio toca.</p>
+          </div>
+        </div>
+
+        <div class="composer">
+          <label class="sr-only" for="message-text">Mensagem do anúncio</label>
+          <textarea id="message-text" rows="4" maxlength="500" aria-describedby="char-count" placeholder="Digite o que será anunciado nas caixas…">Atenção clientes, a promoção de hortifruti termina em 10 minutos.</textarea>
+          <span class="composer__count" id="char-count">0/500</span>
+        </div>
+
+        <div class="actions">
+          <button type="button" class="btn btn--primary btn--hero" id="btn-announce">
+            <svg class="icon btn__icon" aria-hidden="true"><use href="#i-mic"/></svg>
+            <span class="spinner" aria-hidden="true"></span>
+            <span id="btn-announce-label">Anunciar</span>
+          </button>
+          <button type="button" class="btn btn--ghost btn--hero" id="btn-test">
+            <svg class="icon btn__icon" aria-hidden="true"><use href="#i-volume"/></svg>
+            <span class="spinner" aria-hidden="true"></span>
+            <span>Testar caixas</span>
+          </button>
+        </div>
+        <p class="hint hint--kbd"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> anuncia a mensagem</p>
+
+        <div class="onstage">
+          <div class="viz" id="viz" aria-hidden="true"></div>
+          <p class="status" id="announce-status" role="status">Pronto para anunciar.</p>
+        </div>
+      </div>
+
+      <!-- Mensagens prontas -->
+      <div class="tile tile--quick">
+        <div class="tile__head">
+          <svg class="icon tile__icon" aria-hidden="true"><use href="#i-chat"/></svg>
+          <h2 class="tile__title" id="title-quick">Mensagens prontas</h2>
+        </div>
+        <div class="chips" id="quick-messages" role="group" aria-labelledby="title-quick">
+          <button type="button" class="chip" data-msg="Atenção, o proprietário de um veículo deixou os faróis acesos no estacionamento. Por favor, verifique o seu carro."><span class="chip__text">Farol aceso</span></button>
+          <button type="button" class="chip" data-msg="Atenção clientes, o caixa rápido está disponível para compras de até dez itens."><span class="chip__text">Caixa rápido</span></button>
+          <button type="button" class="chip" data-msg="Solicitamos a presença de um colaborador no setor de frios, por favor."><span class="chip__text">Chamado a colaborador</span></button>
+          <button type="button" class="chip" data-msg="Prezados clientes, informamos que a loja encerra suas atividades em quinze minutos."><span class="chip__text">Loja fecha em 15 min</span></button>
+          <button type="button" class="chip" data-msg="Atenção, temos uma criança aguardando no balcão de atendimento. Por favor, dirija-se até lá."><span class="chip__text">Criança no balcão</span></button>
+          <button type="button" class="chip" data-msg="Teste, um, dois, três. Este é um teste do sistema de som da loja."><span class="chip__text">Teste de som</span></button>
+        </div>
+      </div>
+
+      <!-- Voz -->
+      <div class="tile tile--voice">
+        <div class="tile__head">
+          <svg class="icon tile__icon" aria-hidden="true"><use href="#i-wave"/></svg>
+          <h2 class="tile__title" id="title-voice">Voz</h2>
+        </div>
+        <div class="voice-fields">
+          <div class="field">
+            <span class="label" id="label-engine">Motor de voz</span>
+            <div class="seg" id="engine-switch" role="radiogroup" aria-labelledby="label-engine">
+              <button type="button" class="seg__opt" data-value="auto" role="radio" aria-checked="true">Auto</button>
+              <button type="button" class="seg__opt" data-value="online" role="radio" aria-checked="false">Online</button>
+              <button type="button" class="seg__opt" data-value="offline" role="radio" aria-checked="false">Offline</button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="label" for="voice-select">Voz (online)</label>
+            <div class="select">
+              <select id="voice-select">
+                <option value="francisca">Francisca (feminina)</option>
+                <option value="antonio">Antonio (masculina)</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label class="label label--split" for="speed-range">Velocidade <output class="label__value" id="speed-value" for="speed-range">0%</output></label>
+            <input type="range" id="speed-range" class="range range--bipolar" min="-50" max="50" step="5" value="0">
+          </div>
+        </div>
+      </div>
+
+      <!-- Histórico -->
+      <div class="tile tile--history">
+        <div class="tile__head">
+          <svg class="icon tile__icon" aria-hidden="true"><use href="#i-clock"/></svg>
+          <h2 class="tile__title" id="label-history">Histórico</h2>
+          <button type="button" class="btn btn--text btn--sm tile__action" id="btn-history-clear" hidden>Limpar</button>
+        </div>
+        <ol class="history__list" id="history-list" aria-labelledby="label-history"></ol>
+      </div>
+
+    </section>
+
+    <!-- ======================= COLUNA: MÚSICA ======================== -->
+    <section class="panel bento-col bento-col--music" id="panel-music" aria-labelledby="title-music" data-active="false">
+
+      <div class="tile tile--music-head">
+        <div class="tile__head tile__head--wrap">
+          <div class="tile__heading">
+            <h2 class="tile__title" id="title-music">Música</h2>
+            <p class="tile__caption">Toca pelas caixas deste computador e abaixa sozinha durante um anúncio.</p>
+          </div>
+          <div class="seg" id="source-switch" role="radiogroup" aria-label="Fonte de música">
+            <button type="button" class="seg__opt" data-value="spotify" role="radio" aria-checked="true">Spotify</button>
+            <button type="button" class="seg__opt" data-value="youtube" role="radio" aria-checked="false">YouTube</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="source-stage" id="source-stage">
+
+        <!-- ------------------------- SPOTIFY ------------------------- -->
+        <div class="pane" id="pane-spotify">
+
+          <!-- Esqueleto enquanto o estado é consultado -->
+          <div class="pane__stack" id="spotify-loading" aria-hidden="true">
+            <div class="tile tile--skeleton tile--skeleton-np">
+              <div class="skeleton skeleton--cover"></div>
+              <div class="skeleton-lines">
+                <div class="skeleton skeleton--line"></div>
+                <div class="skeleton skeleton--line skeleton--short"></div>
+              </div>
+            </div>
+            <div class="tile tile--skeleton">
+              <div class="skeleton skeleton--line"></div>
+              <div class="skeleton skeleton--row"></div>
+              <div class="skeleton skeleton--row"></div>
+            </div>
+          </div>
+
+          <div class="tile tile--callout" id="spotify-disconnected" hidden>
+            <span class="callout__icon" aria-hidden="true"><svg class="icon"><use href="#i-music"/></svg></span>
+            <h2 class="callout__title">Conecte o Spotify</h2>
+            <p class="callout__text">Conecte a conta Spotify que vai tocar na loja (Premium). A reprodução sai no Spotify já aberto no computador da loja — não neste navegador.</p>
+            <div class="actions actions--start">
+              <button type="button" class="btn btn--primary" id="btn-spotify-connect">Conectar Spotify</button>
+              <button type="button" class="btn btn--text" data-open-settings>Configurar Spotify</button>
+            </div>
+          </div>
+
+          <div class="pane__stack" id="spotify-connected" hidden>
+
+            <!-- Tocando agora -->
+            <div class="tile tile--np">
+              <div class="tile__head">
+                <svg class="icon tile__icon" aria-hidden="true"><use href="#i-music"/></svg>
+                <h2 class="tile__title" id="title-np-sp">Tocando agora</h2>
+              </div>
+
+              <div class="np">
+                <div class="np__cover" id="spotify-cover">
+                  <svg class="icon np__ph" aria-hidden="true"><use href="#i-music"/></svg>
+                  <img class="np__img" id="spotify-cover-img" alt="" width="176" height="176" decoding="async" referrerpolicy="no-referrer" hidden>
+                </div>
+                <div class="np__meta">
+                  <p class="np__eyebrow" id="spotify-np-device">Spotify</p>
+                  <p class="np__title" id="spotify-now-playing">Nada tocando</p>
+                  <p class="np__artists" id="spotify-np-artists">Busque uma música ou playlist abaixo.</p>
+                </div>
+              </div>
+
+              <div class="timeline">
+                <span class="timeline__time" id="spotify-time-elapsed">0:00</span>
+                <div class="progress" id="spotify-progress" role="progressbar" aria-label="Progresso da faixa" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+                  <span class="progress__fill" id="spotify-progress-fill"></span>
+                </div>
+                <span class="timeline__time" id="spotify-time-total">0:00</span>
+              </div>
+
+              <div class="transport">
+                <button type="button" class="btn btn--icon btn--round" id="btn-spotify-prev" aria-label="Faixa anterior">
+                  <svg class="icon" aria-hidden="true"><use href="#i-prev"/></svg>
+                </button>
+                <button type="button" class="btn btn--primary btn--icon btn--round btn--main" id="btn-spotify-play" aria-label="Tocar">
+                  <svg class="icon" aria-hidden="true"><use id="spotify-play-icon" href="#i-play"/></svg>
+                </button>
+                <button type="button" class="btn btn--icon btn--round" id="btn-spotify-next" aria-label="Próxima faixa">
+                  <svg class="icon" aria-hidden="true"><use href="#i-next"/></svg>
+                </button>
+              </div>
+
+              <div class="volume">
+                <svg class="icon" aria-hidden="true"><use href="#i-volume"/></svg>
+                <input type="range" id="spotify-volume" class="range" min="0" max="100" step="1" value="70" aria-label="Volume do Spotify">
+                <output class="volume__out" id="spotify-volume-out" for="spotify-volume">70%</output>
+              </div>
+            </div>
+
+            <!-- Dispositivo + busca -->
+            <div class="tile tile--browse">
+              <div class="tile__head">
+                <svg class="icon tile__icon" aria-hidden="true"><use href="#i-search"/></svg>
+                <h2 class="tile__title" id="title-browse">Buscar</h2>
+              </div>
+
+              <div class="field">
+                <label class="label" for="spotify-device-select">Dispositivo (Spotify aberto no PC da loja)</label>
+                <div class="row">
+                  <div class="select select--grow">
+                    <select id="spotify-device-select"><option value="">— nenhum encontrado —</option></select>
+                  </div>
+                  <button type="button" class="btn btn--icon btn--lg" id="btn-spotify-refresh-devices" aria-label="Atualizar dispositivos" title="Atualizar dispositivos">
+                    <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
+                  </button>
+                </div>
+                <p class="hint" id="spotify-device-hint">Abra o app oficial do Spotify no computador da loja e dê play em qualquer coisa uma vez, para ele aparecer aqui.</p>
+              </div>
+
+              <hr class="rule">
+
+              <div class="field">
+                <label class="label" for="spotify-search">Buscar música ou playlist</label>
+                <div class="row">
+                  <div class="input input--grow input--search">
+                    <svg class="icon input__icon" aria-hidden="true"><use href="#i-search"/></svg>
+                    <input type="search" id="spotify-search" maxlength="100" autocomplete="off" enterkeyhint="search" placeholder="Nome da música, artista…">
+                  </div>
+                  <button type="button" class="btn btn--primary btn--icon btn--lg" id="btn-spotify-search" aria-label="Buscar" title="Buscar">
+                    <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="results" id="spotify-results" aria-live="polite"></div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- ------------------------- YOUTUBE ------------------------- -->
+        <div class="pane" id="pane-youtube" hidden>
+          <div class="pane__stack">
+
+            <!-- Tocando agora (YouTube) -->
+            <div class="tile tile--np tile--np-yt">
+              <div class="tile__head">
+                <svg class="icon tile__icon" aria-hidden="true"><use href="#i-video"/></svg>
+                <h2 class="tile__title" id="title-np-yt">Tocando agora</h2>
+              </div>
+
+              <div class="yt-screen" id="yt-screen" hidden>
+                <div id="yt-player"></div>
+              </div>
+
+              <div class="np np--compact">
+                <div class="np__cover np__cover--static" aria-hidden="true">
+                  <svg class="icon np__ph"><use href="#i-video"/></svg>
+                </div>
+                <div class="np__meta">
+                  <p class="np__eyebrow" id="youtube-np-state">YouTube</p>
+                  <p class="np__title" id="youtube-now-playing">Nada tocando</p>
+                </div>
+              </div>
+
+              <div class="transport">
+                <button type="button" class="btn btn--icon btn--round" id="btn-youtube-prev" aria-label="Item anterior da playlist">
+                  <svg class="icon" aria-hidden="true"><use href="#i-prev"/></svg>
+                </button>
+                <button type="button" class="btn btn--primary btn--icon btn--round btn--main" id="btn-youtube-play" aria-label="Tocar">
+                  <svg class="icon" aria-hidden="true"><use id="youtube-play-icon" href="#i-play"/></svg>
+                </button>
+                <button type="button" class="btn btn--icon btn--round" id="btn-youtube-next" aria-label="Próximo item da playlist">
+                  <svg class="icon" aria-hidden="true"><use href="#i-next"/></svg>
+                </button>
+              </div>
+
+              <div class="volume">
+                <svg class="icon" aria-hidden="true"><use href="#i-volume"/></svg>
+                <input type="range" id="youtube-volume" class="range" min="0" max="100" step="1" value="70" aria-label="Volume do YouTube">
+                <output class="volume__out" id="youtube-volume-out" for="youtube-volume">70%</output>
+              </div>
+            </div>
+
+            <!-- Configuração -->
+            <div class="tile tile--yt-setup">
+              <div class="tile__head">
+                <svg class="icon tile__icon" aria-hidden="true"><use href="#i-sliders"/></svg>
+                <h2 class="tile__title" id="title-yt-setup">Configurar YouTube</h2>
+              </div>
+
+              <div class="field">
+                <span class="label" id="label-ytmode">Este computador é…</span>
+                <div class="seg" id="youtube-mode-switch" role="radiogroup" aria-labelledby="label-ytmode">
+                  <button type="button" class="seg__opt" data-value="control" role="radio" aria-checked="false">Controle remoto</button>
+                  <button type="button" class="seg__opt" data-value="player" role="radio" aria-checked="false">Tocador da loja</button>
+                </div>
+                <p class="hint">Escolha <b>Tocador da loja</b> só no computador ligado às caixas de som — ele mantém esta aba aberta tocando o vídeo. Nos demais computadores, deixe em <b>Controle remoto</b>.</p>
+              </div>
+
+              <div class="field">
+                <label class="label" for="youtube-link">Link do YouTube (vídeo ou playlist)</label>
+                <div class="row">
+                  <div class="input input--grow">
+                    <input type="text" id="youtube-link" inputmode="url" maxlength="300" autocomplete="off" spellcheck="false" placeholder="https://www.youtube.com/watch?v=…">
+                  </div>
+                  <button type="button" class="btn btn--ghost" id="btn-youtube-load">Carregar</button>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+</div>
+
+<!-- Navegação por abas (somente no celular) -->
+<div class="tabbar" id="tabbar" role="tablist" aria-label="Seções do painel">
+  <button type="button" class="tabbar__tab" id="tab-announce" role="tab" aria-controls="panel-announce" aria-selected="true" data-value="announce">
+    <svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg>
+    <span>Anúncio</span>
+  </button>
+  <button type="button" class="tabbar__tab" id="tab-music" role="tab" aria-controls="panel-music" aria-selected="false" data-value="music">
+    <svg class="icon" aria-hidden="true"><use href="#i-music"/></svg>
+    <span>Música</span>
+  </button>
+</div>
+
+<!-- Toasts (status e erros) -->
+<div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions text"></div>
+
+<!-- ============================ DIÁLOGO ============================ -->
+<dialog id="settings-dialog" aria-labelledby="settings-title">
+  <form method="dialog" class="sheet" id="settings-form" novalidate>
+    <h2 class="sheet__title" id="settings-title">Configurar Spotify</h2>
+    <p class="hint">Cole aqui o <b>Client ID</b> e o <b>Client Secret</b> do aplicativo criado em developer.spotify.com/dashboard. Veja o passo a passo no README.</p>
+
+    <div class="field">
+      <label class="label" for="settings-client-id">Client ID</label>
+      <div class="input"><input type="text" id="settings-client-id" maxlength="128" autocomplete="off" spellcheck="false" placeholder="ex.: 7f2b9c…"></div>
+    </div>
+
+    <div class="field">
+      <label class="label" for="settings-client-secret">Client Secret</label>
+      <div class="input"><input type="password" id="settings-client-secret" maxlength="128" autocomplete="new-password" spellcheck="false" placeholder="deixe em branco para manter o já salvo"></div>
+    </div>
+
+    <div class="field">
+      <span class="label" id="label-redirect">Redirect URI</span>
+      <p class="hint">Cadastre no painel do Spotify (sempre a mesma; use o endereço deste computador na rede):</p>
+      <div class="uri">
+        <code id="settings-redirect-uri" aria-labelledby="label-redirect"></code>
+        <button type="button" class="btn btn--icon btn--lg" id="btn-copy-uri" aria-label="Copiar Redirect URI" title="Copiar">
+          <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <p class="form-error" id="settings-error" role="alert" hidden></p>
+
+    <div class="actions actions--end">
+      <button type="button" class="btn btn--ghost" id="btn-settings-cancel">Cancelar</button>
+      <button type="submit" class="btn btn--primary" id="btn-settings-save" value="save">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Salvar</span>
+      </button>
+    </div>
+  </form>
+</dialog>
+
+<!-- A API do YouTube só é carregada pelo app.js quando o modo "Tocador da loja" é usado -->
+<script src="/static/app.js" defer></script>
+</body>
+</html>
