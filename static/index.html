@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="pt-BR" data-theme="light" data-theme-pref="claro">
+<html lang="pt-BR" data-theme="light" data-theme-pref="claro" data-gate="boot">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -49,11 +49,50 @@
     <symbol id="i-auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
     <symbol id="i-wave" viewBox="0 0 24 24"><path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="3"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   </defs>
 </svg>
 
 <noscript><p class="noscript">Este painel precisa do JavaScript ativado para funcionar.</p></noscript>
+
+<!-- ===================== PORTA DE ENTRADA (PIN) =====================
+     Aparece só em aparelhos remotos sem sessão; o painel fica oculto (CSS: html[data-gate]). -->
+<div class="gate" id="gate" hidden>
+  <div class="tile gate__tile">
+    <div class="gate__brand">
+      <img src="/static/favicon.svg" class="gate__logo" alt="" width="64" height="64">
+      <h1 class="gate__name">Proclamare</h1>
+    </div>
+
+    <!-- Digite o PIN -->
+    <section class="gate__view" id="gate-pin" aria-labelledby="gate-pin-lead" hidden>
+      <p class="gate__lead" id="gate-pin-lead">Digite o PIN para controlar as caixas da loja</p>
+      <form class="gate__form" id="gate-pin-form" novalidate>
+        <label class="sr-only" for="gate-pin-input">PIN de acesso (6 a 8 números)</label>
+        <div class="input gate__input" id="gate-pin-box">
+          <input type="password" id="gate-pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go" placeholder="······" aria-describedby="gate-pin-msg">
+        </div>
+        <div class="gate__feedback">
+          <p class="gate__msg" id="gate-pin-msg" role="status" aria-live="polite"></p>
+          <p class="gate__count" id="gate-pin-count" aria-hidden="true" hidden></p>
+        </div>
+        <button type="submit" class="btn btn--primary btn--hero gate__submit" id="btn-gate-login">
+          <span class="spinner" aria-hidden="true"></span>
+          <span>Entrar</span>
+        </button>
+      </form>
+    </section>
+
+    <!-- Acesso desativado / servidor inacessível -->
+    <section class="gate__view gate__view--off" id="gate-off" aria-labelledby="gate-off-title" hidden>
+      <span class="callout__icon" aria-hidden="true"><svg class="icon"><use href="#i-lock"/></svg></span>
+      <h2 class="callout__title" id="gate-off-title">Acesso pela rede desativado</h2>
+      <p class="callout__text" id="gate-off-text">Para controlar as caixas por este aparelho, defina um PIN no computador da loja, em Configurações → Acesso pela rede.</p>
+      <button type="button" class="btn btn--ghost" id="btn-gate-retry">Tentar de novo</button>
+    </section>
+  </div>
+</div>
 
 <div class="app">
 
@@ -77,7 +116,7 @@
           <svg class="icon" aria-hidden="true"><use href="#i-auto"/></svg>
         </button>
       </div>
-      <button type="button" class="btn btn--icon" id="btn-settings" aria-label="Configurar Spotify" title="Configurar Spotify">
+      <button type="button" class="btn btn--icon" id="btn-settings" aria-label="Configurações" title="Configurações">
         <svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>
       </button>
     </div>
@@ -457,8 +496,11 @@
 <!-- ============================ DIÁLOGO ============================ -->
 <dialog id="settings-dialog" aria-labelledby="settings-title">
   <form method="dialog" class="sheet" id="settings-form" novalidate>
-    <h2 class="sheet__title" id="settings-title">Configurar Spotify</h2>
-    <p class="hint">Cole aqui o <b>Client ID</b> e o <b>Client Secret</b> do aplicativo criado em developer.spotify.com/dashboard. Veja o passo a passo no README.</p>
+    <h2 class="sheet__title" id="settings-title">Configurações</h2>
+    <h3 class="sheet__section">Spotify</h3>
+    <p class="hint" id="spotify-remote-note" hidden>As credenciais do Spotify são configuradas no computador da loja.</p>
+    <div class="sheet__fields" id="spotify-fields">
+    <p class="hint">Cole aqui o <b>Client ID</b> e o <b>Client Secret</b> do aplicativo criado em developer.spotify.com/dashboard. Veja o passo a passo no guia (docs/GUIA.md).</p>
 
     <div class="field">
       <label class="label" for="settings-client-id">Client ID</label>
@@ -472,9 +514,9 @@
 
     <div class="field">
       <span class="label" id="label-redirect">Redirect URI</span>
-      <p class="hint">Cadastre no painel do Spotify (sempre a mesma; use o endereço deste computador na rede):</p>
+      <p class="hint" id="redirect-hint">Cadastre exatamente este endereço no painel do Spotify. Para conectar, use o computador da loja abrindo http://127.0.0.1:porta — o Spotify não aceita localhost nem o IP da rede.</p>
       <div class="uri">
-        <code id="settings-redirect-uri" aria-labelledby="label-redirect"></code>
+        <code id="settings-redirect-uri" aria-labelledby="label-redirect">carregando…</code>
         <button type="button" class="btn btn--icon btn--lg" id="btn-copy-uri" aria-label="Copiar Redirect URI" title="Copiar">
           <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
         </button>
@@ -482,15 +524,74 @@
     </div>
 
     <p class="form-error" id="settings-error" role="alert" hidden></p>
+    </div>
 
     <div class="actions actions--end">
       <button type="button" class="btn btn--ghost" id="btn-settings-cancel">Cancelar</button>
       <button type="submit" class="btn btn--primary" id="btn-settings-save" value="save">
         <span class="spinner" aria-hidden="true"></span>
-        <span>Salvar</span>
+        <span>Salvar Spotify</span>
       </button>
     </div>
   </form>
+
+  <!-- Acesso pela rede: o PC da loja define o PIN; aparelhos remotos só saem da sessão -->
+  <section class="sheet sheet--net" id="net-section" aria-labelledby="net-title" hidden>
+    <h3 class="sheet__section" id="net-title">Acesso pela rede</h3>
+
+    <div id="net-local" hidden>
+      <p class="net__state" id="net-state" role="status"></p>
+      <p class="net__alert" id="net-alert-fails" hidden></p>
+      <p class="net__alert" id="net-alert-block" hidden></p>
+      <form class="net__form" id="pin-form" novalidate>
+        <div class="net__pair">
+          <div class="field">
+            <label class="label" for="pin-new">Novo PIN (6 a 8 números)</label>
+            <div class="input"><input type="password" id="pin-new" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password" spellcheck="false"></div>
+          </div>
+          <div class="field">
+            <label class="label" for="pin-confirm">Repita o PIN</label>
+            <div class="input"><input type="password" id="pin-confirm" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password" spellcheck="false"></div>
+          </div>
+        </div>
+        <p class="hint" id="pin-hint">Trocar o PIN desconecta todos os aparelhos.</p>
+        <p class="form-error" id="pin-error" role="alert" hidden></p>
+        <div class="actions">
+          <button type="submit" class="btn btn--primary" id="btn-pin-save">
+            <span class="spinner" aria-hidden="true"></span>
+            <span>Salvar PIN</span>
+          </button>
+          <button type="button" class="btn btn--text btn--danger" id="btn-pin-disable" hidden>Desativar acesso pela rede</button>
+        </div>
+        <div class="actions net__revoke" id="net-revoke-row" hidden>
+          <button type="button" class="btn btn--ghost" id="btn-revoke">Desconectar todos os aparelhos</button>
+        </div>
+        <div class="net__confirm" id="revoke-confirm" role="group" aria-labelledby="revoke-title" hidden>
+          <p class="net__confirm-title" id="revoke-title">Desconectar todos os aparelhos?</p>
+          <p class="hint">Quem estiver usando o painel pela rede vai precisar digitar o PIN de novo.</p>
+          <div class="actions">
+            <button type="button" class="btn btn--danger-solid" id="btn-revoke-yes">Sim, desconectar</button>
+            <button type="button" class="btn btn--ghost" id="btn-revoke-no">Manter</button>
+          </div>
+        </div>
+        <div class="net__confirm" id="pin-disable-confirm" role="group" aria-labelledby="pin-disable-title" hidden>
+          <p class="net__confirm-title" id="pin-disable-title">Desativar o acesso pela rede?</p>
+          <p class="hint">Todos os aparelhos serão desconectados e só este computador poderá controlar o painel.</p>
+          <div class="actions">
+            <button type="button" class="btn btn--danger-solid" id="btn-pin-disable-yes">Sim, desativar</button>
+            <button type="button" class="btn btn--ghost" id="btn-pin-disable-no">Manter</button>
+          </div>
+        </div>
+      </form>
+    </div>
+
+    <div id="net-remote" hidden>
+      <p class="net__state net__state--on">Este aparelho está conectado com o PIN.</p>
+      <div class="actions">
+        <button type="button" class="btn btn--ghost" id="btn-logout">Sair deste aparelho</button>
+      </div>
+    </div>
+  </section>
 </dialog>
 
 <!-- A API do YouTube só é carregada pelo app.js quando o modo "Tocador da loja" é usado -->

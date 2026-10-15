@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="proclamare/static/apple-touch-icon.png" alt="Logo do Proclamare" width="96" height="96">
+<img src="static/apple-touch-icon.png" alt="Logo do Proclamare" width="96" height="96">
 
 # Proclamare
 
@@ -44,6 +44,7 @@ de fundo **abaixa sozinha** durante o anúncio e volta ao volume normal no final
 
 ### 🖥️ Controle de qualquer lugar da rede
 - O som sempre sai no computador ligado ao amplificador; **qualquer PC, tablet ou celular** da rede local abre o painel no navegador, sem instalar nada.
+- **Outros aparelhos pedem um PIN** (6 a 8 números, definido no PC da loja em Configurações → Acesso pela rede, ou por `python server.py --definir-pin`). O PC da loja nunca pede PIN; sem PIN definido, o acesso pela rede fica desligado.
 - Indicadores ao vivo: servidor online, anúncio no ar, Spotify conectado, tocador do YouTube ativo.
 
 ### 🎨 Interface
@@ -76,9 +77,13 @@ flowchart LR
 
 ## 🚀 Começando
 
+**Caminho fácil (Windows):** baixe ou clone o projeto → dê duplo clique em **Instalar Proclamare.bat** → depois é só dar duplo clique no ícone **Proclamare** na Área de Trabalho. Para desligar: Menu Iniciar → *Desligar Proclamare*. Detalhes na seção "Instalar e ligar com duplo clique" do [guia](docs/GUIA.md).
+
+**Pelo terminal (qualquer sistema):**
+
 ```bash
 git clone https://github.com/arturgabriels779-alt/proclamare.git
-cd proclamare/proclamare
+cd proclamare
 python -m venv venv
 venv\Scripts\activate          # Linux/Mac: source venv/bin/activate
 pip install -r requirements.txt
@@ -87,7 +92,7 @@ python server.py
 
 Abra **http://127.0.0.1:8502** no PC da loja. Nos outros aparelhos, use **http://IP-DO-PC-DA-LOJA:8502**.
 
-> O guia completo — conectar o Spotify, configurar o YouTube, IP fixo, firewall, iniciar junto com o Windows/Linux e solução de problemas — está em **[proclamare/README.md](proclamare/README.md)**.
+> O guia completo — conectar o Spotify, configurar o YouTube, IP fixo, firewall, iniciar junto com o Windows/Linux e solução de problemas — está em **[docs/GUIA.md](docs/GUIA.md)**.
 
 ## ⚙️ Configuração
 
@@ -96,12 +101,16 @@ Abra **http://127.0.0.1:8502** no PC da loja. Nos outros aparelhos, use **http:/
 | `PROCLAMARE_HOST` | `0.0.0.0` | Endereço de escuta (`127.0.0.1` = só este computador) |
 | `PROCLAMARE_PORT` | `8502` | Porta do servidor |
 | `PROCLAMARE_LOG_LEVEL` | `INFO` | Nível de detalhe do log |
+| `PROCLAMARE_LOG_FILE` | *(vazio = console)* | Arquivo de log (rotativo: 5 MB, 3 antigos) |
+| `PROCLAMARE_PID_FILE` | *(vazio)* | Arquivo JSON com o PID do servidor (usado pelo lançador para desligar o processo certo) |
+| `PROCLAMARE_CONFIAR_LOOPBACK` | `1` | `0` = nenhuma conexão é "local": todos precisam de PIN (use com proxy/túnel no PC da loja) |
 | `PROCLAMARE_SPOTIFY_REDIRECT` | `http://127.0.0.1:8502/spotify/callback` | Redirect URI cadastrado no painel do Spotify |
 | `PROCLAMARE_ALLOWED_HOSTS` | *(vazio)* | Nomes de host extras aceitos, separados por vírgula |
 
 ## 🛡️ Segurança e desempenho
 
 - **Credenciais só no servidor:** o Client Secret do Spotify fica no `config.json` local (ignorado pelo Git) e nunca é enviado ao navegador; só pode ser alterado a partir do próprio PC da loja.
+- **Acesso pela rede com PIN:** aparelhos remotos só controlam o painel após digitar o PIN (hash PBKDF2, sessão por cookie assinado de 14 dias, bloqueio por tentativas). O PC da loja (loopback) não pede PIN; sem PIN o acesso remoto fica desligado. O PIN protege contra curiosos, mas a rede usa `http`: mantenha o Wi-Fi de clientes separado.
 - **Proteções web:** Content-Security-Policy rígida, checagem de `Origin`/`Content-Type` contra CSRF, lista de hosts contra DNS rebinding, `state` de uso único no login OAuth e validação de todas as entradas.
 - **Leve para ficar ligado o dia todo:** servidor waitress, conexões reaproveitadas com a API do Spotify, cache compartilhado entre os aparelhos, todo o áudio numa única thread dedicada e *long-polling* em vez de consultas a cada segundo.
 

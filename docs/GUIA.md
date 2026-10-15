@@ -38,12 +38,66 @@ remoto". Isso é explicado com mais detalhe na seção 4.
 Requer **Python 3.9+**.
 
 ```bash
-cd proclamare
+cd proclamare   # pasta do projeto (clonada do GitHub)
 python -m venv venv
 # Windows: venv\Scripts\activate
 # Linux/Mac: source venv/bin/activate
 pip install -r requirements.txt
 ```
+
+### Instalar e ligar com duplo clique (Windows)
+
+Para quem não quer usar o terminal:
+
+1. **Escolha o lugar da pasta:** deixe a pasta do Proclamare **dentro da sua pasta
+   de usuário** (ex.: Documentos), não em `C:\` nem em pastas públicas. Se mover
+   a pasta de lugar depois, **rode o instalador de novo** (os atalhos guardam o
+   caminho antigo).
+2. **Instalar (uma vez só):** instale o Python 3.9+ de [python.org](https://www.python.org/downloads/)
+   marcando **"Add python.exe to PATH"**. Depois dê duplo clique em
+   **`Instalar Proclamare.bat`**. Ele cria o ambiente `.venv`, instala as
+   dependências (precisa de internet) e cria os atalhos **Proclamare** (Área de
+   Trabalho e Menu Iniciar), **Desligar Proclamare** e **Desinstalar Proclamare**
+   (Menu Iniciar). Se o instalador avisar em amarelo que a pasta é gravável por
+   todos os usuários do computador, mova-a para a sua pasta de usuário.
+3. **Ligar:** dê duplo clique no ícone **Proclamare**. Não aparece janela preta:
+   em alguns segundos o painel abre no navegador. Se já estiver ligado, o duplo
+   clique só abre o painel (nunca sobe dois servidores). Se aparecer "está
+   demorando para ligar", espere alguns segundos e dê duplo clique de novo.
+4. **Desligar:** Menu Iniciar → **Desligar Proclamare**. Uma mensagem confirma
+   "Proclamare desligado". O atalho só desliga o servidor iniciado pelo próprio
+   Proclamare, nunca outros programas. Se ele foi ligado de outra forma (ex.:
+   `python server.py` no terminal), feche a janela onde está rodando.
+5. **Iniciar junto com o Windows:** o instalador pergunta (S/N). O atalho na
+   pasta de Inicialização usa `--silencioso` (liga o servidor sem abrir o
+   navegador). Para mudar de ideia, rode o instalador de novo e responda: **N**
+   remove o atalho de Inicialização.
+6. **Logs:** `logs/proclamare.log` (log do servidor, rotativo: 5 MB × 3 cópias) e
+   `logs/inicio.log` (saída bruta do último início, útil para erros antes de o
+   log começar).
+7. **Se não abrir:** a mensagem de erro cita os arquivos de log — abra-os e veja
+   as últimas linhas. Causas comuns: o instalador ainda não foi executado
+   (mensagem "Execute primeiro o Instalar Proclamare.bat"); a porta 8502 está
+   ocupada por outro programa (use `PROCLAMARE_PORT`); ou o Firewall do Windows
+   bloqueou (escolha "Permitir").
+8. **Desinstalar:** Menu Iniciar → **Desinstalar Proclamare** (ou, no terminal,
+   `powershell -NoProfile -ExecutionPolicy Bypass -File tools\instalar.ps1 -Desinstalar`).
+   Remove todos os atalhos, inclusive o de Inicialização, e pergunta se deve
+   apagar o `.venv`. A pasta do programa e o `config.json` são mantidos; para
+   apagar tudo, exclua a pasta depois.
+
+O lançador sempre conversa com `127.0.0.1`. Se você definiu `PROCLAMARE_HOST`
+com um IP específico que não seja de loopback, use `0.0.0.0` ou abra o painel
+direto pelo navegador nesse endereço.
+
+Para definir o PIN (6 a 8 dígitos) sem abrir o painel, rode no terminal, dentro
+da pasta do projeto: `.venv\Scripts\python server.py --definir-pin`.
+
+Opções de teste/automação: com `PROCLAMARE_NO_BROWSER=1` o lançador não abre o
+navegador nem mostra caixas de mensagem (escreve na saída padrão). O instalador
+aceita `-PastaAtalhos <pasta>`, `-SemDependencias`, `-IniciarComWindows`,
+`-NaoIniciarComWindows` e `-Desinstalar` (rode `tools\instalar.ps1` direto no
+PowerShell).
 
 ### Voz offline (sem internet) — só no Linux precisa instalar algo
 
@@ -91,7 +145,10 @@ alternativa; se as duas existirem, vale a `PROCLAMARE_*`.
 | `PROCLAMARE_HOST` | `0.0.0.0` | Endereço de escuta (`127.0.0.1` = só este computador) |
 | `PROCLAMARE_PORT` | `8502` | Porta do servidor (se mudar, ajuste o Redirect URI do Spotify e o Firewall) |
 | `PROCLAMARE_LOG_LEVEL` | `INFO` | Detalhe do log (`DEBUG`, `INFO`, `WARNING`...) |
+| `PROCLAMARE_LOG_FILE` | (vazio = console) | Arquivo de log. O log **rotaciona em 5 MB** e guarda **3 arquivos antigos** (`.1`, `.2`, `.3`). O lançador de duplo clique já define esta variável (em `logs/`) |
+| `PROCLAMARE_PID_FILE` | (vazio) | Arquivo JSON (`pid`, `porta`, `criado_em`, `executavel`) gravado quando o servidor começa a atender e removido ao encerrar; o lançador usa para desligar o processo certo. O lançador de duplo clique já define esta variável (em `logs/`) |
 | `PROCLAMARE_SPOTIFY_REDIRECT` | `http://127.0.0.1:8502/spotify/callback` | Redirect URI do Spotify. O Spotify só aceita `http` para o IP de loopback `127.0.0.1`/`[::1]`; para outro endereço é preciso `https://` (ex.: proxy com certificado) |
+| `PROCLAMARE_CONFIAR_LOOPBACK` | `1` | `0` = nenhuma conexão é "local": todos precisam de PIN (use com proxy/túnel no PC da loja; veja "Acesso pela rede (PIN)") |
 | `PROCLAMARE_ALLOWED_HOSTS` | (vazio) | Nomes de host extras aceitos, separados por vírgula (ex.: `proclamare.loja.local`). IPs, `localhost` e o nome deste computador já são aceitos; qualquer outro nome recebe erro 421 (proteção contra DNS rebinding) |
 
 ### Dicas para o acesso remoto funcionar sem dor de cabeça
@@ -108,14 +165,79 @@ alternativa; se as duas existirem, vale a `PROCLAMARE_*`.
   porta **8502** está liberada no Firewall do Windows (redes privadas).
 - Isso tudo vale só para a rede local da loja (Wi-Fi/cabo). Não é necessário
   nem recomendado expor essa porta para a internet.
-- **Segurança da rede:** o Proclamare não tem login — quem alcança a porta
-  8502 consegue anunciar e controlar a música. Restrinja a regra do Firewall do
+- **Segurança da rede:** outros aparelhos só controlam o Proclamare depois de
+  digitar o **PIN** (veja "Acesso pela rede (PIN)" abaixo); sem PIN definido, o
+  acesso pela rede fica desligado. Mesmo assim, restrinja a regra do Firewall do
   Windows à sub-rede da equipe e **não deixe o Wi-Fi de visitantes/clientes na
   mesma rede** do computador da loja. O Client Secret só pode ser salvo no
   próprio computador da loja (por isso o painel "Configurar Spotify" recusa
   salvar a partir de outro aparelho).
 - **Proteja o `config.json`** (guarda o Client Secret e os tokens). No Windows,
   restrinja o acesso ao seu usuário: `icacls config.json /inheritance:r /grant:r "%USERNAME%:F"`.
+
+### Acesso pela rede (PIN)
+
+- **O computador da loja nunca pede PIN.** Quem usa o painel nele (endereço
+  `http://127.0.0.1:8502` ou `http://localhost:8502`) entra direto. Para o
+  servidor, "é o computador da loja" só vale se a conexão vier do próprio PC,
+  pelo endereço `127.0.0.1`/`localhost`/`::1` e sem passar por proxy.
+- **Definir o PIN:** no computador da loja, abra **Configurações → Acesso pela
+  rede** e escolha um PIN de **6 a 8 números**. Só dá para definir, trocar ou
+  remover o PIN nesse computador. PINs fáceis são recusados: números repetidos
+  (`111111`), sequências (`123456`, `654321`), blocos repetidos (`121212`,
+  `123123`), espelhos (`123321`), pares/trincas em sequência (`112233`,
+  `102030`) e sequências de teclado (`147258`, `159753`).
+- **Pela linha de comando** (sem abrir o painel e sem precisar do servidor
+  ligado), na pasta do Proclamare:
+  `python server.py --definir-pin` (pede o PIN duas vezes, sem mostrar na
+  tela) ou `python server.py --remover-pin`.
+- **Celulares e outros computadores** digitam o PIN uma vez e ficam lembrados por
+  **14 dias** (neste aparelho/navegador). Quem continua usando não precisa
+  digitar de novo: quando faltam menos de 7 dias, a sessão é renovada
+  sozinha por mais 14. O botão de sair esquece o aparelho.
+- **Trocar o PIN desconecta todos os aparelhos**: cada um precisará digitar o
+  PIN novo. Se quiser só desconectar todo mundo **sem trocar o PIN**, use
+  **Revogar sessões** em Configurações → Acesso pela rede (no PC da loja).
+- **Sem PIN, o acesso pela rede fica desligado**: outros aparelhos conseguem abrir
+  a página, mas não anunciar nem controlar a música. Remover o PIN também
+  desconecta todos.
+- **Bloqueio por tentativas:** 5 PINs errados seguidos bloqueiam aquele aparelho
+  por 5 minutos (a 5ª tentativa errada já mostra o bloqueio). Se muitos erros
+  vierem de aparelhos diferentes (20 em 10 minutos), o login pela rede fica
+  bloqueado para todos por 10 minutos; se isso se repetir, o bloqueio dobra
+  (20 min, 40 min... até 24 h). Um login certo **não** apaga essa escalada: ela
+  só volta ao zero ao trocar/remover o PIN ou revogar as sessões no PC da loja,
+  ou desce um nível a cada 24 h sem novo bloqueio global. O computador da loja não é
+  afetado.
+- **Tentativas suspeitas:** em Configurações → Acesso pela rede, o PC da loja
+  mostra quantos PINs errados houve nas últimas 24 horas e se há um bloqueio
+  global ativo. Esses números não aparecem para os outros aparelhos.
+- **ATENÇÃO — proxy, túnel ou redirecionamento de porta no PC da loja:** se
+  houver proxy reverso (Caddy/nginx), túnel (SSH, cloudflared) ou
+  redirecionamento de porta (`netsh portproxy`, WSL) no PC da loja, **qualquer
+  aparelho consegue se passar pelo PC da loja e ignorar o PIN**, porque todas as
+  conexões chegam ao Proclamare como se viessem do próprio PC. Nesses casos
+  `PROCLAMARE_CONFIAR_LOOPBACK=0` é **OBRIGATÓRIO** (defina o PIN pela linha de
+  comando). Com ele, **ninguém** é "local": todos digitam o PIN, e trocar o PIN
+  e configurar o Spotify só são possíveis pela linha de comando / editando o
+  `config.json` com o servidor parado.
+- **Comando de PIN:** `--definir-pin` e `--remover-pin` recusam rodar com o
+  Proclamare ligado (desligue antes: Menu Iniciar → Desligar Proclamare). Rode-os
+  com o **mesmo usuário do Windows** que roda o Proclamare (não como outro
+  administrador), senão o `config.json` fica com permissões que o Proclamare não
+  consegue ler.
+- **Duração da sessão:** a renovação automática nunca passa de **90 dias** desde
+  o login; depois disso o aparelho pede o PIN de novo.
+- **O cookie vale para o endereço, não para a porta:** os navegadores não separam
+  cookies por porta. Outro programa que você rode no mesmo PC/endereço (por
+  exemplo em `http://192.168.0.10:3000`) recebe o cookie de sessão do Proclamare.
+  Não rode serviços de terceiros no mesmo endereço, ou use "Revogar sessões" se
+  desconfiar.
+- O PIN é guardado apenas como hash (PBKDF2) no `config.json`, junto de uma chave
+  de sessão; o PIN em si nunca aparece nos logs. Lembre: a rede da loja usa
+  `http` (sem criptografia), então o PIN protege contra curiosos, não contra
+  quem consegue espionar o tráfego da rede — mais um motivo para manter o Wi-Fi
+  de clientes separado.
 
 ---
 
@@ -146,7 +268,9 @@ aberto.
    ser feita **no computador da loja, abrindo `http://127.0.0.1:8502`**. Se
    precisar conectar de outro aparelho, use HTTPS (um proxy como Caddy/nginx com
    certificado), cadastre o URI `https://...` e informe-o em
-   `PROCLAMARE_SPOTIFY_REDIRECT`.
+   `PROCLAMARE_SPOTIFY_REDIRECT`. **Atenção:** um proxy no PC da loja faz todo
+   aparelho parecer "o PC da loja" e ignorar o PIN; nesse caso
+   `PROCLAMARE_CONFIAR_LOOPBACK=0` é obrigatório (veja "Acesso pela rede (PIN)").
 4. Copie o **Client ID** e o **Client Secret** mostrados no painel do
    Spotify (clique em "View client secret" para revelar o segredo).
 5. No computador da loja, abra `http://127.0.0.1:8502`, clique em **Configurar
@@ -185,7 +309,7 @@ seletor **"Este computador é…"** dentro do módulo Música, aba YouTube:
   ajustar volume aqui só manda o comando para a aba tocadora executar.
 
 A lâmpada ao lado do seletor mostra se existe um "tocador" ativo agora
-("Tocador ativo" em verde, ou "Nenhum tocador aberto" em vermelho).
+("Tocador ativo" em verde; "Nenhum aberto" é só um aviso neutro — significa que nenhuma aba está tocando agora; "Sem conexão" indica que o servidor não respondeu).
 
 Não precisa de login nem de chave de API: cole o link de um vídeo ou de uma
 playlist do YouTube (`https://www.youtube.com/watch?v=...` ou
@@ -214,11 +338,18 @@ concorrentes pesquisados antes — Rádio Mercado, ListenPlay — anunciam
 
 ## 6. Deixando sempre ligado (inicia com o computador da loja)
 
-### Windows — Agendador de Tarefas
-Crie um atalho para `venv\Scripts\python.exe server.py` (com "Iniciar em"
-apontando para a pasta do projeto) e agende para rodar "ao fazer logon".
+### Windows — iniciar com o Windows
+O jeito mais simples é o instalador (`Instalar Proclamare.bat`): responda **S**
+à pergunta "Iniciar o Proclamare junto com o Windows?". Ele cria, na pasta de
+Inicialização do seu usuário, um atalho que usa o `.venv` da pasta do projeto e
+o argumento `--silencioso` (liga o servidor sem abrir o navegador). Para
+desfazer, rode o instalador de novo e responda **N**, ou use **Desinstalar
+Proclamare**. Se mover a pasta, rode o instalador de novo.
+
 Depois, abra o navegador nesse mesmo computador, acesse o Proclamare e
 deixe a aba do YouTube marcada como **"O tocador"**, se for usar o YouTube.
+(Alternativa manual: Agendador de Tarefas rodando `.venv\Scripts\pythonw.exe Proclamare.pyw --silencioso`
+com "Iniciar em" apontando para a pasta do projeto.)
 
 ### Linux — systemd
 `/etc/systemd/system/proclamare.service`:

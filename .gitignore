@@ -4,10 +4,14 @@
 # Segredos e dados locais — NUNCA publicar (config.json guarda o Client Secret do Spotify)
 config.json
 **/config.json
+# cópias de segurança de um config.json ilegível também guardam segredos (Client Secret, hash/chave do PIN)
+config.json*
+**/config.json*
 *.tmp
 
 # Artefatos de execução
 audios_temp/
+logs/
 __pycache__/
 *.py[cod]
 
