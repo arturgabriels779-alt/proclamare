@@ -51,6 +51,10 @@
     <symbol id="i-wave" viewBox="0 0 24 24"><path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/></symbol>
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="3"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h8"/><circle cx="3.5" cy="6" r="1" fill="currentColor"/><circle cx="3.5" cy="12" r="1" fill="currentColor"/><circle cx="3.5" cy="18" r="1" fill="currentColor"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><polyline points="6 15 12 9 18 15"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
   </defs>
 </svg>
 
@@ -429,7 +433,7 @@
                 <button type="button" class="btn btn--primary btn--icon btn--round btn--main" id="btn-youtube-play" aria-label="Tocar">
                   <svg class="icon" aria-hidden="true"><use id="youtube-play-icon" href="#i-play"/></svg>
                 </button>
-                <button type="button" class="btn btn--icon btn--round" id="btn-youtube-next" aria-label="Próximo item da playlist">
+                <button type="button" class="btn btn--icon btn--round" id="btn-youtube-next" aria-label="Próximo da fila ou da playlist">
                   <svg class="icon" aria-hidden="true"><use href="#i-next"/></svg>
                 </button>
               </div>
@@ -459,13 +463,53 @@
 
               <div class="field">
                 <label class="label" for="youtube-link">Link do YouTube (vídeo ou playlist)</label>
-                <div class="row">
-                  <div class="input input--grow">
-                    <input type="text" id="youtube-link" inputmode="url" maxlength="300" autocomplete="off" spellcheck="false" placeholder="https://www.youtube.com/watch?v=…">
-                  </div>
-                  <button type="button" class="btn btn--ghost" id="btn-youtube-load">Carregar</button>
+                <div class="input">
+                  <input type="text" id="youtube-link" inputmode="url" maxlength="300" autocomplete="off" spellcheck="false" placeholder="https://www.youtube.com/watch?v=…">
+                </div>
+                <div class="ytq-form">
+                  <button type="button" class="btn btn--primary" id="btn-youtube-load">
+                    <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>
+                    <span>Tocar agora</span>
+                  </button>
+                  <button type="button" class="btn btn--ghost" id="btn-youtube-queue-add">
+                    <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+                    <span>Adicionar à fila</span>
+                  </button>
                 </div>
               </div>
+            </div>
+
+            <!-- Fila do Proclamare -->
+            <div class="tile tile--queue" id="tile-yt-queue" aria-labelledby="title-yt-queue">
+              <div class="tile__head tile__head--wrap">
+                <div class="tile__head">
+                  <svg class="icon tile__icon" aria-hidden="true"><use href="#i-list"/></svg>
+                  <h2 class="tile__title" id="title-yt-queue">Fila</h2>
+                </div>
+                <button type="button" class="btn btn--text btn--sm" id="btn-yt-queue-clear" hidden>Limpar fila</button>
+              </div>
+
+              <div class="ytq__section">
+                <h3 class="ytq__heading">Tocando agora</h3>
+                <div class="ytq__row ytq__row--now" id="yt-q-now">
+                  <span class="thumb thumb--yt" id="yt-q-now-thumb"><svg class="icon" aria-hidden="true"><use href="#i-video"/></svg></span>
+                  <span class="ytq__text"><span class="ytq__title" id="yt-q-now-title">Nada tocando</span></span>
+                </div>
+              </div>
+
+              <div class="ytq__section">
+                <h3 class="ytq__heading">A seguir (fila) <span class="ytq__count" id="yt-q-count" hidden></span></h3>
+                <ul class="ytq__list" id="yt-q-list" aria-label="Fila do Proclamare"></ul>
+                <p class="sr-only" id="yt-q-live" role="status" aria-live="polite"></p>
+                <p class="ytq__empty" id="yt-q-empty">A fila está vazia. Cole um link e toque em <b>Adicionar à fila</b>.</p>
+              </div>
+
+              <div class="ytq__section ytq__section--pl" id="yt-pl-section" hidden>
+                <h3 class="ytq__heading">Próximas da playlist</h3>
+                <ul class="ytq__list ytq__list--pl" id="yt-pl-list" aria-label="Próximas da playlist em reprodução"></ul>
+              </div>
+
+              <p class="hint">A fila toca antes de a playlist seguir; quando esvazia, a playlist continua de onde parou. Links de <b>Mix</b> do YouTube (aqueles com “list=RD…”) tocam só a música do link. A fila fica na memória do Proclamare e some se o programa for reiniciado.</p>
             </div>
 
           </div>

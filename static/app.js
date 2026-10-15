@@ -1,4 +1,4 @@
-/* Proclamare — interface do painel de controle (v2.2: acesso por PIN)
+/* Proclamare — interface do painel de controle (v2.2.1 (fila do YouTube))
    -----------------------------------------------------------------------
    Sem frameworks e sem build: um único IIFE.
 
@@ -38,7 +38,9 @@
   const DEVICE_RE = /^[A-Za-z0-9]{1,128}$/;
   const TRACK_URI_RE = /^spotify:track:[A-Za-z0-9]+$/;
   const CONTEXT_URI_RE = /^spotify:(playlist|album|artist):[A-Za-z0-9]+$/;
-  const YT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+  const YT_VIDEO_RE = /^[A-Za-z0-9_-]{11}$/;
+  const YT_LIST_RE = /^[A-Za-z0-9_-]{2,64}$/;
+  const YT_PLAYLIST_MAX = 200; // igual ao servidor
   const YT_HOSTS = ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"];
   const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -1614,34 +1616,456 @@
   let ytPushBusy = false;
   let ytPushAgain = false;
   let ytTitle = "";
+  // --- estado do tocador para fila/playlist (só modo "Tocador da loja") ---
+  const YT_ENDED = 0; // YT.PlayerState.ENDED
+  const YT_NAV_GRACE_MS = 4500; // depois de uma ação do app, mudanças de item NÃO são "avanço natural"
+  let ytCurList = null; // list_id em reprodução (guardado no load: a API nem sempre devolve)
+  let ytLastIdx = null; // último índice conhecido na playlist
+  let ytWantTries = 0; // tentativas de achar o v= na playlist (limite 5)
+  let ytWantVideo = null; // v= do link: ao tocar, pula para ele dentro da playlist (uma vez)
+  let ytNavAt = 0; // quando o app mexeu no player pela última vez (load/next/prev/playVideoAt)
+  let ytResume = null; // {list, index}: playlist interrompida pela fila, retomada quando esvaziar
+  let ytAdvancePending = false; // "Próximo" clicado durante um pop: reexecuta ao terminar
+  let ytAdvancing = false; // evita pop em duplicidade (fim + erro chegam em sequência)
+  let ytLastVid = null;
+  let ytLastPlIdx = null;
+  const YT_PL_WATCHDOG_MS = 10000; // tempo para uma playlist aparecer depois do loadPlaylist
+  let ytLoadSeq = 0; // cada load invalida o watchdog do anterior
+  let ytPlWatchdog = 0;
   const ytPlayUI = playToggle(btnYoutubePlay, youtubePlayIcon);
   const youtubeActive = () => sourceGroup.value === "youtube" && musicVisible();
 
-  /** Aceita só vídeo/playlist de hosts do YouTube; devolve {type,id} ou null. */
+  /** "90", "90s", "1m30s", "1h2m3s" -> segundos (0..86400) ou null. */
+  function parseYtTime(text) {
+    const t = String(text || "").trim().toLowerCase();
+    const m = /^(?:(\d{1,5})h)?(?:(\d{1,5})m)?(?:(\d{1,6})s?)?$/.exec(t);
+    if (!t || !m || (!m[1] && !m[2] && !m[3])) return null;
+    const total = (Number(m[1]) || 0) * 3600 + (Number(m[2]) || 0) * 60 + (Number(m[3]) || 0);
+    return total >= 0 && total <= 86400 ? total : null;
+  }
+
+  /**
+   * Interpreta um link do YouTube (mesmo contrato do servidor).
+   * Devolve {video_id, list_id, index (0-based), start, mix} ou {error: "mensagem"}.
+   * Mix/rádio automático (list=RD… ou start_radio) é ignorado: toca só o vídeo.
+   */
   function parseYouTubeUrl(raw) {
-    if (typeof raw !== "string") return null;
+    if (typeof raw !== "string") return { error: "Cole o link de um vídeo ou playlist do YouTube." };
     const text = raw.trim();
-    if (!text || text.length > 300) return null;
+    if (!text) return { error: "Cole o link de um vídeo ou playlist do YouTube." };
+    const bad = { error: "Link inválido. Cole o endereço completo (https://…) de um vídeo ou playlist do YouTube." };
+    if (text.length > 300 || /[\u0000- \u007f]/.test(text)) return bad;
     let u;
-    try { u = new URL(text); } catch (e) { return null; }
-    if (u.protocol !== "https:" || !YT_HOSTS.includes(u.hostname.toLowerCase())) return null;
-    const list = u.searchParams.get("list");
-    if (list && YT_ID_RE.test(list)) return { type: "playlist", id: list };
-    let v = u.searchParams.get("v");
-    if (!v) {
-      const seg = u.pathname.split("/").filter(Boolean);
-      if (u.hostname.toLowerCase() === "youtu.be") v = seg[0] || null;
-      else if (["shorts", "live", "embed"].includes(seg[0])) v = seg[1] || null;
+    try { u = new URL(text); } catch (e) { return bad; }
+    const host = u.hostname.toLowerCase();
+    if (u.protocol !== "https:" || !YT_HOSTS.includes(host) || u.username || u.password || (u.port && u.port !== "443")) {
+      return { error: "Somente links https do YouTube são aceitos." };
     }
-    return v && YT_ID_RE.test(v) ? { type: "video", id: v } : null;
+    // vazio (v=, list=) conta como ausente, igual ao servidor
+    const q = (name) => { const v = u.searchParams.get(name); return v === "" ? null : v; };
+    const seg = u.pathname.split("/").filter(Boolean);
+    let rawVideo = null;
+    if (host === "youtu.be") rawVideo = seg[0] || null;
+    else if (["shorts", "live", "embed"].includes(seg[0])) rawVideo = seg[1] || null;
+    else if (seg[0] === "watch") rawVideo = q("v");
+    let videoId = null;
+    if (rawVideo !== null) {
+      if (!YT_VIDEO_RE.test(rawVideo)) return { error: "Link do YouTube inválido: não encontrei o vídeo." };
+      videoId = rawVideo;
+    }
+    const rawList = q("list");
+    const mix = u.searchParams.has("start_radio") || (rawList || "").toUpperCase().startsWith("RD");
+    let listId = null;
+    if (rawList !== null && !mix) {
+      if (YT_LIST_RE.test(rawList)) listId = rawList;
+      else if (!videoId) return { error: "Link do YouTube inválido: lista não reconhecida." };
+    }
+    if (!videoId && !listId) {
+      return {
+        error: mix
+          ? "Esse link é um Mix automático do YouTube; abra uma música dele e copie o link dela."
+          : "Link do YouTube inválido: não encontrei vídeo nem playlist.",
+      };
+    }
+    let index = null;
+    const rawIdx = q("index");
+    if (listId && rawIdx && /^\d{1,4}$/.test(rawIdx)) {
+      const n = Number(rawIdx) - 1;
+      if (n >= 0 && n < YT_PLAYLIST_MAX) index = n;
+    }
+    let hashT = null;
+    if (u.hash.includes("=")) hashT = new URLSearchParams(u.hash.slice(1)).get("t");
+    const start = parseYtTime(q("t") || q("start") || hashT);
+    return { video_id: videoId, list_id: listId, index, start, mix };
+  }
+
+  /** Valida os parâmetros de "load" vindos do servidor; null se não servirem. */
+  function sanitizeYtLoad(p) {
+    if (!p || typeof p !== "object") return null;
+    const video = typeof p.video_id === "string" && YT_VIDEO_RE.test(p.video_id) ? p.video_id : null;
+    const list = typeof p.list_id === "string" && YT_LIST_RE.test(p.list_id) && !/^RD/i.test(p.list_id) ? p.list_id : null;
+    if (!video && !list) return null;
+    const index = Number.isInteger(p.index) && p.index >= 0 && p.index < YT_PLAYLIST_MAX ? p.index : null;
+    const start = Number.isInteger(p.start) && p.start >= 0 && p.start <= 86400 ? p.start : null;
+    return { video_id: video, list_id: list, index: list ? index : null, start };
   }
 
   function applyYoutubeNp(title, playing) {
     const idle = !title || title === IDLE_YT;
     setText(youtubeNowPlaying, idle ? "Nada tocando" : title);
+    setText(ytqNowTitle, idle ? "Nada tocando" : title);
+    if (idle) setYtThumb(ytqNowThumb, null);
     youtubeNpCard.classList.toggle("is-idle", idle);
     ytPlayUI.set(playing && !idle);
   }
+
+  // ---- Tile "Fila": miniaturas, lista da fila e próximas da playlist ----
+  const ytqList = $("yt-q-list");
+  const ytqEmpty = $("yt-q-empty");
+  const ytqCount = $("yt-q-count");
+  const ytqClear = $("btn-yt-queue-clear");
+  const ytqNowThumb = $("yt-q-now-thumb");
+  const ytqNowTitle = $("yt-q-now-title");
+  const ytPlSection = $("yt-pl-section");
+  const ytPlList = $("yt-pl-list");
+  const btnYoutubeQueueAdd = $("btn-youtube-queue-add");
+  let ytqItems = []; // fila como está na tela (base das atualizações otimistas)
+  let ytqSig = "";
+  let ytPlSig = "";
+  let ytqHold = { version: 0, until: 0 }; // ignora polls antigos logo depois de uma ação nossa
+
+  /** Miniatura do YouTube a partir do id (já validado); só i.ytimg.com (CSP). */
+  function setYtThumb(box, videoId) {
+    const id = typeof videoId === "string" && YT_VIDEO_RE.test(videoId) ? videoId : "";
+    if ((box.dataset.vid || "") === id) return;
+    box.dataset.vid = id;
+    const old = box.querySelector("img");
+    if (old) old.remove();
+    if (!id) return;
+    const img = document.createElement("img");
+    img.alt = "";
+    img.width = 64;
+    img.height = 36;
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.referrerPolicy = "no-referrer";
+    img.addEventListener("load", () => img.classList.add("is-loaded"));
+    img.addEventListener("error", () => img.remove());
+    img.src = "https://i.ytimg.com/vi/" + id + "/mqdefault.jpg";
+    box.appendChild(img);
+  }
+
+  function makeYtThumb(iconName) {
+    const box = document.createElement("span");
+    box.className = "thumb thumb--yt";
+    box.appendChild(makeIcon(iconName));
+    return box;
+  }
+
+  function ytItemTitle(item) {
+    if (item.title) return item.title;
+    return item.kind === "playlist" && !item.video_id ? "Playlist do YouTube" : "Vídeo do YouTube";
+  }
+
+  function ytItemSub(item, pos) {
+    const parts = [];
+    if (pos === 0) parts.push("Toca em seguida");
+    if (item.kind === "playlist") parts.push("Playlist");
+    if (isNum(item.start) && item.start > 0) parts.push("começa em " + formatTime(item.start * 1000));
+    return parts.join(" · ");
+  }
+
+  function makeActBtn(act, icon) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn btn--icon";
+    b.dataset.act = act;
+    b.appendChild(makeIcon(icon));
+    return b;
+  }
+
+  function makeQueueItem(item) {
+    const li = document.createElement("li");
+    li.className = "ytq__item is-new";
+    li.dataset.id = String(item.id);
+    li.addEventListener("animationend", () => li.classList.remove("is-new"), { once: true });
+    const row = document.createElement("div");
+    row.className = "ytq__row";
+    const thumb = makeYtThumb(item.video_id ? "video" : "list");
+    const text = document.createElement("span");
+    text.className = "ytq__text";
+    const title = document.createElement("span");
+    title.className = "ytq__title";
+    const sub = document.createElement("span");
+    sub.className = "ytq__sub";
+    text.append(title, sub);
+    const acts = document.createElement("div");
+    acts.className = "ytq__acts";
+    const btns = {
+      play: makeActBtn("play", "play"),
+      up: makeActBtn("up", "up"),
+      down: makeActBtn("down", "down"),
+      remove: makeActBtn("remove", "close"),
+    };
+    acts.append(btns.play, btns.up, btns.down, btns.remove);
+    row.append(thumb, text, acts);
+    li.appendChild(row);
+    li._ytq = { thumb, title, sub, btns };
+    return li;
+  }
+
+  function updateQueueItem(li, item, pos, total) {
+    const r = li._ytq;
+    const title = ytItemTitle(item);
+    setYtThumb(r.thumb, item.video_id);
+    setText(r.title, title);
+    setText(r.sub, ytItemSub(item, pos));
+    r.sub.hidden = !r.sub.textContent;
+    const labels = { play: "Tocar agora", up: "Subir na fila", down: "Descer na fila", remove: "Remover da fila" };
+    for (const act of Object.keys(labels)) {
+      const b = r.btns[act];
+      const label = labels[act] + ": " + title;
+      if (b.getAttribute("aria-label") !== label) b.setAttribute("aria-label", label);
+    }
+    // aria-disabled (e não disabled) mantém o foco no botão ao chegar no topo/fim
+    r.btns.up.setAttribute("aria-disabled", pos === 0 ? "true" : "false");
+    r.btns.down.setAttribute("aria-disabled", pos === total - 1 ? "true" : "false");
+  }
+
+  /**
+   * Atualiza uma <ul> por chave (sem recriar o que não mudou).
+   * Itens removidos saem com animação curta; o foco é preservado.
+   */
+  function reconcileList(ul, items, keyOf, create, update) {
+    const active = document.activeElement;
+    const focusKey = active && ul.contains(active) && active.closest("li") ? active.closest("li").dataset.key : null;
+    const focusAct = active && active.dataset ? active.dataset.act || (active.classList.contains("ytq__pl") ? "pl" : null) : null;
+
+    const existing = new Map();
+    for (const li of ul.children) if (!li.classList.contains("is-leaving")) existing.set(li.dataset.key, li);
+    const wanted = [];
+    const seen = new Set();
+    items.forEach((item, i) => {
+      let key = keyOf(item);
+      while (seen.has(key)) key += "+";
+      seen.add(key);
+      let li = existing.get(key);
+      if (!li) { li = create(item); li.dataset.key = key; }
+      update(li, item, i, items.length);
+      wanted.push(li);
+    });
+    // sai o que não está mais na lista
+    for (const [key, li] of existing) {
+      if (seen.has(key)) continue;
+      li.inert = true;
+      li.classList.add("is-leaving");
+      setTimeout(() => li.remove(), prefersReducedMotion() ? 0 : 180);
+    }
+    // ordena sem mexer no que já está no lugar
+    const nextLive = (el) => { while (el && el.classList.contains("is-leaving")) el = el.nextElementSibling; return el; };
+    let ref = nextLive(ul.firstElementChild);
+    for (const li of wanted) {
+      if (li === ref) ref = nextLive(ref.nextElementSibling);
+      else ul.insertBefore(li, ref);
+    }
+    if (focusKey !== null && (!document.activeElement || document.activeElement === document.body)) {
+      const li = wanted.find((l) => l.dataset.key === focusKey);
+      const target = li && (focusAct === "pl" ? li.querySelector(".ytq__pl") : li.querySelector('[data-act="' + focusAct + '"]'));
+      if (target) target.focus({ preventScroll: true });
+    }
+  }
+
+  function renderQueue(items) {
+    const sig = items.map((i) => i.id + "|" + (i.title || "")).join("\n");
+    if (sig === ytqSig) return;
+    ytqSig = sig;
+    ytqItems = items;
+    reconcileList(ytqList, items, (i) => String(i.id), makeQueueItem, updateQueueItem);
+    ytqEmpty.hidden = items.length > 0;
+    ytqCount.hidden = items.length === 0;
+    setText(ytqCount, String(items.length));
+    ytqClear.hidden = items.length === 0;
+    if (!items.length) resetClearConfirm();
+  }
+
+  function makePlItem(entry) {
+    const li = document.createElement("li");
+    li.className = "ytq__pl-item";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ytq__pl";
+    const thumb = makeYtThumb("video");
+    const text = document.createElement("span");
+    text.className = "ytq__text";
+    const title = document.createElement("span");
+    title.className = "ytq__title";
+    text.appendChild(title);
+    btn.append(thumb, text, makeIcon("play"));
+    li.appendChild(btn);
+    li._ytq = { btn, thumb, title };
+    return li;
+  }
+
+  function updatePlItem(li, entry) {
+    const r = li._ytq;
+    const title = entry.title || "Vídeo do YouTube";
+    setYtThumb(r.thumb, entry.video_id);
+    setText(r.title, title);
+    r.btn.dataset.index = String(entry.index);
+    const label = "Tocar agora: " + title;
+    if (r.btn.getAttribute("aria-label") !== label) r.btn.setAttribute("aria-label", label);
+  }
+
+  function renderPlaylist(pl) {
+    let entries = [];
+    if (pl && typeof pl === "object" && Number.isInteger(pl.index) && Array.isArray(pl.items)) {
+      pl.items.slice(0, 15).forEach((it, i) => {
+        if (!it || typeof it.video_id !== "string" || !YT_VIDEO_RE.test(it.video_id)) return;
+        entries.push({
+          video_id: it.video_id,
+          title: typeof it.title === "string" && it.title ? it.title.slice(0, 200) : null,
+          index: pl.index + 1 + i,
+        });
+      });
+    }
+    const sig = entries.map((e) => e.index + "|" + e.video_id + "|" + (e.title || "")).join("\n");
+    if (sig === ytPlSig) return;
+    ytPlSig = sig;
+    ytPlSection.hidden = entries.length === 0;
+    reconcileList(ytPlList, entries, (e) => e.video_id, makePlItem, updatePlItem);
+  }
+
+  /** Normaliza a fila vinda do servidor (nunca confia no formato). */
+  function normalizeQueue(list) {
+    const out = [];
+    if (!Array.isArray(list)) return out;
+    for (const it of list.slice(0, 50)) {
+      if (!it || !Number.isInteger(it.id)) continue;
+      const video = typeof it.video_id === "string" && YT_VIDEO_RE.test(it.video_id) ? it.video_id : null;
+      const listId = typeof it.list_id === "string" && YT_LIST_RE.test(it.list_id) ? it.list_id : null;
+      if (!video && !listId) continue;
+      out.push({
+        id: it.id,
+        kind: listId ? "playlist" : "video",
+        video_id: video,
+        list_id: listId,
+        start: Number.isInteger(it.start) && it.start >= 0 ? it.start : null,
+        title: typeof it.title === "string" && it.title ? it.title.slice(0, 200) : null,
+      });
+    }
+    return out;
+  }
+
+  // ---- Fila: ações (servidor é a fonte da verdade) ----
+  const ytqLive = $("yt-q-live");
+  /** Anuncia a mudança da fila a leitores de tela. */
+  function announceQueue(msg) {
+    const n = ytqItems.length;
+    setText(ytqLive, msg + " " + (n === 0 ? "Fila vazia." : n === 1 ? "1 item." : n + " itens."));
+  }
+
+  async function ytQueueOp(body) {
+    try {
+      const { ok, data } = await postJSON("/api/youtube/queue", body, { timeout: 8000 });
+      if (ok && data.ok) {
+        if (Number.isInteger(data.queue_version)) ytqHold = { version: data.queue_version, until: Date.now() + 3000 };
+        return data;
+      }
+      toast(typeof data.error === "string" && data.error ? data.error : "A fila não aceitou o pedido.", "error");
+    } catch (e) {
+      toast("Sem resposta do servidor.", "error");
+    }
+    scheduler.kick("yt-state"); // algo mudou por fora: reconcilia
+    return null;
+  }
+
+  async function doYoutubeQueueAdd() {
+    if (btnYoutubeQueueAdd.getAttribute("aria-disabled") === "true") return;
+    const raw = youtubeLink.value.trim();
+    const p = parseYouTubeUrl(raw);
+    if (p.error) {
+      toast(p.error, raw ? "error" : "warn");
+      youtubeLink.focus();
+      return;
+    }
+    btnYoutubeQueueAdd.setAttribute("aria-disabled", "true");
+    const data = await ytQueueOp({ op: "add", url: raw });
+    btnYoutubeQueueAdd.setAttribute("aria-disabled", "false");
+    if (!data) return;
+    youtubeLink.value = "";
+    announceQueue("Item adicionado à fila.");
+    toast(p.mix ? "Adicionado à fila (link de Mix: só a música do link)." : "Adicionado à fila", "success", { duration: 3000 });
+    const added = normalizeQueue([data.item])[0];
+    if (added && !ytqItems.some((i) => i.id === added.id)) renderQueue(ytqItems.concat(added));
+    scheduler.kick("yt-state");
+  }
+
+  async function ytQueuePlayNow(id) {
+    const data = await ytQueueOp({ op: "play_now", item_id: id });
+    if (!data) return;
+    renderQueue(ytqItems.filter((i) => i.id !== id));
+    announceQueue("Tocando o item agora.");
+    scheduler.kick("yt-state");
+  }
+
+  ytqList.addEventListener("click", (e) => {
+    const btn = e.target instanceof Element ? e.target.closest("button[data-act]") : null;
+    if (!btn || btn.getAttribute("aria-disabled") === "true") return;
+    const li = btn.closest(".ytq__item");
+    if (!li) return;
+    const id = Number(li.dataset.id);
+    const pos = ytqItems.findIndex((i) => i.id === id);
+    if (pos < 0) return;
+    const act = btn.dataset.act;
+    if (act === "play") {
+      ytQueuePlayNow(id);
+    } else if (act === "remove") {
+      renderQueue(ytqItems.filter((i) => i.id !== id)); // otimista; o servidor confirma
+      announceQueue("Item removido da fila.");
+      ytQueueOp({ op: "remove", item_id: id }).then(() => scheduler.kick("yt-state"));
+    } else if (act === "up" || act === "down") {
+      const to = act === "up" ? pos - 1 : pos + 1;
+      if (to < 0 || to >= ytqItems.length) return;
+      const next = ytqItems.slice();
+      next.splice(to, 0, next.splice(pos, 1)[0]);
+      renderQueue(next);
+      announceQueue("Item movido para a posição " + (to + 1) + ".");
+      ytQueueOp({ op: "move", item_id: id, to }).then(() => scheduler.kick("yt-state"));
+    }
+  });
+
+  // "Limpar fila" com confirmação leve: 1º toque pede confirmação, 2º limpa
+  let ytqClearTimer = 0;
+  function resetClearConfirm() {
+    clearTimeout(ytqClearTimer);
+    ytqClear.classList.remove("is-confirm");
+    setText(ytqClear, "Limpar fila");
+  }
+  ytqClear.addEventListener("click", async () => {
+    if (!ytqClear.classList.contains("is-confirm")) {
+      ytqClear.classList.add("is-confirm");
+      setText(ytqClear, "Toque de novo para limpar");
+      clearTimeout(ytqClearTimer);
+      ytqClearTimer = setTimeout(resetClearConfirm, 4000);
+      return;
+    }
+    resetClearConfirm();
+    renderQueue([]);
+    announceQueue("Fila limpa.");
+    await ytQueueOp({ op: "clear" });
+    scheduler.kick("yt-state");
+  });
+
+  ytPlList.addEventListener("click", (e) => {
+    const btn = e.target instanceof Element ? e.target.closest("button.ytq__pl") : null;
+    if (!btn) return;
+    const index = Number(btn.dataset.index);
+    if (!Number.isInteger(index) || index < 0 || index >= YT_PLAYLIST_MAX) return;
+    if (ytMode === "player") ytPlayIndex(index);
+    else youtubeEnqueue("play_index", { index }).then(() => setTimeout(() => scheduler.kick("yt-state"), 1500));
+  });
+
+  btnYoutubeQueueAdd.addEventListener("click", doYoutubeQueueAdd);
 
   function setYoutubeLamp(state) {
     // state: alive | none | offline | unknown
@@ -1662,9 +2086,15 @@
       if (ytMode !== "player") {
         const title = typeof data.now_playing === "string" ? data.now_playing : "";
         applyYoutubeNp(title, !!data.is_playing);
+        if (title && title !== IDLE_YT) setYtThumb(ytqNowThumb, data.video_id);
         setText(youtubeNpState, ytAlive ? "No tocador" : "YouTube");
         youtubeVol.set(data.volume);
       }
+      // Fila e próximas da playlist (iguais para todos os aparelhos). Um poll
+      // que começou antes de uma ação nossa pode trazer a fila antiga: ignora.
+      const stale = Number.isInteger(data.queue_version) && Date.now() < ytqHold.until && data.queue_version < ytqHold.version;
+      if (!stale) renderQueue(normalizeQueue(data.queue));
+      renderPlaylist(data.playlist);
     } catch (e) {
       ytAlive = null;
       setYoutubeLamp("offline");
@@ -1728,12 +2158,16 @@
           ytCreating = false;
           ytPlayer.setVolume(ytUserVolume);
           youtubeVol.force(ytUserVolume);
-          if (ytPendingLoad) { const p = ytPendingLoad; ytPendingLoad = null; loadYoutube(p); }
+          if (ytPendingLoad) { const w = ytPendingLoad; ytPendingLoad = null; loadYoutube(w.p, w.internal); }
           pushYoutubeState();
         },
         onStateChange: (e) => {
           if (ytMode !== "player") return;
-          ytPlayUI.set(e.data === YT_PLAYING);
+          const st = e.data;
+          ytPlayUI.set(st === YT_PLAYING);
+          if (st === YT_PLAYING) ytOnPlaying();
+          else if (st === -1 || st === 3) ytCheckNaturalAdvance();
+          else if (st === YT_ENDED) ytAdvance("ended");
           pushYoutubeState();
         },
         onError: (e) => {
@@ -1745,6 +2179,10 @@
             150: "O dono do vídeo não permite reprodução incorporada.",
           };
           toast(msgs[e.data] || "Não foi possível reproduzir esse vídeo.", "error");
+          // erro já tratado aqui: o watchdog de playlist não precisa avisar de novo
+          clearTimeout(ytPlWatchdog); ytLoadSeq++;
+          // item com problema não pode travar a fila: segue para o próximo
+          ytAdvance("error");
         },
         onAutoplayBlocked: () => {
           toast("O navegador bloqueou a reprodução automática. Clique em Tocar nesta aba uma vez.", "warn");
@@ -1762,6 +2200,9 @@
     ytCreating = false;
     ytDucking = false;
     clearTimeout(ytDuckTimer);
+    ytCurList = null; ytLastIdx = null; ytWantVideo = null; ytResume = null; ytAdvancing = false; ytAdvancePending = false; ytWantTries = 0;
+    ytLastVid = null; ytLastPlIdx = null;
+    clearTimeout(ytPlWatchdog); ytLoadSeq++;
     // destroy() remove o <div id="yt-player">: recria o ponto de montagem
     if (!document.getElementById("yt-player")) {
       const holder = document.createElement("div");
@@ -1770,10 +2211,191 @@
     }
   }
 
-  function loadYoutube(parsed) {
-    if (!ytPlayer || !ytReady) { ytPendingLoad = parsed; return; }
-    if (parsed.type === "video") ytPlayer.loadVideoById(parsed.id);
-    else ytPlayer.loadPlaylist({ listType: "playlist", list: parsed.id });
+  // ---- Leitura segura do player (a API lança erro/undefined durante trocas) ----
+  function ytPlaylistIds() {
+    try {
+      const a = ytPlayer.getPlaylist();
+      return Array.isArray(a) ? a.filter((x) => typeof x === "string" && YT_VIDEO_RE.test(x)).slice(0, YT_PLAYLIST_MAX) : [];
+    } catch (e) { return []; }
+  }
+
+  function ytCurrentVideoId() {
+    try {
+      const v = ytPlayer.getVideoData();
+      return v && typeof v.video_id === "string" && YT_VIDEO_RE.test(v.video_id) ? v.video_id : null;
+    } catch (e) { return null; }
+  }
+
+  /** Índice atual na playlist: pelo id (confiável); getPlaylistIndex só se estiver no intervalo. */
+  function ytCurrentIndex(ids, vid) {
+    if (!ids.length) return null;
+    if (vid) { const i = ids.indexOf(vid); if (i >= 0) return i; }
+    try {
+      const i = ytPlayer.getPlaylistIndex();
+      if (Number.isInteger(i) && i >= 0 && i < ids.length) return i;
+    } catch (e) { /* sem playlist */ }
+    return null;
+  }
+
+  /**
+   * Toca um vídeo e/ou playlist (params já validados).
+   * `internal` = decisão da fila/retomada (não cancela a playlist guardada).
+   */
+  function loadYoutube(p, internal) {
+    if (!ytPlayer || !ytReady) { ytPendingLoad = { p, internal: !!internal }; return; }
+    ytNavAt = Date.now();
+    if (!internal) ytResume = null; // o usuário assumiu o controle
+    ytLastIdx = null;
+    ytWantVideo = null;
+    ytCurList = p.list_id || null;
+    const startSeconds = p.start || 0;
+    const seq = ++ytLoadSeq;
+    clearTimeout(ytPlWatchdog);
+    if (p.list_id) {
+      ytWantVideo = p.video_id || null; // ao começar, pula para o v= do link
+      ytPlayer.loadPlaylist({ listType: "playlist", list: p.list_id, index: p.index || 0, startSeconds });
+      // Playlist privada/não incorporável não dispara onError: o player fica parado em silêncio.
+      // Se depois de alguns segundos ela continuar vazia, avisa e (se veio da fila) segue em frente.
+      let retried = false;
+      const check = () => {
+        if (seq !== ytLoadSeq || !ytPlayer || !ytReady || ytPlaylistIds().length > 0) return;
+        let st = -1;
+        try { st = ytPlayer.getPlayerState(); } catch (e) { /* sem estado */ }
+        if (st === 3 && !retried) { retried = true; ytPlWatchdog = setTimeout(check, 5000); return; } // ainda carregando
+        toast("Não foi possível carregar essa playlist (pode ser privada ou não permitir tocar fora do YouTube).", "error");
+        if (internal) ytAdvance("error");
+      };
+      ytPlWatchdog = setTimeout(check, YT_PL_WATCHDOG_MS);
+    } else {
+      ytPlayer.loadVideoById({ videoId: p.video_id, startSeconds });
+    }
+  }
+
+  /**
+   * PLAYING: (1) detecta avanço natural ANTES de gravar o índice (a fila passa na frente);
+   * (2) se o link tinha v= dentro da playlist, vai até ele (uma vez, só com dados prontos).
+   */
+  async function ytOnPlaying() {
+    if (await ytCheckNaturalAdvance()) return;
+    if (!ytPlayer) return;
+    const ids = ytPlaylistIds();
+    const vid = ytCurrentVideoId();
+    if (ytWantVideo) {
+      // dados ainda não prontos (playlist vazia / vídeo desconhecido): espera o próximo PLAYING
+      if (ids.length === 0 || vid === null) {
+        if (++ytWantTries > 5) { ytWantVideo = null; ytWantTries = 0; }
+        return;
+      }
+      const want = ytWantVideo;
+      ytWantVideo = null;
+      ytWantTries = 0;
+      if (vid !== want) {
+        const i = ids.indexOf(want);
+        if (i >= 0) {
+          ytNavAt = Date.now();
+          ytLastIdx = i;
+          ytPlayer.playVideoAt(i);
+          return;
+        }
+        toast("Esse vídeo não está disponível na playlist; tocando a partir do início dela.", "warn");
+      }
+    }
+    ytLastIdx = ytCurrentIndex(ids, vid);
+  }
+
+  /** Pop na fila do servidor; devolve os params de load do primeiro item ou null. */
+  async function ytQueuePop() {
+    try {
+      const { ok, data } = await postJSON("/api/youtube/queue", { op: "pop" }, { timeout: 6000 });
+      if (ok && data.ok && data.item) {
+        scheduler.kick("yt-state");
+        const p = sanitizeYtLoad(data.item);
+        if (!p) {
+          console.warn("Item da fila com dados inválidos foi descartado.");
+          toast("Um item da fila estava inválido e foi pulado.", "warn");
+        }
+        return p;
+      }
+    } catch (e) { /* sem resposta: segue sem fila */ }
+    return null;
+  }
+
+  /**
+   * Avanço NATURAL da playlist (a API não manda ENDED entre itens): o índice sobe 1 sem
+   * o app ter mexido no player nos últimos segundos. Se há fila, ela passa na frente e a
+   * playlist é guardada para retomar quando a fila esvaziar.
+   */
+  async function ytCheckNaturalAdvance() {
+    if (!ytPlayer || !ytCurList || ytLastIdx === null || Date.now() - ytNavAt < YT_NAV_GRACE_MS) return false;
+    const ids = ytPlaylistIds();
+    const idx = ytCurrentIndex(ids, ytCurrentVideoId());
+    if (idx === null || idx !== ytLastIdx + 1) return false;
+    ytLastIdx = idx;
+    if (ytResume || ytAdvancing) return false; // já está tocando algo da fila: deixa a playlist da fila seguir
+    ytAdvancing = true;
+    let interrupted = false;
+    // com fila visível, pausa já para o próximo da playlist não tocar durante o pop
+    const paused = ytqItems.length > 0;
+    if (paused) { try { ytPlayer.pauseVideo(); } catch (e) { /* ignora */ } }
+    try {
+      const list = ytCurList;
+      const p = await ytQueuePop();
+      if (p) {
+        ytResume = { list, index: idx };
+        loadYoutube(p, true);
+        interrupted = true;
+      } else if (paused && ytPlayer) {
+        try { ytPlayer.playVideo(); } catch (e) { /* ignora */ }
+      }
+    } finally { ytAdvancing = false; }
+    return interrupted;
+  }
+
+  /**
+   * O item atual terminou ("ended"), deu erro ("error") ou o usuário pediu o próximo ("next").
+   * Ordem: próximo da fila -> retomar playlist guardada -> próximo da playlist -> parar.
+   */
+  async function ytAdvance(reason) {
+    if (!ytPlayer || !ytReady) return;
+    if (ytAdvancing) {
+      if (reason === "next") ytAdvancePending = true; // clique durante um pop: refaz depois
+      return;
+    }
+    ytAdvancing = true;
+    try {
+      const ids = ytPlaylistIds();
+      const idx = ytCurList ? ytCurrentIndex(ids, ytCurrentVideoId()) : null;
+      const hasNext = idx !== null && idx + 1 < ids.length;
+      const p = await ytQueuePop();
+      if (p) {
+        if (!ytResume && ytCurList && hasNext) ytResume = { list: ytCurList, index: idx + 1 };
+        loadYoutube(p, true);
+      } else if (ytResume) {
+        const r = ytResume;
+        ytResume = null;
+        loadYoutube({ video_id: null, list_id: r.list, index: r.index, start: null }, true);
+      } else if (hasNext && reason === "next") {
+        ytNavAt = Date.now();
+        ytPlayer.nextVideo();
+      } else if (hasNext && reason === "error") {
+        // o player às vezes já pula sozinho o item com erro: só avança se continuar no mesmo
+        setTimeout(() => {
+          if (!ytPlayer || !ytReady) return;
+          const cur = ytCurrentIndex(ytPlaylistIds(), ytCurrentVideoId());
+          if (cur === idx) { ytNavAt = Date.now(); ytPlayer.nextVideo(); }
+        }, 1500);
+      }
+    } finally {
+      ytAdvancing = false;
+      if (ytAdvancePending) { ytAdvancePending = false; ytAdvance("next"); }
+    }
+  }
+
+  function ytPlayIndex(index) {
+    if (!ytPlayer || !ytReady) { playerUnavailable(); return; }
+    if (index >= ytPlaylistIds().length) return;
+    ytNavAt = Date.now();
+    ytPlayer.playVideoAt(index);
   }
 
   /** Executa um comando vindo do servidor (somente no modo tocador). */
@@ -1781,8 +2403,8 @@
     if (!cmd || typeof cmd.action !== "string") return;
     const params = cmd.params && typeof cmd.params === "object" ? cmd.params : {};
     if (cmd.action === "load") {
-      const parsed = parseYouTubeUrl(params.url);
-      if (parsed) loadYoutube(parsed);
+      const p = sanitizeYtLoad(params);
+      if (p) loadYoutube(p);
       return;
     }
     if (cmd.action === "volume" && isNum(params.value)) {
@@ -1811,8 +2433,11 @@
         break;
       case "play": ytPlayer.playVideo(); break;
       case "pause": ytPlayer.pauseVideo(); break;
-      case "next": ytPlayer.nextVideo(); break;
-      case "prev": ytPlayer.previousVideo(); break;
+      case "next": ytAdvance("next"); break;
+      case "prev": ytNavAt = Date.now(); ytPlayer.previousVideo(); break;
+      case "play_index":
+        if (Number.isInteger(params.index) && params.index >= 0) ytPlayIndex(params.index);
+        break;
       default: break;
     }
   }
@@ -1835,12 +2460,30 @@
         applyYoutubeNp(title, playing);
         setText(youtubeNpState, "Tocando nesta aba");
       }
+      const vid = ytCurrentVideoId();
+      const ids = ytPlaylistIds();
+      const pidx = ytCurrentIndex(ids, vid);
+      if (title) setYtThumb(ytqNowThumb, vid);
       await postJSON(
         "/api/youtube/state",
-        { now_playing: (title || IDLE_YT).slice(0, 300), is_playing: playing, volume: ytUserVolume },
+        {
+          now_playing: (title || IDLE_YT).slice(0, 300),
+          is_playing: playing,
+          volume: ytUserVolume,
+          video_id: vid,
+          list_id: ids.length ? ytCurList : null,
+          playlist_ids: ids,
+          playlist_index: pidx,
+        },
         { timeout: 5000 }
       );
       ytLastPush = Date.now();
+      // trocou de vídeo/item: atualiza o tile "Fila" sem esperar o próximo poll
+      if (vid !== ytLastVid || pidx !== ytLastPlIdx) {
+        ytLastVid = vid;
+        ytLastPlIdx = pidx;
+        scheduler.kick("yt-state");
+      }
     } catch (e) { /* tenta de novo no próximo heartbeat */ }
     ytPushBusy = false;
     if (ytPushAgain) { ytPushAgain = false; pushYoutubeState(); }
@@ -1942,24 +2585,21 @@
   // ---- Link + Carregar ----
   function doYoutubeLoad() {
     const raw = youtubeLink.value.trim();
-    if (!raw) {
-      toast("Cole o link de um vídeo ou playlist do YouTube.", "warn");
-      youtubeLink.focus();
-      return;
-    }
     const parsed = parseYouTubeUrl(raw);
-    if (!parsed) {
-      toast("Link inválido. Cole o endereço completo (https://…) de um vídeo ou playlist do YouTube.", "error");
+    if (parsed.error) {
+      toast(parsed.error, raw ? "error" : "warn");
       youtubeLink.focus();
       return;
     }
+    // Link de Mix: o painel avisa o que mudou (o Mix do YouTube não toca igual no player incorporado)
+    const note = parsed.mix ? " Link de Mix: toca só a música do link." : "";
     if (ytMode === "player") {
       ensureYoutubePlayer();
       loadYoutube(parsed);
-      toast("Carregando no player desta aba…", "info", { duration: 2500 });
+      toast("Tocando agora nesta aba." + note, "info", { duration: parsed.mix ? 5000 : 2500 });
     } else {
       youtubeEnqueue("load", { url: raw }).then((ok) => {
-        if (ok) toast("Link enviado ao tocador.", "success", { duration: 2800 });
+        if (ok) toast("Link enviado ao tocador." + note, "success", { duration: parsed.mix ? 5000 : 2800 });
       });
     }
   }
@@ -1986,11 +2626,11 @@
     }
   });
   btnYoutubeNext.addEventListener("click", () => {
-    if (ytMode === "player") { if (ytPlayer && ytReady) ytPlayer.nextVideo(); else playerUnavailable(); }
-    else youtubeEnqueue("next");
+    if (ytMode === "player") { if (ytPlayer && ytReady) ytAdvance("next"); else playerUnavailable(); }
+    else youtubeEnqueue("next").then(() => setTimeout(() => scheduler.kick("yt-state"), 1500));
   });
   btnYoutubePrev.addEventListener("click", () => {
-    if (ytMode === "player") { if (ytPlayer && ytReady) ytPlayer.previousVideo(); else playerUnavailable(); }
+    if (ytMode === "player") { if (ytPlayer && ytReady) { ytNavAt = Date.now(); ytPlayer.previousVideo(); } else playerUnavailable(); }
     else youtubeEnqueue("prev");
   });
 
