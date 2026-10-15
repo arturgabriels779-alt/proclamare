@@ -6,8 +6,9 @@ YouTube — abaixando o volume sozinho sempre que um anúncio é feito. **Tudo
 isso pode ser controlado de qualquer computador da rede da loja**, mesmo
 que o som sempre saia pelas caixas ligadas a um único computador.
 
-A interface é a **Central de Som** (visual em amarelo e vermelho), com os
-módulos Anúncio e Música lado a lado.
+A interface é um painel limpo em **Bento Grid** (estilo Apple), com os
+módulos Anúncio e Música lado a lado, tema **claro, escuro ou automático**
+(seletor no topo) e layout adaptado para celular.
 
 ---
 
