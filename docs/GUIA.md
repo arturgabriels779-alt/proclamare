@@ -50,7 +50,9 @@ cada pacote **com hashes**
 (`pip install --require-hashes --only-binary :all: --no-deps -r requirements.lock`):
 o pip recusa qualquer arquivo diferente do que foi testado e nunca compila código-fonte.
 Se você instalar à mão no Windows, prefira essa forma. O lock vale para Python 3.10 a
-3.13; com o lock presente o instalador **recusa** Python 3.14 ou mais novo (instale o 3.12).
+3.13. O instalador do Windows usa um Python 3.10 a 3.13 que já esteja no computador; se
+só existir o 3.14 ou mais novo, ele **não mexe no seu Python** e baixa um Python só para
+o Proclamare (veja "Python: o instalador resolve sozinho", abaixo).
 
 ### Instalar e ligar com duplo clique (Windows)
 
@@ -60,9 +62,9 @@ Para quem não quer usar o terminal:
    de usuário** (ex.: Documentos), não em `C:\` nem em pastas públicas. Se mover
    a pasta de lugar depois, **rode o instalador de novo** (os atalhos guardam o
    caminho antigo).
-2. **Instalar (uma vez só):** instale o Python 3.10+ de [python.org](https://www.python.org/downloads/)
-   marcando **"Add python.exe to PATH"**. Depois dê duplo clique em
-   **`Instalar Proclamare.bat`**. Ele cria o ambiente `.venv`, instala as
+2. **Instalar (uma vez só):** dê duplo clique em **`Instalar Proclamare.bat`**.
+   Você **não precisa instalar o Python antes**: o instalador resolve isso sozinho
+   (veja a seção abaixo). Ele cria o ambiente `.venv`, instala as
    dependências pelo `requirements.lock` (precisa de internet) e cria os atalhos **Proclamare** (Área de
    Trabalho e Menu Iniciar), **Desligar Proclamare** e **Desinstalar Proclamare**
    (Menu Iniciar). Se o instalador avisar em amarelo que a pasta é gravável por
@@ -90,12 +92,47 @@ Para quem não quer usar o terminal:
 8. **Desinstalar:** Menu Iniciar → **Desinstalar Proclamare** (ou, no terminal,
    `powershell -NoProfile -ExecutionPolicy Bypass -File tools\instalar.ps1 -Desinstalar`).
    Remove todos os atalhos, inclusive o de Inicialização, e pergunta se deve
-   apagar o `.venv`. A pasta do programa e o `config.json` são mantidos; para
-   apagar tudo, exclua a pasta depois.
+   apagar o `.venv` e o Python que o próprio Proclamare baixou (se baixou). A pasta
+   do programa, o `config.json` e a pasta de músicas são mantidos; para apagar tudo,
+   exclua a pasta depois.
 
 O lançador sempre conversa com `127.0.0.1`. Se você definiu `PROCLAMARE_HOST`
 com um IP específico que não seja de loopback, use `0.0.0.0` ou abra o painel
 direto pelo navegador nesse endereço.
+
+### Python: o instalador resolve sozinho
+
+Ao rodar `Instalar Proclamare.bat`, o instalador faz isto:
+
+1. **Procura um Python no computador** (versões 3.10 a 3.13): o `py` (launcher), o PATH, o registro do Windows (só leitura) e as pastas padrão (como `%LOCALAPPDATA%\Programs\Python`). Se o `.venv` do Proclamare já está funcionando, nem procura.
+2. **Se achar, usa esse Python e não baixa nada.** Nada é mudado nele. Por segurança, só é usado um Python cuja pasta seja **sua ou dos administradores** e que **não possa ser alterada por qualquer usuário do computador**; o instalador avisa quando ignora um por esse motivo (por exemplo, um `C:\Python312` criado por outra conta).
+3. **Se só existir Python 3.14 ou mais novo**, ele não serve (uma das peças do Proclamare ainda não existe para o 3.14). O instalador avisa, deixa o seu Python como está e segue para o passo 4. O mesmo vale para um Python instalado sem o módulo `venv`/pip.
+4. **Se não houver Python compatível, baixa um Python só para o Proclamare** (3.12.10, cerca de 14 MB, do site oficial nuget.org, pacote mantido pela Python Software Foundation). Ele fica em `%LOCALAPPDATA%\Proclamare\python-3.12.10` (uns 40 MB). **Não pede senha de administrador, não mexe no PATH, no registro nem em outros programas**, e continua lá quando você baixar uma versão nova do Proclamare. A pasta é criada **protegida**: só você, o sistema e os administradores podem alterá-la.
+5. Nas próximas vezes ele reaproveita esse Python (confere a assinatura digital de novo) e não baixa outra vez.
+
+**Segurança do download:** só HTTPS do endereço fixo do nuget.org; versão, tamanho e impressões digitais (SHA-256 e SHA-512) fixos no instalador; se não conferir, o arquivo é apagado e nada é instalado; a assinatura digital da Python Software Foundation é conferida antes de qualquer arquivo do Python ser executado; tudo é preparado numa pasta temporária protegida e só depois colocado no lugar (nunca fica pela metade).
+
+**Sem internet?** O instalador avisa. Conecte à internet e rode de novo, ou instale o Python 3.12 manualmente em [python.org](https://www.python.org/downloads/) e, na primeira tela, **marque "Add python.exe to PATH"**.
+
+#### Problemas comuns
+
+- *"O caminho da pasta é longo demais"*: o Windows limita caminhos a 260 letras. Use `-PastaPython C:\Proclamare\python` (ou, melhor, uma pasta dentro do seu perfil); a pasta é protegida automaticamente.
+- *"Este Windows é de 32 bits"*: o Python automático é de 64 bits; instale o Python 3.12 manualmente (veja acima).
+- *"O disco não guarda permissões (não é NTFS)"*: use `-PastaPython` com uma pasta de um disco NTFS.
+- *Antivírus, proxy ou Windows sem atualizações*: se o arquivo baixado for alterado ou a assinatura não puder ser conferida, nada é instalado. Tente em outra rede, rode o Windows Update ou instale o Python 3.12 manualmente.
+- *Espaço em disco*: são necessários cerca de 250 MB livres durante a preparação.
+- *Outra conta do Windows*: como a pasta do Python do Proclamare é fechada para outros usuários, o Proclamare instalado por uma conta não funciona em outra; cada conta roda o instalador. O mesmo vale para um Python instalado "só para o usuário".
+
+**Desinstalar:** o atalho "Desinstalar Proclamare" remove os atalhos e pergunta se deve apagar o `.venv` e **o Python que o próprio Proclamare baixou**. Ele só apaga uma pasta marcada como do Proclamare (arquivo `.proclamare-python.json`), **nunca um Python que você instalou**. Se você tiver outra cópia do Proclamare neste PC, ela vai precisar rodar o instalador de novo. Para pular a pergunta: `-Desinstalar -RemoverPythonPrivado`. Se você apagar o Python do Proclamare e mantiver o `.venv`, o `.venv` deixa de funcionar até você rodar o instalador de novo (ele reconstrói sozinho).
+
+**Opções avançadas** (linha de comando: `powershell -ExecutionPolicy Bypass -File tools\instalar.ps1 ...`):
+
+- `-PastaPython <pasta>`: onde guardar o Python do Proclamare (padrão `%LOCALAPPDATA%\Proclamare\python-3.12.10`). Prefira uma pasta dentro do seu perfil; o instalador a protege e recusa uma pasta-mãe que pertença a outro usuário.
+- `-IgnorarPythonDoSistema`: ignora os Pythons do PC e força o uso/baixa do Python do Proclamare (serve para testar um PC sem Python).
+- `-RemoverPythonPrivado`: com `-Desinstalar`, apaga o Python do Proclamare sem perguntar.
+- `-SemDependencias`: nunca baixa Python (usa só o que já existe).
+
+**Versão do Python do Proclamare:** o 3.12.10 é a última 3.12 com binários para Windows e não recebe mais correções de segurança do CPython. O app não usa o módulo `tarfile` e o pip roda só com wheels (`--only-binary`), então o risco hoje é baixo. A troca (3.13.x, ou 3.14.x quando o lock liberar o pygame no 3.14) fica para revisão até 2027-04.
 
 Para definir o PIN (6 a 8 dígitos) sem abrir o painel, rode no terminal, dentro
 da pasta do projeto: `.venv\Scripts\python server.py --definir-pin`.
@@ -528,6 +565,11 @@ Depois, abra o navegador nesse mesmo computador, acesse o Proclamare e
 deixe a aba do YouTube marcada como **"O tocador"**, se for usar o YouTube.
 (Alternativa manual: Agendador de Tarefas rodando `.venv\Scripts\pythonw.exe Proclamare.pyw --silencioso`
 com "Iniciar em" apontando para a pasta do projeto.)
+
+Se usar o Agendador de Tarefas, configure a tarefa para rodar **com a mesma conta de quem
+instalou o Proclamare**: o `.venv` depende do Python (o do computador ou o que o Proclamare
+baixou), e a pasta do Python do Proclamare, em `%LOCALAPPDATA%` da conta que instalou, não é
+acessível por outra conta.
 
 ### Linux — systemd
 `/etc/systemd/system/proclamare.service`:

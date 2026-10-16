@@ -81,6 +81,8 @@ flowchart LR
 
 **Caminho fácil (Windows):** baixe ou clone o projeto → dê duplo clique em **Instalar Proclamare.bat** → depois é só dar duplo clique no ícone **Proclamare** na Área de Trabalho. Para desligar: Menu Iniciar → *Desligar Proclamare*. Detalhes na seção "Instalar e ligar com duplo clique" do [guia](docs/GUIA.md).
 
+**Não precisa instalar o Python antes.** O instalador usa o Python 3.10 a 3.13 que já estiver no computador; se não houver, baixa sozinho uma cópia oficial do Python 3.12 só para o Proclamare (sem administrador, sem mexer no PATH nem no registro, com impressão digital e assinatura conferidas). Detalhes em "Python: o instalador resolve sozinho" no [guia](docs/GUIA.md).
+
 **Pelo terminal (qualquer sistema):**
 
 ```bash
