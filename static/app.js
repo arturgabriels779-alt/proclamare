@@ -1,4 +1,4 @@
-/* Proclamare — interface do painel de controle (v2.3 (saídas de som))
+/* Proclamare — interface do painel de controle (v2.4: Minhas músicas)
    -----------------------------------------------------------------------
    Sem frameworks e sem build: um único IIFE.
 
@@ -10,12 +10,19 @@
    tocando de verdade, e obedece comandos via LONG-POLL); os demais ficam em
    "Controle remoto" (só enfileiram comandos).
 
+   Minhas músicas (v2.4): os arquivos da pasta do PC da loja tocam num <audio>
+   oculto da MESMA aba tocadora, na MESMA fila do YouTube. O navegador só
+   conhece ids opacos (16 hex): nunca caminho de arquivo. Todo texto vindo do
+   servidor (título, artista, nome de arquivo) entra no DOM só por textContent.
+   O envio de músicas é a ÚNICA requisição que não é JSON (multipart via XHR).
+
    Regras de segurança deste arquivo (CSP do servidor):
    - nada de innerHTML/eval com dados de API ou do usuário (só textContent
      e createElement);
    - nenhum <script>/<style>/handler inline: estilos dinâmicos usam apenas
      element.style.setProperty / classList (permitidos pela CSP);
-   - todo POST /api/* sai com Content-Type: application/json.
+   - todo POST /api/* sai com Content-Type: application/json (única exceção:
+     o envio de músicas, multipart/form-data, com o boundary posto pelo navegador).
    ----------------------------------------------------------------------- */
 (function () {
   "use strict";
@@ -31,6 +38,7 @@
     history: "proclamare_history",
     prefs: "proclamare_prefs",
     source: "proclamare_source",
+    lib: "proclamare_lib", // ordem da lista e "embaralhar" das Minhas músicas
     ytMode: "youtube_mode", // chave antiga, mantida
   };
   const ENGINES = ["auto", "online", "offline"];
@@ -41,6 +49,8 @@
   const YT_VIDEO_RE = /^[A-Za-z0-9_-]{11}$/;
   const YT_LIST_RE = /^[A-Za-z0-9_-]{2,64}$/;
   const YT_PLAYLIST_MAX = 200; // igual ao servidor
+  const YT_QUEUE_MAX = 200; // teto da fila (v2.4: cabem pastas inteiras)
+  const MUSIC_ID_RE = /^[0-9a-f]{16}$/; // id opaco de uma música (nunca caminho)
   const YT_HOSTS = ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"];
   const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -1055,18 +1065,22 @@
   });
 
   // ======================================================================
-  // 14. Fonte de música (Spotify | YouTube)
+  // 14. Fonte de música (Spotify | YouTube | Minhas músicas)
   // ======================================================================
   const sourceGroup = initGroup(sourceSwitch, { role: "radio", onSelect: onSourceChange });
+  /** YouTube e Minhas músicas dividem o mesmo painel (tocador, "tocando agora" e fila). */
+  const isTocadorSource = (src) => src === "youtube" || src === "musicas";
 
   /**
    * Mostra o pane da fonte ativa. No modo "tocador" o pane do YouTube NUNCA
    * recebe `hidden` (display:none pode pausar o iframe): fica fora da tela.
+   * O mesmo pane serve ao YouTube e às Minhas músicas; o que muda por fonte
+   * (link do YouTube x biblioteca, título e dica do bloco "tocador") é alternado aqui.
    */
   function syncPanes() {
     const src = sourceGroup.value;
     paneSpotify.hidden = src !== "spotify";
-    if (src === "youtube") {
+    if (isTocadorSource(src)) {
       paneYoutube.hidden = false;
       paneYoutube.classList.remove("is-offscreen");
     } else if (ytMode === "player") {
@@ -1076,10 +1090,11 @@
       paneYoutube.hidden = true;
       paneYoutube.classList.remove("is-offscreen");
     }
+    if (isTocadorSource(src)) syncTocadorPanel(src);
   }
 
   function onSourceChange(source) {
-    const show = source === "youtube" ? paneYoutube : paneSpotify;
+    const show = isTocadorSource(source) ? paneYoutube : paneSpotify;
     withTransition("source", syncPanes, () => playEnter(show));
     store.set(LS.source, source);
     scheduler.refresh();
@@ -1619,6 +1634,7 @@
   let ytLastPush = 0;
   let ytPushBusy = false;
   let ytPushAgain = false;
+  const YT_TITLE_IDLE = Symbol("ocioso"); // valor de ytTitle quando não há player do YouTube pronto
   let ytTitle = "";
   // --- estado do tocador para fila/playlist (só modo "Tocador da loja") ---
   const YT_ENDED = 0; // YT.PlayerState.ENDED
@@ -1637,7 +1653,275 @@
   let ytLoadSeq = 0; // cada load invalida o watchdog do anterior
   let ytPlWatchdog = 0;
   const ytPlayUI = playToggle(btnYoutubePlay, youtubePlayIcon);
-  const youtubeActive = () => sourceGroup.value === "youtube" && musicVisible();
+  /** YouTube e Minhas músicas usam o mesmo painel/tocador: os pollers valem para as duas fontes. */
+  const youtubeActive = () => isTocadorSource(sourceGroup.value) && musicVisible();
+
+  // ---- Arquivos (Minhas músicas) no <audio> oculto desta aba tocadora ----
+  const audioEl = $("lib-audio");
+  const tileNpYt = $("tile-np-yt");
+  const ytNpHeadIcon = $("yt-np-head-icon");
+  const ytNpPh = $("yt-np-ph");
+  const ytNpImg = $("yt-np-img");
+  const youtubeNpArtist = $("youtube-np-artist");
+  const AUTOPLAY_MSG = "O navegador bloqueou a reprodução automática. Clique em Tocar nesta aba uma vez.";
+  const fa = {
+    id: null, // music_id carregado no <audio> (null = a fonte ativa é o YouTube ou nada)
+    meta: null, // faixa {id, title, artista, album, tem_capa, duracao_s}
+    advancing: false, // evita dois "pop" ao mesmo tempo (fim e erro chegam em sequência)
+    advancePending: false, // "Próxima" clicado durante um pop: refaz ao terminar
+    resolving: false, // buscando título/artista de um id que só chegou por comando
+  };
+  let ytLastFile = null; // último arquivo informado ao servidor (para atualizar a fila na troca)
+  let npKind = "youtube"; // o que o "Tocando agora" mostra: youtube | file
+  const trackCache = new Map(); // id -> faixa; alimentado pela lista, pela fila e pelo estado
+
+  const fmtDur = (seconds) => formatTime(seconds * 1000);
+  const coverUrl = (t) => (t && t.tem_capa && MUSIC_ID_RE.test(t.id) ? "/api/musicas/" + t.id + "/capa" : null);
+
+  /** Normaliza qualquer visão de música (lista, fila, estado) em {id, title, artista, album, tem_capa, duracao_s}. */
+  function makeTrack(id, title, artista, album, duracao, capa) {
+    if (typeof id !== "string" || !MUSIC_ID_RE.test(id)) return null;
+    const txt = (v, n) => (typeof v === "string" && v.trim() ? v.trim().slice(0, n) : null);
+    const t = {
+      id,
+      title: txt(title, 200),
+      artista: txt(artista, 200),
+      album: txt(album, 200),
+      duracao_s: Number.isInteger(duracao) && duracao >= 0 && duracao < 864000 ? duracao : null,
+      tem_capa: capa === true,
+    };
+    const old = trackCache.get(id);
+    trackCache.delete(id);
+    trackCache.set(id, !t.title && old && old.title ? old : t);
+    if (trackCache.size > 800) trackCache.delete(trackCache.keys().next().value);
+    return t;
+  }
+  const trackFromLib = (it) => (it ? makeTrack(it.id, it.titulo, it.artista, it.album, it.duracao_s, it.tem_capa) : null);
+  const trackFromQueue = (it) => (it ? makeTrack(it.music_id, it.title, it.artista, it.album, it.duracao_s, it.tem_capa) : null);
+
+  /** Volume do YouTube E do <audio> (o "abaixar" durante o anúncio vale para os dois). */
+  function applyVolumes() {
+    const v = ytDucking ? Math.min(12, ytUserVolume) : ytUserVolume;
+    if (ytPlayer && ytReady) {
+      try { ytPlayer.setVolume(v); } catch (e) { /* player em troca */ }
+    }
+    audioEl.volume = clamp(v / 100, 0, 1);
+  }
+
+  const filePlaying = () => !!fa.id && !audioEl.paused && !audioEl.ended;
+
+  function playAudio() {
+    const p = audioEl.play();
+    if (p && typeof p.catch === "function") {
+      p.catch((e) => {
+        if (!fa.id || !e) return;
+        if (e.name === "NotAllowedError") {
+          toast(AUTOPLAY_MSG, "warn", { duration: 8000 });
+          fileUiSync();
+          pushYoutubeState();
+        }
+        // AbortError: uma troca de música interrompeu esta. Formato ruim chega pelo evento "error".
+      });
+    }
+  }
+
+  /** Toca um arquivo no <audio>; o YouTube (se estiver tocando) é pausado. `internal` = veio da fila. */
+  function playFile(track, internal) {
+    if (!track || !MUSIC_ID_RE.test(track.id)) return;
+    if (!internal) ytResume = null; // o usuário assumiu o controle (igual ao loadYoutube)
+    ytPendingLoad = null; // um vídeo que ainda esperava o player carregar perde a vez
+    clearTimeout(ytPlWatchdog);
+    ytLoadSeq++; // o vigia de playlist não deve avisar/avançar enquanto um arquivo toca
+    if (ytPlayer && ytReady) {
+      ytNavAt = Date.now();
+      try { ytPlayer.pauseVideo(); } catch (e) { /* ignora */ }
+    }
+    fa.id = track.id;
+    fa.meta = trackCache.get(track.id) || track;
+    audioEl.src = "/api/musicas/" + track.id + "/audio"; // mesma origem; o cookie de sessão vai junto
+    applyVolumes();
+    playAudio();
+    showFileNp();
+    pushYoutubeState();
+    if (!fa.meta.title) resolveFileMeta(track.id);
+  }
+
+  /** Para e solta o arquivo (um vídeo vai tocar, o modo mudou ou a porta de PIN fechou). */
+  function stopFile() {
+    if (!fa.id && !audioEl.getAttribute("src")) return;
+    fa.id = null; // primeiro: eventos que chegarem durante o desmonte são ignorados
+    fa.meta = null;
+    audioEl.pause();
+    audioEl.removeAttribute("src");
+    audioEl.load();
+    ytTitle = null; // força o heartbeat a redesenhar o "tocando agora" do YouTube
+    ytLastVid = null;
+    ytLastPlIdx = null;
+    ytLastFile = null;
+    setNpKind("youtube");
+    setCurrentMusic(null, false);
+    if (ytMode === "player") { // não deixa o título da música anterior parado na tela até o próximo heartbeat
+      applyYoutubeNp("", false);
+      setText(youtubeNpState, "Tocando nesta aba");
+    }
+  }
+
+  function restartFile() {
+    if (!fa.id) return;
+    try { audioEl.currentTime = 0; } catch (e) { /* ainda sem metadados */ }
+    if (audioEl.paused || audioEl.ended) playAudio();
+  }
+
+  /** Botão tocar/pausar e destaque na lista seguem o estado real do <audio>. */
+  function fileUiSync() {
+    const playing = filePlaying();
+    ytPlayUI.set(playing);
+    setCurrentMusic(fa.id, playing);
+  }
+
+  function onFileError() {
+    const name = fa.meta && fa.meta.title ? "“" + truncate(fa.meta.title, 40) + "”" : "a música";
+    toast("Não foi possível tocar " + name + ". Passando para a próxima.", "error");
+    fileUiSync();
+    pushYoutubeState();
+    queueAdvance("error");
+  }
+
+  audioEl.addEventListener("playing", () => { if (fa.id) { fileUiSync(); pushYoutubeState(); } });
+  audioEl.addEventListener("pause", () => { if (fa.id && !audioEl.ended) { fileUiSync(); pushYoutubeState(); } });
+  audioEl.addEventListener("ended", () => {
+    if (!fa.id) return;
+    fileUiSync();
+    pushYoutubeState();
+    queueAdvance("ended");
+  });
+  audioEl.addEventListener("error", () => { if (fa.id) onFileError(); });
+
+  /**
+   * Fim / erro / "Próxima" com um arquivo (ou nada) em cena: próximo da fila -> retomar a playlist
+   * guardada -> parar. Devolve true se algo começou a tocar.
+   */
+  async function queueAdvance(reason, silent) {
+    if (fa.advancing) {
+      if (reason === "next") fa.advancePending = true;
+      return false;
+    }
+    fa.advancing = true;
+    let started = false;
+    try {
+      const d = await ytQueuePop();
+      if (d) {
+        startQueued(d);
+        started = true;
+      } else if (ytResume && ytPlayer && ytReady) {
+        const r = ytResume;
+        ytResume = null;
+        loadYoutube({ video_id: null, list_id: r.list, index: r.index, start: null }, true);
+        started = true;
+      } else if (reason === "error") {
+        stopFile();
+        applyYoutubeNp("", false);
+        setText(youtubeNpState, "Tocando nesta aba");
+      } else if (!silent && (reason === "next" || reason === "play")) {
+        toast("A fila está vazia. Escolha músicas em Minhas músicas ou cole um link do YouTube.", "info", { duration: 4000 });
+      }
+    } finally {
+      fa.advancing = false;
+      if (fa.advancePending) {
+        fa.advancePending = false;
+        queueAdvance("next");
+      }
+    }
+    return started;
+  }
+
+  /** Próximo/fim: com arquivo (ou sem player do YouTube) a fila é tratada aqui; senão, pelo ytAdvance. */
+  function advance(reason, silent) {
+    if (!fa.id && ytPlayer && ytReady) return ytAdvance(reason);
+    return queueAdvance(reason, silent);
+  }
+
+  /** Item tirado da fila pelo servidor: arquivo -> <audio>; vídeo/playlist -> YouTube. */
+  function startQueued(d) {
+    if (d.file) playFile(d.file, true);
+    else loadYoutube(d.yt, true);
+  }
+
+  /** Um comando "load" só trouxe o id: descobre título/artista pelo estado do servidor (ele já sabe o music_id). */
+  async function resolveFileMeta(id) {
+    if (fa.resolving) return;
+    fa.resolving = true;
+    try {
+      for (let i = 0; i < 3 && fa.id === id && !(fa.meta && fa.meta.title); i++) {
+        await sleep(900 + i * 900);
+        if (fa.id !== id) break;
+        const { data } = await getJSON("/api/youtube/state", { timeout: 6000 });
+        const t = data && data.musica && data.musica.id === id ? trackFromLib(data.musica) : null;
+        if (t && t.title) {
+          fa.meta = t;
+          showFileNp();
+          pushYoutubeState();
+          break;
+        }
+      }
+    } catch (e) { /* o título é só enfeite: segue com “Música” */ }
+    fa.resolving = false;
+  }
+
+  // ---- "Tocando agora": YouTube x arquivo ----
+  function setNpKind(kind) {
+    if (npKind === kind) return;
+    npKind = kind;
+    const file = kind === "file";
+    tileNpYt.classList.toggle("is-file", file);
+    ytNpHeadIcon.setAttribute("href", file ? "#i-music" : "#i-video");
+    ytNpPh.setAttribute("href", file ? "#i-music" : "#i-video");
+    if (!file) {
+      youtubeNpArtist.hidden = true;
+      setNpCover(null);
+    }
+    btnYoutubePrev.setAttribute("aria-label", file ? "Voltar ao início da música" : "Item anterior da playlist");
+    btnYoutubeNext.setAttribute("aria-label", file ? "Próxima da fila" : "Próximo da fila ou da playlist");
+  }
+
+  function setNpCover(url) {
+    if ((url || "") === (ytNpImg.dataset.src || "")) return;
+    ytNpImg.dataset.src = url || "";
+    ytNpImg.classList.remove("is-loaded");
+    if (!url) {
+      ytNpImg.hidden = true;
+      ytNpImg.removeAttribute("src");
+      return;
+    }
+    ytNpImg.hidden = false;
+    ytNpImg.src = url;
+  }
+  ytNpImg.addEventListener("load", () => ytNpImg.classList.add("is-loaded"));
+  ytNpImg.addEventListener("error", () => { ytNpImg.hidden = true; ytNpImg.classList.remove("is-loaded"); });
+
+  /** where: "player" (esta aba toca) | "tocador" (visto de um controle remoto). */
+  function applyFileNp(t, playing, where) {
+    setNpKind("file");
+    const title = t.title || "Música";
+    setText(youtubeNowPlaying, title);
+    const sub = [t.artista, t.album].filter(Boolean).join(" · ");
+    setText(youtubeNpArtist, sub);
+    youtubeNpArtist.hidden = !sub;
+    setNpCover(coverUrl(t));
+    youtubeNpCard.classList.remove("is-idle");
+    setText(youtubeNpState, where === "player" ? "Minhas músicas · tocando nesta aba" : "Minhas músicas · no Tocador da loja");
+    ytPlayUI.set(playing);
+    setText(ytqNowTitle, title);
+    setThumbArt(ytqNowThumb, { file: t.id, capa: t.tem_capa });
+    setCurrentMusic(t.id, playing);
+  }
+
+  function showFileNp() {
+    if (fa.meta) applyFileNp(fa.meta, filePlaying(), "player");
+  }
+
+  /** Texto pequeno do "Tocando agora" quando nada toca: segue a fonte escolhida. */
+  const idleEyebrow = () => (sourceGroup.value === "musicas" ? "Minhas músicas" : "YouTube");
 
   /** "90", "90s", "1m30s", "1h2m3s" -> segundos (0..86400) ou null. */
   function parseYtTime(text) {
@@ -1716,6 +2000,8 @@
 
   function applyYoutubeNp(title, playing) {
     const idle = !title || title === IDLE_YT;
+    setNpKind("youtube");
+    setCurrentMusic(null, false);
     setText(youtubeNowPlaying, idle ? "Nada tocando" : title);
     setText(ytqNowTitle, idle ? "Nada tocando" : title);
     if (idle) setYtThumb(ytqNowThumb, null);
@@ -1738,42 +2024,69 @@
   let ytPlSig = "";
   let ytqHold = { version: 0, until: 0 }; // ignora polls antigos logo depois de uma ação nossa
 
-  /** Miniatura do YouTube a partir do id (já validado); só i.ytimg.com (CSP). */
-  function setYtThumb(box, videoId) {
-    const id = typeof videoId === "string" && YT_VIDEO_RE.test(videoId) ? videoId : "";
-    if ((box.dataset.vid || "") === id) return;
-    box.dataset.vid = id;
+  /**
+   * Miniatura de um item: YouTube ({yt: videoId}, só i.ytimg.com pela CSP) ou arquivo
+   * ({file: id, capa: bool}, capa embutida servida pelo próprio Proclamare). Os ids já vêm validados.
+   */
+  function setThumbArt(box, art) {
+    const isFile = !!(art && art.file);
+    const key = !art ? "" : isFile ? "f:" + art.file + (art.capa ? "+" : "") : "y:" + art.yt;
+    if ((box.dataset.art || "") === key) return;
+    box.dataset.art = key;
+    box.classList.toggle("is-file", isFile);
+    const use = box.querySelector("use");
+    if (use) use.setAttribute("href", isFile ? "#i-music" : box.dataset.icon || "#i-video");
     const old = box.querySelector("img");
     if (old) old.remove();
-    if (!id) return;
+    let src = null;
+    let size = [64, 36];
+    if (art && !isFile && YT_VIDEO_RE.test(art.yt)) {
+      src = "https://i.ytimg.com/vi/" + art.yt + "/mqdefault.jpg";
+    } else if (isFile && art.capa && MUSIC_ID_RE.test(art.file)) {
+      src = "/api/musicas/" + art.file + "/capa";
+      size = [44, 44];
+    }
+    if (!src) return;
     const img = document.createElement("img");
     img.alt = "";
-    img.width = 64;
-    img.height = 36;
+    img.width = size[0];
+    img.height = size[1];
     img.loading = "lazy";
     img.decoding = "async";
     img.referrerPolicy = "no-referrer";
     img.addEventListener("load", () => img.classList.add("is-loaded"));
     img.addEventListener("error", () => img.remove());
-    img.src = "https://i.ytimg.com/vi/" + id + "/mqdefault.jpg";
+    img.src = src;
     box.appendChild(img);
+  }
+
+  function setYtThumb(box, videoId) {
+    const id = typeof videoId === "string" && YT_VIDEO_RE.test(videoId) ? videoId : "";
+    setThumbArt(box, id ? { yt: id } : null);
   }
 
   function makeYtThumb(iconName) {
     const box = document.createElement("span");
     box.className = "thumb thumb--yt";
+    box.dataset.icon = "#i-" + iconName;
     box.appendChild(makeIcon(iconName));
     return box;
   }
 
   function ytItemTitle(item) {
     if (item.title) return item.title;
+    if (item.kind === "arquivo") return "Música";
     return item.kind === "playlist" && !item.video_id ? "Playlist do YouTube" : "Vídeo do YouTube";
   }
 
   function ytItemSub(item, pos) {
     const parts = [];
     if (pos === 0) parts.push("Toca em seguida");
+    if (item.kind === "arquivo") {
+      if (item.artista) parts.push(item.artista);
+      if (isNum(item.duracao_s)) parts.push(fmtDur(item.duracao_s));
+      return parts.join(" · ");
+    }
     if (item.kind === "playlist") parts.push("Playlist");
     if (isNum(item.start) && item.start > 0) parts.push("começa em " + formatTime(item.start * 1000));
     return parts.join(" · ");
@@ -1795,7 +2108,7 @@
     li.addEventListener("animationend", () => li.classList.remove("is-new"), { once: true });
     const row = document.createElement("div");
     row.className = "ytq__row";
-    const thumb = makeYtThumb(item.video_id ? "video" : "list");
+    const thumb = makeYtThumb(item.kind === "arquivo" ? "music" : item.video_id ? "video" : "list");
     const text = document.createElement("span");
     text.className = "ytq__text";
     const title = document.createElement("span");
@@ -1821,7 +2134,8 @@
   function updateQueueItem(li, item, pos, total) {
     const r = li._ytq;
     const title = ytItemTitle(item);
-    setYtThumb(r.thumb, item.video_id);
+    if (item.kind === "arquivo") setThumbArt(r.thumb, { file: item.music_id, capa: item.tem_capa });
+    else setYtThumb(r.thumb, item.video_id);
     setText(r.title, title);
     setText(r.sub, ytItemSub(item, pos));
     r.sub.hidden = !r.sub.textContent;
@@ -1880,7 +2194,7 @@
   }
 
   function renderQueue(items) {
-    const sig = items.map((i) => i.id + "|" + (i.title || "")).join("\n");
+    const sig = items.map((i) => i.id + "|" + (i.title || "") + "|" + (i.artista || "")).join("\n");
     if (sig === ytqSig) return;
     ytqSig = sig;
     ytqItems = items;
@@ -1943,8 +2257,17 @@
   function normalizeQueue(list) {
     const out = [];
     if (!Array.isArray(list)) return out;
-    for (const it of list.slice(0, 50)) {
+    for (const it of list.slice(0, YT_QUEUE_MAX)) {
       if (!it || !Number.isInteger(it.id)) continue;
+      if (it.kind === "arquivo") { // música da pasta: só o id opaco e os textos do metadado
+        const t = trackFromQueue(it);
+        if (!t) continue;
+        out.push({
+          id: it.id, kind: "arquivo", music_id: t.id, video_id: null, list_id: null, start: null,
+          title: t.title, artista: t.artista, duracao_s: t.duracao_s, tem_capa: t.tem_capa,
+        });
+        continue;
+      }
       const video = typeof it.video_id === "string" && YT_VIDEO_RE.test(it.video_id) ? it.video_id : null;
       const listId = typeof it.list_id === "string" && YT_LIST_RE.test(it.list_id) ? it.list_id : null;
       if (!video && !listId) continue;
@@ -2088,12 +2411,19 @@
       ytAlive = !!data.player_alive;
       setYoutubeLamp(ytAlive ? "alive" : "none");
       if (ytMode !== "player") {
-        const title = typeof data.now_playing === "string" ? data.now_playing : "";
-        applyYoutubeNp(title, !!data.is_playing);
-        if (title && title !== IDLE_YT) setYtThumb(ytqNowThumb, data.video_id);
-        setText(youtubeNpState, ytAlive ? "No tocador" : "YouTube");
+        if (ytAlive && data.source === "arquivo" && typeof data.music_id === "string" && MUSIC_ID_RE.test(data.music_id)) {
+          // tocando um arquivo: título, artista e capa vêm de "musica" (visão pública calculada pelo servidor)
+          const t = trackFromLib(data.musica) || trackCache.get(data.music_id) || makeTrack(data.music_id, null, null, null, null, false);
+          applyFileNp(t, !!data.is_playing, "tocador");
+        } else {
+          const title = typeof data.now_playing === "string" ? data.now_playing : "";
+          applyYoutubeNp(title, !!data.is_playing);
+          if (title && title !== IDLE_YT) setYtThumb(ytqNowThumb, data.video_id);
+          setText(youtubeNpState, ytAlive ? "No tocador" : idleEyebrow());
+        }
         youtubeVol.set(data.volume);
       }
+      libUpdateBanner();
       // Fila e próximas da playlist (iguais para todos os aparelhos). Um poll
       // que começou antes de uma ação nossa pode trazer a fila antiga: ignora.
       const stale = Number.isInteger(data.queue_version) && Date.now() < ytqHold.until && data.queue_version < ytqHold.version;
@@ -2125,7 +2455,7 @@
   const youtubeVol = bindVolume(youtubeVolume, youtubeVolumeOut, (value, final) => {
     if (ytMode === "player") {
       ytUserVolume = value;
-      if (ytPlayer && ytReady && !ytDucking) ytPlayer.setVolume(value);
+      if (!ytDucking) applyVolumes();
       if (final) pushYoutubeState();
     } else {
       youtubeEnqueue("volume", { value }, true);
@@ -2160,13 +2490,14 @@
         onReady: () => {
           ytReady = true;
           ytCreating = false;
-          ytPlayer.setVolume(ytUserVolume);
+          applyVolumes();
           youtubeVol.force(ytUserVolume);
           if (ytPendingLoad) { const w = ytPendingLoad; ytPendingLoad = null; loadYoutube(w.p, w.internal); }
           pushYoutubeState();
         },
         onStateChange: (e) => {
           if (ytMode !== "player") return;
+          if (fa.id) { pushYoutubeState(); return; } // um arquivo está em cena: o YouTube não manda no botão nem na fila
           const st = e.data;
           ytPlayUI.set(st === YT_PLAYING);
           if (st === YT_PLAYING) ytOnPlaying();
@@ -2175,6 +2506,7 @@
           pushYoutubeState();
         },
         onError: (e) => {
+          if (fa.id) return; // erro atrasado de um vídeo que já foi trocado por um arquivo
           const msgs = {
             2: "Link de vídeo inválido.",
             5: "O player do YouTube encontrou um erro. Tente outro vídeo.",
@@ -2246,6 +2578,7 @@
    * `internal` = decisão da fila/retomada (não cancela a playlist guardada).
    */
   function loadYoutube(p, internal) {
+    stopFile(); // um vídeo vai tocar: o <audio> sai de cena
     if (!ytPlayer || !ytReady) { ytPendingLoad = { p, internal: !!internal }; return; }
     ytNavAt = Date.now();
     if (!internal) ytResume = null; // o usuário assumiu o controle
@@ -2307,18 +2640,21 @@
     ytLastIdx = ytCurrentIndex(ids, vid);
   }
 
-  /** Pop na fila do servidor; devolve os params de load do primeiro item ou null. */
+  /** Pop na fila do servidor; devolve {yt: params de load} ou {file: faixa} do primeiro item, ou null. */
   async function ytQueuePop() {
     try {
       const { ok, data } = await postJSON("/api/youtube/queue", { op: "pop" }, { timeout: 6000 });
       if (ok && data.ok && data.item) {
         scheduler.kick("yt-state");
-        const p = sanitizeYtLoad(data.item);
-        if (!p) {
+        const it = data.item;
+        const p = it.kind === "arquivo" ? null : sanitizeYtLoad(it);
+        const file = it.kind === "arquivo" ? trackFromQueue(it) : null;
+        if (!p && !file) {
           console.warn("Item da fila com dados inválidos foi descartado.");
           toast("Um item da fila estava inválido e foi pulado.", "warn");
+          return null;
         }
-        return p;
+        return file ? { file } : { yt: p };
       }
     } catch (e) { /* sem resposta: segue sem fila */ }
     return null;
@@ -2343,10 +2679,10 @@
     if (paused) { try { ytPlayer.pauseVideo(); } catch (e) { /* ignora */ } }
     try {
       const list = ytCurList;
-      const p = await ytQueuePop();
-      if (p) {
+      const d = await ytQueuePop();
+      if (d) {
         ytResume = { list, index: idx };
-        loadYoutube(p, true);
+        startQueued(d);
         interrupted = true;
       } else if (paused && ytPlayer) {
         try { ytPlayer.playVideo(); } catch (e) { /* ignora */ }
@@ -2370,10 +2706,10 @@
       const ids = ytPlaylistIds();
       const idx = ytCurList ? ytCurrentIndex(ids, ytCurrentVideoId()) : null;
       const hasNext = idx !== null && idx + 1 < ids.length;
-      const p = await ytQueuePop();
-      if (p) {
+      const d = await ytQueuePop();
+      if (d) {
         if (!ytResume && ytCurList && hasNext) ytResume = { list: ytCurList, index: idx + 1 };
-        loadYoutube(p, true);
+        startQueued(d);
       } else if (ytResume) {
         const r = ytResume;
         ytResume = null;
@@ -2398,6 +2734,7 @@
   function ytPlayIndex(index) {
     if (!ytPlayer || !ytReady) { playerUnavailable(); return; }
     if (index >= ytPlaylistIds().length) return;
+    stopFile(); // escolheu um item da playlist: o arquivo que estiver em cena sai
     ytNavAt = Date.now();
     ytPlayer.playVideoAt(index);
   }
@@ -2407,6 +2744,12 @@
     if (!cmd || typeof cmd.action !== "string") return;
     const params = cmd.params && typeof cmd.params === "object" ? cmd.params : {};
     if (cmd.action === "load") {
+      if ("music_id" in params) {
+        // arquivo (v2.4): SÓ o id validado; o <audio> busca /api/musicas/<id>/audio (nunca caminho)
+        const id = typeof params.music_id === "string" && MUSIC_ID_RE.test(params.music_id) ? params.music_id : null;
+        if (id) playFile(trackCache.get(id) || makeTrack(id, null, null, null, null, false), false);
+        return;
+      }
       const p = sanitizeYtLoad(params);
       if (p) loadYoutube(p);
       return;
@@ -2414,33 +2757,42 @@
     if (cmd.action === "volume" && isNum(params.value)) {
       ytUserVolume = clamp(Math.round(params.value), 0, 100);
       youtubeVol.set(ytUserVolume);
-      if (ytPlayer && ytReady && !ytDucking) ytPlayer.setVolume(ytUserVolume);
+      if (!ytDucking) applyVolumes();
       return;
     }
-    if (!ytPlayer || !ytReady) return;
     switch (cmd.action) {
-      case "duck":
+      case "duck": // vale para o YouTube e para o <audio> (mesmo sem o player do YouTube pronto)
         if (!ytDucking) {
           ytDucking = true;
-          ytPlayer.setVolume(Math.min(12, ytUserVolume));
+          applyVolumes();
         }
         // rede de segurança: se o "restore" se perder, volta sozinho
         clearTimeout(ytDuckTimer);
         ytDuckTimer = setTimeout(() => {
-          if (ytDucking && ytPlayer && ytReady) { ytDucking = false; ytPlayer.setVolume(ytUserVolume); }
+          if (ytDucking) { ytDucking = false; applyVolumes(); }
         }, 120000);
         break;
       case "restore":
         clearTimeout(ytDuckTimer);
         ytDucking = false;
-        ytPlayer.setVolume(ytUserVolume);
+        applyVolumes();
         break;
-      case "play": ytPlayer.playVideo(); break;
-      case "pause": ytPlayer.pauseVideo(); break;
-      case "next": ytAdvance("next"); break;
-      case "prev": ytNavAt = Date.now(); ytPlayer.previousVideo(); break;
+      case "play":
+        if (fa.id) playAudio();
+        else if (ytPlayer && ytReady && ytCurrentVideoId()) ytPlayer.playVideo();
+        else queueAdvance("play", true); // nada carregado: começa pela fila (comando remoto: sem aviso na tela da loja)
+        break;
+      case "pause":
+        if (fa.id) audioEl.pause();
+        else if (ytPlayer && ytReady) ytPlayer.pauseVideo();
+        break;
+      case "next": advance("next", true); break;
+      case "prev":
+        if (fa.id) restartFile();
+        else if (ytPlayer && ytReady) { ytNavAt = Date.now(); ytPlayer.previousVideo(); }
+        break;
       case "play_index":
-        if (Number.isInteger(params.index) && params.index >= 0) ytPlayIndex(params.index);
+        if (ytPlayer && ytReady && Number.isInteger(params.index) && params.index >= 0) ytPlayIndex(params.index);
         break;
       default: break;
     }
@@ -2448,29 +2800,41 @@
 
   // ---- Heartbeat / estado do tocador ----
   async function pushYoutubeState() {
-    if (ytMode !== "player" || !ytPlayer || !ytReady) return;
+    if (ytMode !== "player") return;
     if (ytPushBusy) { ytPushAgain = true; return; }
     ytPushBusy = true;
     try {
-      let title = "";
-      try {
-        const vd = ytPlayer.getVideoData();
-        if (vd && vd.title) title = String(vd.title);
-      } catch (e) { /* player ainda sem vídeo */ }
-      let playing = false;
-      try { playing = ytPlayer.getPlayerState() === YT_PLAYING; } catch (e) { /* idem */ }
-      if (title !== ytTitle || ytPlayUI.playing !== playing) {
-        ytTitle = title;
-        applyYoutubeNp(title, playing);
-        setText(youtubeNpState, "Tocando nesta aba");
-      }
-      const vid = ytCurrentVideoId();
-      const ids = ytPlaylistIds();
-      const pidx = ytCurrentIndex(ids, vid);
-      if (title) setYtThumb(ytqNowThumb, vid);
-      await postJSON(
-        "/api/youtube/state",
-        {
+      // Três estados do tocador: arquivo em cena | YouTube pronto | ocioso (sem player do YouTube —
+      // por exemplo sem internet; arquivos locais continuam tocando e o tocador segue "vivo").
+      let body;
+      let vid = null;
+      let pidx = null;
+      if (fa.id) {
+        const t = fa.meta;
+        const name = (t && t.title ? t.title : "Música") + (t && t.artista ? " — " + t.artista : "");
+        body = {
+          now_playing: name.slice(0, 300), is_playing: filePlaying(), volume: ytUserVolume,
+          video_id: null, list_id: null, playlist_ids: [], playlist_index: null,
+          source: "arquivo", music_id: fa.id, yt_pronto: !!(ytPlayer && ytReady),
+        };
+      } else if (ytPlayer && ytReady) {
+        let title = "";
+        try {
+          const vd = ytPlayer.getVideoData();
+          if (vd && vd.title) title = String(vd.title);
+        } catch (e) { /* player ainda sem vídeo */ }
+        let playing = false;
+        try { playing = ytPlayer.getPlayerState() === YT_PLAYING; } catch (e) { /* idem */ }
+        if (title !== ytTitle || ytPlayUI.playing !== playing) {
+          ytTitle = title;
+          applyYoutubeNp(title, playing);
+          setText(youtubeNpState, "Tocando nesta aba");
+        }
+        vid = ytCurrentVideoId();
+        const ids = ytPlaylistIds();
+        pidx = ytCurrentIndex(ids, vid);
+        if (title) setYtThumb(ytqNowThumb, vid);
+        body = {
           now_playing: (title || IDLE_YT).slice(0, 300),
           is_playing: playing,
           volume: ytUserVolume,
@@ -2478,14 +2842,29 @@
           list_id: ids.length ? ytCurList : null,
           playlist_ids: ids,
           playlist_index: pidx,
-        },
-        { timeout: 5000 }
-      );
+          source: "youtube", music_id: null, yt_pronto: true,
+        };
+      } else {
+        if (ytTitle !== YT_TITLE_IDLE) { // ocioso: o "tocando agora" mostra o estado vazio (e o play fica discreto)
+          ytTitle = YT_TITLE_IDLE;
+          applyYoutubeNp("", false);
+          setText(youtubeNpState, "Tocando nesta aba");
+        }
+        body = {
+          now_playing: IDLE_YT, is_playing: false, volume: ytUserVolume,
+          video_id: null, list_id: null, playlist_ids: [], playlist_index: null,
+          source: "youtube", music_id: null, yt_pronto: false, // o servidor recusa tocar YouTube daqui
+        };
+      }
+      await postJSON("/api/youtube/state", body, { timeout: 5000 });
       ytLastPush = Date.now();
-      // trocou de vídeo/item: atualiza o tile "Fila" sem esperar o próximo poll
-      if (vid !== ytLastVid || pidx !== ytLastPlIdx) {
+      // trocou de vídeo/arquivo/item: atualiza o tile "Fila" sem esperar o próximo poll
+      if (fa.id) {
+        if (fa.id !== ytLastFile) { ytLastFile = fa.id; scheduler.kick("yt-state"); }
+      } else if (vid !== ytLastVid || pidx !== ytLastPlIdx || ytLastFile !== null) {
         ytLastVid = vid;
         ytLastPlIdx = pidx;
+        ytLastFile = null;
         scheduler.kick("yt-state");
       }
     } catch (e) { /* tenta de novo no próximo heartbeat */ }
@@ -2571,18 +2950,23 @@
     stopYoutubeLoop();
     if (next === "player") {
       youtubeVol.force(ytUserVolume);
+      applyVolumes();
       setText(youtubeNpState, "Tocando nesta aba");
       ensureYoutubePlayer();
       startYoutubeLoop();
       scheduler.kick("yt-heartbeat");
     } else {
-      if (wasPlayer) destroyYoutubePlayer();
+      if (wasPlayer) {
+        destroyYoutubePlayer();
+        stopFile(); // esta aba deixou de ser o tocador: o <audio> para junto
+      }
       applyYoutubeNp("", false);
-      setText(youtubeNpState, "YouTube");
+      setText(youtubeNpState, idleEyebrow());
       ytTitle = "";
       scheduler.kick("yt-state");
     }
     syncPanes(); // o modo mudou: o pane do YouTube pode precisar (ou não) ficar fora da tela
+    libUpdateBanner();
     scheduler.refresh();
   }
 
@@ -2617,11 +3001,25 @@
     toast("O player do YouTube ainda está carregando. Tente em instantes.", "info");
   }
 
+  /** Tocar/pausar no modo tocador: o que estiver em cena (arquivo ou YouTube); sem nada, começa pela fila. */
+  async function playPressedOnPlayer() {
+    if (fa.id) {
+      if (audioEl.paused || audioEl.ended) playAudio();
+      else audioEl.pause();
+      return;
+    }
+    if (!(ytPlayer && ytReady && ytCurrentVideoId())) {
+      if (await queueAdvance("play")) return;
+      if (!ytPlayer || !ytReady) { ensureYoutubePlayer(); if (ytqItems.length === 0) playerUnavailable(); }
+      return;
+    }
+    if (ytPlayer.getPlayerState() === YT_PLAYING) ytPlayer.pauseVideo();
+    else ytPlayer.playVideo();
+  }
+
   btnYoutubePlay.addEventListener("click", () => {
     if (ytMode === "player") {
-      if (!ytPlayer || !ytReady) { ensureYoutubePlayer(); playerUnavailable(); return; }
-      if (ytPlayer.getPlayerState() === YT_PLAYING) ytPlayer.pauseVideo();
-      else ytPlayer.playVideo();
+      playPressedOnPlayer();
     } else {
       const wasPlaying = ytPlayUI.playing;
       ytPlayUI.set(!wasPlaying); // feedback imediato; o próximo poll confirma
@@ -2630,13 +3028,1202 @@
     }
   });
   btnYoutubeNext.addEventListener("click", () => {
-    if (ytMode === "player") { if (ytPlayer && ytReady) ytAdvance("next"); else playerUnavailable(); }
+    if (ytMode === "player") advance("next");
     else youtubeEnqueue("next").then(() => setTimeout(() => scheduler.kick("yt-state"), 1500));
   });
   btnYoutubePrev.addEventListener("click", () => {
-    if (ytMode === "player") { if (ytPlayer && ytReady) { ytNavAt = Date.now(); ytPlayer.previousVideo(); } else playerUnavailable(); }
-    else youtubeEnqueue("prev");
+    if (ytMode === "player") {
+      if (fa.id) restartFile();
+      else if (ytPlayer && ytReady) { ytNavAt = Date.now(); ytPlayer.previousVideo(); }
+      else playerUnavailable();
+    } else {
+      youtubeEnqueue("prev");
+    }
   });
+
+  // ======================================================================
+  // 16c. Minhas músicas (biblioteca, envio de arquivos, ações em lote)
+  // ======================================================================
+  // Contrato v2.4: GET /api/musicas (lista, busca, pastas), POST /api/musicas/enviar (multipart, por XHR),
+  // /remover e /abrir-pasta (só no PC da loja) e /atualizar. As músicas entram na MESMA fila do YouTube
+  // (itens kind "arquivo"). O navegador só conhece ids opacos: tocar = id na fila ou comando "load".
+  // Títulos, artistas e nomes de arquivo são dados de terceiros: entram no DOM só por textContent.
+  const MB = 1024 * 1024;
+  const LIB_PAGE = 40; // músicas por página
+  const LIB_FORMATOS = [".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".flac"];
+
+  const libTile = $("tile-lib");
+  const libTotal = $("lib-total");
+  const btnLibOpen = $("btn-lib-open");
+  const btnLibRefresh = $("btn-lib-refresh");
+  const libBanner = $("lib-banner");
+  const libBannerIcon = $("lib-banner-icon");
+  const libBannerTitle = $("lib-banner-title");
+  const libBannerText = $("lib-banner-text");
+  const btnLibUseHere = $("btn-lib-use-here");
+  const libFile = $("lib-file");
+  const btnLibUpload = $("btn-lib-upload");
+  const libSendHint = $("lib-send-hint");
+  const libUpload = $("lib-upload");
+  const libUpTitle = $("lib-up-title");
+  const btnLibUpCancel = $("btn-lib-up-cancel");
+  const btnLibUpClose = $("btn-lib-up-close");
+  const libUpBar = $("lib-up-bar");
+  const libUpFill = $("lib-up-fill");
+  const libUpNote = $("lib-up-note");
+  const libUpList = $("lib-up-list");
+  const libUpLive = $("lib-up-live");
+  const libFilters = $("lib-filters");
+  const libSearch = $("lib-search");
+  const libChips = $("lib-chips");
+  const libCount = $("lib-count");
+  const libBulk = $("lib-bulk");
+  const btnLibPlayAll = $("btn-lib-play-all");
+  const btnLibPlayAllLabel = $("btn-lib-play-all-label");
+  const btnLibAddAll = $("btn-lib-add-all");
+  const btnLibAddAllLabel = $("btn-lib-add-all-label");
+  const libShuffle = $("lib-shuffle");
+  const libBulkNote = $("lib-bulk-note");
+  const libStatus = $("lib-status");
+  const libStatusText = $("lib-status-text");
+  const libList = $("lib-list");
+  const libEmpty = $("lib-empty");
+  const libEmptyTitle = $("lib-empty-title");
+  const libEmptyText = $("lib-empty-text");
+  const libEmptyPath = $("lib-empty-path");
+  const btnLibEmptyAction = $("btn-lib-empty-action");
+  const libMoreBox = $("lib-more");
+  const btnLibMore = $("btn-lib-more");
+  const libMoreInfo = $("lib-more-info");
+  const ytLinkField = $("yt-link-field");
+  const ytModeHintYt = $("yt-mode-hint-yt");
+  const ytModeHintLib = $("yt-mode-hint-lib");
+  const titleYtSetup = $("title-yt-setup");
+
+  const lib = {
+    q: "",
+    pasta: "", // "" = todas as pastas
+    ordem: "recentes", // recentes | titulo
+    shuffle: false,
+    items: [], // o que está na tela (todas as páginas carregadas)
+    total: 0, // total depois dos filtros
+    totalAcervo: 0, // total da pasta, sem filtros
+    pastas: [],
+    versao: -1,
+    varrendo: false,
+    truncado: false,
+    metadados: true, // false: falta o mutagen no PC da loja (só o nome dos arquivos aparece)
+    envio: { habilitado: true, max_arquivos: 20, max_bytes_arquivo: 100 * MB, max_bytes_total: 100 * MB, formatos: LIB_FORMATOS },
+    pastaLocal: "",
+    loaded: false,
+    loading: false,
+    failed: false,
+    seq: 0, // cada carga invalida a anterior
+    ctrl: null,
+    curId: null, // música em cena (destaque na lista)
+    curPlaying: false,
+    busy: false, // "Tocar pasta" / "Adicionar à fila" em andamento
+    listSig: "",
+    chipsSig: "",
+    scanTimer: 0,
+  };
+  const libActive = () => sourceGroup.value === "musicas" && musicVisible();
+  const libSortGroup = initGroup($("lib-sort"), {
+    role: "radio",
+    onSelect: (ordem) => {
+      lib.ordem = ordem === "titulo" ? "titulo" : "recentes";
+      libSavePrefs();
+      libReload(false);
+    },
+  });
+
+  function libLoadPrefs() {
+    try {
+      const p = JSON.parse(store.get(LS.lib) || "null");
+      if (p && (p.ordem === "recentes" || p.ordem === "titulo")) lib.ordem = p.ordem;
+      if (p && p.shuffle === true) lib.shuffle = true;
+    } catch (e) { /* preferências corrompidas: usa o padrão */ }
+    libSortGroup.set(lib.ordem, true);
+    libShuffle.checked = lib.shuffle;
+  }
+  function libSavePrefs() {
+    store.set(LS.lib, JSON.stringify({ ordem: lib.ordem, shuffle: lib.shuffle }));
+  }
+
+  /** Bloco do meio do painel (e título/dica do bloco "tocador") conforme a fonte: YouTube x Minhas músicas. */
+  function syncTocadorPanel(src) {
+    const musicas = src === "musicas";
+    libTile.hidden = !musicas;
+    tileNpYt.classList.toggle("is-musicas", musicas); // sem o quadro de vídeo grande: aqui o som é o que importa
+    ytLinkField.hidden = musicas;
+    ytModeHintYt.hidden = musicas;
+    ytModeHintLib.hidden = !musicas;
+    setText(titleYtSetup, musicas ? "Tocador da loja" : "Configurar YouTube");
+    if (musicas) libUpdateBanner();
+  }
+
+  /** Destaque da música em cena na lista (e equalizador quando está tocando). */
+  function setCurrentMusic(id, playing) {
+    const cid = id || null;
+    if (lib.curId === cid && lib.curPlaying === !!playing) return;
+    lib.curId = cid;
+    lib.curPlaying = !!playing;
+    libSyncCurrent();
+  }
+  function libSyncCurrent() {
+    for (const li of libList.children) {
+      const cur = !!lib.curId && li.dataset.key === lib.curId;
+      li.classList.toggle("is-current", cur);
+      li.classList.toggle("is-playing", cur && lib.curPlaying);
+      if (cur) li.setAttribute("aria-current", "true");
+      else li.removeAttribute("aria-current");
+    }
+  }
+
+  // ---- Aviso: onde as músicas vão tocar ----
+  function noTocadorToast(item) {
+    const o = { duration: 9000 };
+    if (!isRemote()) {
+      o.action = {
+        label: "Usar este computador",
+        onClick: () => {
+          applyYoutubeMode("player", true);
+          if (item) playFile(item, false);
+        },
+      };
+    }
+    toast("Nenhum Tocador da loja aberto. As músicas só tocam quando o computador das caixas está com o painel aberto em Tocador da loja.", "warn", o);
+  }
+
+  function libUpdateBanner() {
+    if (libTile.hidden) return;
+    let tone = "";
+    let title = "";
+    let text = "";
+    let button = false;
+    if (ytMode === "player") {
+      tone = "ok";
+      title = "Esta aba é o Tocador da loja";
+      text = "As músicas saem nas caixas deste computador.";
+    } else if (ytAlive === true) {
+      tone = "ok";
+      title = "Tocador da loja ativo";
+      text = "As músicas saem nas caixas do computador da loja.";
+    } else if (ytAlive === false) {
+      tone = "warn";
+      title = "Nenhum Tocador da loja aberto";
+      if (isRemote()) {
+        text = "Abra o Proclamare no computador da loja e escolha “Tocador da loja” para as músicas tocarem.";
+      } else {
+        text = "As músicas só tocam quando o computador das caixas está em “Tocador da loja”. Este é o computador da loja?";
+        button = true;
+      }
+    }
+    libBanner.hidden = !tone;
+    if (!tone) return;
+    libBanner.classList.toggle("is-warn", tone === "warn");
+    libBannerIcon.setAttribute("href", tone === "warn" ? "#i-alert" : "#i-speaker");
+    setText(libBannerTitle, title);
+    setText(libBannerText, text);
+    btnLibUseHere.hidden = !button;
+  }
+  btnLibUseHere.addEventListener("click", () => applyYoutubeMode("player", true));
+
+  // ---- Carregar a lista ----
+  const posInt = (v, d) => (Number.isInteger(v) && v > 0 ? v : d);
+
+  /** Valida a resposta de GET /api/musicas (nunca confia no formato). */
+  function libParse(data) {
+    if (!data || data.ok !== true || !Array.isArray(data.itens)) return null;
+    const items = [];
+    for (const it of data.itens.slice(0, 100)) {
+      const t = trackFromLib(it);
+      if (t) items.push(Object.assign({}, t, { pasta: str(it.pasta, 300) }));
+    }
+    const pastas = [];
+    if (Array.isArray(data.pastas)) {
+      for (const p of data.pastas.slice(0, 300)) {
+        if (p && typeof p.nome === "string" && p.nome && Number.isInteger(p.total) && p.total >= 0) {
+          pastas.push({ nome: p.nome.slice(0, 300), total: p.total });
+        }
+      }
+    }
+    const e = data.envio && typeof data.envio === "object" ? data.envio : {};
+    const formatos = Array.isArray(e.formatos) ? e.formatos.filter((x) => typeof x === "string" && /^\.[a-z0-9]{2,5}$/.test(x)).slice(0, 20) : [];
+    return {
+      versao: Number.isInteger(data.versao) ? data.versao : 0,
+      total: Number.isInteger(data.total) && data.total >= 0 ? data.total : items.length,
+      totalAcervo: Number.isInteger(data.total_acervo) && data.total_acervo >= 0 ? data.total_acervo : items.length,
+      pastas,
+      items,
+      varrendo: data.varrendo === true,
+      truncado: data.truncado === true,
+      metadados: data.metadados !== false,
+      envio: {
+        habilitado: e.habilitado !== false,
+        max_arquivos: posInt(e.max_arquivos, 20),
+        max_bytes_arquivo: posInt(e.max_bytes_arquivo, 100 * MB),
+        max_bytes_total: posInt(e.max_bytes_total, 100 * MB),
+        formatos: formatos.length ? formatos : LIB_FORMATOS,
+      },
+      pastaLocal: typeof data.pasta_local === "string" ? data.pasta_local.slice(0, 400) : "",
+    };
+  }
+
+  function libUrl(offset, limit) {
+    const p = new URLSearchParams();
+    if (lib.q) p.set("q", lib.q);
+    if (lib.pasta) p.set("pasta", lib.pasta);
+    p.set("ordem", lib.ordem);
+    p.set("offset", String(offset));
+    p.set("limit", String(limit));
+    return "/api/musicas?" + p.toString();
+  }
+
+  async function libFetch(offset, limit, signal) {
+    const { ok, data } = await getJSON(libUrl(offset, limit), { signal, timeout: 12000 });
+    return ok ? libParse(data) : null;
+  }
+
+  function libApplyHead(page) {
+    lib.versao = page.versao;
+    lib.total = page.total;
+    lib.totalAcervo = page.totalAcervo;
+    lib.pastas = page.pastas;
+    lib.varrendo = page.varrendo;
+    lib.truncado = page.truncado;
+    lib.metadados = page.metadados;
+    lib.envio = page.envio;
+    lib.pastaLocal = page.pastaLocal;
+    // a pasta escolhida deixou de existir: volta para "Todas"
+    if (lib.pasta && !page.pastas.some((p) => p.nome === lib.pasta)) lib.pasta = "";
+  }
+
+  /**
+   * Carrega do começo (filtro novo / primeira vez) ou, com `keep`, recarrega tudo o que já está na
+   * tela (a pasta mudou). Uma carga nova cancela a anterior.
+   */
+  async function libReload(keep) {
+    if (lib.ctrl) lib.ctrl.abort();
+    const ctrl = new AbortController();
+    lib.ctrl = ctrl;
+    const mine = ++lib.seq;
+    lib.loading = true;
+    libRender();
+    try {
+      const want = keep ? clamp(lib.items.length, LIB_PAGE, 400) : LIB_PAGE;
+      const items = [];
+      let head = null;
+      while (items.length < want) {
+        const page = await libFetch(items.length, Math.min(100, want - items.length), ctrl.signal);
+        if (mine !== lib.seq) return;
+        if (!page) throw new Error("resposta inválida");
+        if (!head) head = page;
+        if (!page.items.length) break;
+        items.push(...page.items);
+        if (items.length >= page.total) break;
+      }
+      libApplyHead(head);
+      lib.items = items;
+      lib.loaded = true;
+      lib.failed = false;
+    } catch (e) {
+      if (mine !== lib.seq || (e && (e.name === "AbortError" || e.name === "AuthLockedError"))) return;
+      lib.failed = true;
+    } finally {
+      if (mine === lib.seq) {
+        lib.loading = false;
+        lib.ctrl = null;
+        libRender();
+      }
+    }
+  }
+
+  /** "Carregar mais": a próxima página, sem mexer no que já está na tela. */
+  async function libMore() {
+    if (lib.loading || !lib.loaded || lib.items.length >= lib.total) return;
+    const ctrl = new AbortController();
+    lib.ctrl = ctrl;
+    const mine = ++lib.seq;
+    lib.loading = true;
+    libRender();
+    let reload = false;
+    try {
+      const page = await libFetch(lib.items.length, LIB_PAGE, ctrl.signal);
+      if (mine !== lib.seq) return;
+      if (!page) throw new Error("resposta inválida");
+      if (page.versao !== lib.versao) {
+        reload = true; // a pasta mudou no meio do caminho: as posições não valem mais
+      } else {
+        const have = new Set(lib.items.map((t) => t.id));
+        lib.items = lib.items.concat(page.items.filter((t) => !have.has(t.id)));
+        libApplyHead(page);
+      }
+    } catch (e) {
+      if (mine !== lib.seq || (e && (e.name === "AbortError" || e.name === "AuthLockedError"))) return;
+      toast("Não foi possível carregar mais músicas agora.", "error");
+    } finally {
+      if (mine === lib.seq) {
+        lib.loading = false;
+        lib.ctrl = null;
+        libRender();
+      }
+    }
+    if (reload) libReload(true);
+  }
+
+  /** Tarefa do agendador: primeira carga e, depois, só recarrega quando a versão da pasta mudou. */
+  async function libPoll() {
+    if (lib.loading) return;
+    if (!lib.loaded) {
+      await libReload(false);
+      return;
+    }
+    try {
+      const page = await libFetch(0, 1);
+      if (!page) return;
+      if (page.versao !== lib.versao) await libReload(true);
+    } catch (e) { /* silencioso: tenta no próximo ciclo */ }
+  }
+
+  // ---- Desenhar ----
+  function fmtFormats(list) {
+    const known = LIB_FORMATOS.filter((f) => list.includes(f));
+    const names = known.concat(list.filter((f) => !known.includes(f))).map((f) => f.slice(1).toUpperCase());
+    return names.length > 1 ? names.slice(0, -1).join(", ") + " e " + names[names.length - 1] : names.join("");
+  }
+
+  function libSub(t) {
+    const parts = [];
+    if (t.artista) parts.push(t.artista);
+    if (isNum(t.duracao_s)) parts.push(fmtDur(t.duracao_s));
+    return parts.join(" · ");
+  }
+
+  function makeLibButton(act, className, iconName) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = className;
+    b.dataset.act = act;
+    b.appendChild(makeIcon(iconName));
+    return b;
+  }
+
+  function makeLibRow() {
+    const li = document.createElement("li");
+    li.className = "lib__item is-new";
+    li.addEventListener("animationend", () => li.classList.remove("is-new"), { once: true });
+    const row = document.createElement("div");
+    row.className = "lib__row";
+    const thumb = document.createElement("span");
+    thumb.className = "thumb thumb--lib";
+    thumb.appendChild(makeIcon("music"));
+    const eq = document.createElement("span");
+    eq.className = "lib__eq";
+    eq.setAttribute("aria-hidden", "true");
+    eq.append(document.createElement("i"), document.createElement("i"), document.createElement("i"));
+    thumb.appendChild(eq);
+    const text = document.createElement("span");
+    text.className = "lib__text";
+    const title = document.createElement("span");
+    title.className = "lib__title";
+    const sub = document.createElement("span");
+    sub.className = "lib__sub";
+    text.append(title, sub);
+    const acts = document.createElement("div");
+    acts.className = "lib__acts";
+    const play = makeLibButton("play", "btn btn--icon", "play");
+    const add = makeLibButton("add", "btn btn--chip lib__add", "plus");
+    const addText = document.createElement("span");
+    addText.className = "lib__add-t";
+    addText.textContent = "Fila";
+    add.appendChild(addText);
+    acts.append(play, add);
+    const rm = makeLibButton("remove", "btn btn--icon lib__rm", "trash");
+    const rmText = document.createElement("span");
+    rmText.className = "lib__rm-t";
+    rmText.textContent = "Remover?";
+    rm.appendChild(rmText);
+    rm.hidden = isRemote(); // só o PC da loja remove (o servidor recusa o resto com 403)
+    acts.appendChild(rm);
+    row.append(thumb, text, acts);
+    li.appendChild(row);
+    li._lib = { thumb, title, sub, play, add, rm };
+    return li;
+  }
+
+  function updateLibRow(li, t, index) {
+    const r = li._lib;
+    const name = t.title || "Música";
+    if (li.classList.contains("is-new")) li.style.setProperty("--i", String(index));
+    setText(r.title, name);
+    const sub = libSub(t);
+    setText(r.sub, sub);
+    r.sub.hidden = !sub;
+    setThumbArt(r.thumb, { file: t.id, capa: t.tem_capa });
+    const labels = [[r.play, "Tocar agora: "], [r.add, "Adicionar à fila: "], [r.rm, "Remover da lista: "]];
+    for (const [b, prefix] of labels) {
+      const label = prefix + name;
+      if (b.getAttribute("aria-label") !== label && !b.classList.contains("is-confirm")) {
+        b.setAttribute("aria-label", label);
+        b.title = prefix.slice(0, -2);
+      }
+    }
+    const cur = t.id === lib.curId;
+    li.classList.toggle("is-current", cur);
+    li.classList.toggle("is-playing", cur && lib.curPlaying);
+    if (cur) li.setAttribute("aria-current", "true");
+    else li.removeAttribute("aria-current");
+  }
+
+  /** Quantas músicas há dentro de cada pasta, contando as subpastas (é o que o filtro mostra). */
+  function libChipCounts() {
+    return lib.pastas.map((p) => {
+      const base = p.nome.toLowerCase();
+      let n = 0;
+      for (const q of lib.pastas) {
+        const other = q.nome.toLowerCase();
+        if (other === base || other.startsWith(base + "/")) n += q.total;
+      }
+      return { nome: p.nome, n };
+    });
+  }
+
+  function makeChip(value, label, count) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "lib__chip";
+    b.setAttribute("role", "radio");
+    b.dataset.value = value;
+    const name = document.createElement("span");
+    name.className = "lib__chip-name";
+    name.textContent = label;
+    const n = document.createElement("span");
+    n.className = "lib__chip-n";
+    n.textContent = String(count);
+    b.append(name, n);
+    return b;
+  }
+
+  function libRenderChips() {
+    const counts = libChipCounts();
+    libChips.hidden = counts.length === 0;
+    const sig = JSON.stringify([lib.totalAcervo, counts.map((c) => [c.nome, c.n])]);
+    if (sig !== lib.chipsSig) {
+      lib.chipsSig = sig;
+      const focused = document.activeElement && libChips.contains(document.activeElement) ? document.activeElement.dataset.value : null;
+      const frag = document.createDocumentFragment();
+      frag.appendChild(makeChip("", "Todas", lib.totalAcervo));
+      for (const c of counts) frag.appendChild(makeChip(c.nome, c.nome.split("/").join(" › "), c.n));
+      libChips.replaceChildren(frag);
+      if (focused !== null) {
+        const again = Array.from(libChips.children).find((b) => b.dataset.value === focused);
+        if (again) again.focus({ preventScroll: true });
+      }
+    }
+    for (const b of libChips.children) {
+      const on = b.dataset.value === lib.pasta;
+      b.setAttribute("aria-checked", String(on));
+      b.tabIndex = on ? 0 : -1;
+    }
+  }
+
+  function libBulkLabels() {
+    if (lib.q) return ["Tocar resultados", "Resultados à fila"];
+    if (lib.pasta) return ["Tocar pasta", "Adicionar pasta à fila"];
+    return ["Tocar tudo", "Adicionar tudo à fila"];
+  }
+
+  function libRenderBulk() {
+    const show = lib.loaded && lib.total > 0;
+    libBulk.hidden = !show;
+    if (!show) return;
+    const [playLabel, addLabel] = libBulkLabels();
+    if (!btnLibPlayAll.classList.contains("is-confirm")) setText(btnLibPlayAllLabel, lib.busy ? "Preparando…" : playLabel);
+    setText(btnLibAddAllLabel, addLabel);
+    btnLibPlayAll.setAttribute("aria-disabled", String(lib.busy));
+    btnLibAddAll.setAttribute("aria-disabled", String(lib.busy));
+    const over = lib.total > YT_QUEUE_MAX;
+    libBulkNote.hidden = !over;
+    if (over) setText(libBulkNote, "Entram até " + YT_QUEUE_MAX + " músicas de uma vez (limite da fila). Use a busca ou uma pasta para escolher melhor.");
+  }
+
+  function libRenderSend() {
+    const e = lib.envio;
+    btnLibUpload.hidden = !e.habilitado;
+    setText(
+      libSendHint,
+      e.habilitado
+        ? fmtFormats(e.formatos) + " · até " + Math.floor(e.max_bytes_arquivo / MB) + " MB cada. No celular, escolha da galeria ou dos arquivos."
+        : "O envio de músicas está desativado neste computador."
+    );
+  }
+
+  function libEmptyState() {
+    const remote = isRemote();
+    if (lib.failed && !lib.loaded) {
+      return { title: "Não consegui carregar as músicas", text: "Confira a conexão com o computador da loja e tente de novo.", act: "retry", label: "Tentar de novo" };
+    }
+    if (!lib.loaded || lib.loading) return null;
+    if (lib.totalAcervo === 0 && !lib.varrendo) {
+      if (remote) {
+        return {
+          title: "Nenhuma música ainda",
+          text: "Mande músicas do seu aparelho com o botão “Enviar músicas”, ou coloque os arquivos na pasta “Músicas do Proclamare” do computador da loja.",
+          act: lib.envio.habilitado ? "upload" : "",
+          label: "Enviar músicas",
+        };
+      }
+      return {
+        title: "Nenhuma música ainda",
+        text: "Baixe suas músicas e coloque na pasta abaixo — elas aparecem aqui sozinhas, em poucos segundos.",
+        path: lib.pastaLocal,
+        act: "open",
+        label: "Abrir pasta",
+      };
+    }
+    if (lib.totalAcervo > 0 && lib.total === 0) {
+      return {
+        title: "Nada encontrado",
+        text: lib.q ? "Nenhuma música combina com “" + truncate(lib.q, 40) + "”." : "Esta pasta não tem músicas.",
+        act: "clear",
+        label: lib.q ? "Limpar a busca" : "Mostrar todas",
+      };
+    }
+    return null;
+  }
+
+  function libRender() {
+    const hasAny = lib.totalAcervo > 0;
+    btnLibOpen.hidden = isRemote();
+    libList.classList.toggle("has-remove", !isRemote());
+    libList.setAttribute("aria-busy", String(lib.loading));
+    libList.classList.toggle("is-busy", lib.loading && lib.items.length > 0);
+    libTotal.hidden = !(lib.loaded && hasAny);
+    if (!libTotal.hidden) setText(libTotal, String(lib.totalAcervo));
+    libRenderSend();
+    libFilters.hidden = !(lib.loaded && hasAny);
+
+    // estado da carga
+    let status = "";
+    if (!lib.loaded && lib.loading) status = "Carregando suas músicas…";
+    else if (lib.loaded && !hasAny && lib.varrendo) status = "Procurando músicas na pasta…";
+    libStatus.hidden = !status;
+    setText(libStatusText, status);
+    // primeira varredura ainda rodando: confere de novo daqui a pouco (sem esperar os 15 s)
+    if (lib.loaded && !hasAny && lib.varrendo && !lib.scanTimer) {
+      lib.scanTimer = setTimeout(() => { lib.scanTimer = 0; scheduler.kick("lib"); }, 2000);
+    }
+
+    const empty = libEmptyState();
+    libEmpty.hidden = !empty;
+    if (empty) {
+      setText(libEmptyTitle, empty.title);
+      setText(libEmptyText, empty.text);
+      libEmptyPath.hidden = !empty.path;
+      if (empty.path) setText(libEmptyPath, empty.path);
+      btnLibEmptyAction.hidden = !empty.act || (empty.act === "open" && isRemote());
+      if (empty.act) {
+        btnLibEmptyAction.dataset.act = empty.act;
+        setText(btnLibEmptyAction, empty.label);
+      }
+    }
+
+    if (lib.loaded) {
+      libRenderChips();
+      let count;
+      if (lib.q) count = lib.total === 0 ? "Nenhuma música encontrada" : lib.total === 1 ? "1 música encontrada" : lib.total + " músicas encontradas";
+      else if (lib.pasta) count = lib.total === 1 ? "1 música nesta pasta" : lib.total + " músicas nesta pasta";
+      else count = lib.totalAcervo === 1 ? "1 música" : lib.totalAcervo + " músicas";
+      if (lib.truncado) count += " (a pasta passou do limite de leitura)";
+      if (!lib.metadados) count += " · só os nomes dos arquivos aparecem: rode “Instalar Proclamare” de novo no computador da loja";
+      setText(libCount, count);
+    }
+    libRenderBulk();
+
+    // lista (só mexe no DOM quando algo mudou)
+    const sig = lib.items.map((t) => [t.id, t.title, t.artista, t.duracao_s, t.tem_capa].join("|")).join("\n");
+    if (sig !== lib.listSig) {
+      lib.listSig = sig;
+      reconcileList(libList, lib.items, (t) => t.id, makeLibRow, updateLibRow);
+    }
+    const more = lib.loaded && lib.items.length > 0 && lib.items.length < lib.total;
+    libMoreBox.hidden = !more;
+    if (more) {
+      setText(libMoreInfo, "Mostrando " + lib.items.length + " de " + lib.total);
+      btnLibMore.setAttribute("aria-disabled", String(lib.loading));
+    }
+  }
+
+  // ---- Filtros: busca, pastas, ordem ----
+  let libSearchTimer = 0;
+  function libApplySearch() {
+    clearTimeout(libSearchTimer);
+    const q = libSearch.value.trim();
+    if (q === lib.q) return;
+    lib.q = q;
+    libReload(false);
+  }
+  libSearch.addEventListener("input", () => {
+    clearTimeout(libSearchTimer);
+    libSearchTimer = setTimeout(libApplySearch, 250);
+  });
+  libSearch.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); libApplySearch(); }
+  });
+
+  function libPickFolder(value) {
+    if (value === lib.pasta) return;
+    lib.pasta = value;
+    libRenderChips();
+    libReload(false);
+  }
+  libChips.addEventListener("click", (e) => {
+    const b = e.target instanceof Element ? e.target.closest('[role="radio"]') : null;
+    if (b && libChips.contains(b)) libPickFolder(b.dataset.value || "");
+  });
+  libChips.addEventListener("keydown", (e) => {
+    const radios = Array.from(libChips.querySelectorAll('[role="radio"]'));
+    const i = radios.indexOf(document.activeElement);
+    if (i < 0) return;
+    let to = -1;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") to = (i + 1) % radios.length;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") to = (i - 1 + radios.length) % radios.length;
+    else if (e.key === "Home") to = 0;
+    else if (e.key === "End") to = radios.length - 1;
+    if (to < 0) return;
+    e.preventDefault();
+    radios[to].focus();
+    libPickFolder(radios[to].dataset.value || "");
+  });
+
+  libShuffle.addEventListener("change", () => {
+    lib.shuffle = libShuffle.checked;
+    libSavePrefs();
+  });
+  btnLibMore.addEventListener("click", () => {
+    if (btnLibMore.getAttribute("aria-disabled") !== "true") libMore();
+  });
+  // no computador a lista rola dentro do tile: ao chegar perto do fim, traz a próxima página
+  libList.addEventListener("scroll", throttle(() => {
+    if (libList.scrollHeight - libList.scrollTop - libList.clientHeight < 140) libMore();
+  }, 200), { passive: true });
+
+  // ---- Chamadas ao servidor (JSON) ----
+  async function libPost(path, body) {
+    try {
+      return await postJSON(path, body, { timeout: 10000 });
+    } catch (e) {
+      return null;
+    }
+  }
+  const libErr = (r, fallback) => (r && typeof r.data.error === "string" && r.data.error ? r.data.error : fallback);
+
+  function flashButton(btn) {
+    const use = btn.querySelector("use");
+    if (!use) return;
+    const old = use.getAttribute("href");
+    use.setAttribute("href", "#i-check");
+    setTimeout(() => use.setAttribute("href", old), 1400);
+  }
+
+  function scrollToQueue() {
+    const tile = $("tile-yt-queue");
+    tile.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    $("title-yt-queue").setAttribute("tabindex", "-1");
+    $("title-yt-queue").focus({ preventScroll: true });
+  }
+
+  /** ▶ Tocar agora: nesta aba (se for o tocador) ou comando "load" ao Tocador da loja. */
+  async function libPlayNow(t) {
+    const name = truncate(t.title || "Música", 60);
+    if (ytMode === "player") {
+      playFile(t, false);
+      toast("Tocando agora: " + name, "success", { duration: 2400 });
+      return;
+    }
+    if (ytAlive === false) {
+      noTocadorToast(t);
+      return;
+    }
+    if (await youtubeEnqueue("load", { music_id: t.id }, true)) {
+      toast("Enviada ao Tocador da loja: " + name, "success", { duration: 2800 });
+      setTimeout(() => scheduler.kick("yt-state"), 1200);
+    }
+  }
+
+  /** ＋ Fila */
+  async function libAddOne(t, btn) {
+    if (btn.getAttribute("aria-disabled") === "true") return;
+    btn.setAttribute("aria-disabled", "true");
+    const data = await ytQueueOp({ op: "add", music_id: t.id });
+    btn.removeAttribute("aria-disabled");
+    if (!data) return;
+    flashButton(btn);
+    announceQueue("Música adicionada à fila.");
+    toast("Na fila: " + truncate(t.title || "Música", 50), "success", { duration: 3600, action: { label: "Ver fila", onClick: scrollToQueue } });
+    const added = normalizeQueue([data.item])[0];
+    if (added && !ytqItems.some((i) => i.id === added.id)) renderQueue(ytqItems.concat(added));
+    scheduler.kick("yt-state");
+  }
+
+  // ---- Remover (só no PC da loja): move para a pasta _removidas, não apaga ----
+  let rmArmed = null;
+  function rmReset() {
+    if (!rmArmed) return;
+    clearTimeout(rmArmed.timer);
+    rmArmed.btn.classList.remove("is-confirm");
+    const li = rmArmed.btn.closest(".lib__item");
+    if (li && li._lib) {
+      const item = lib.items.find((x) => x.id === li.dataset.key);
+      if (item) rmArmed.btn.setAttribute("aria-label", "Remover da lista: " + (item.title || "Música"));
+    }
+    rmArmed = null;
+  }
+  async function libRemove(t, btn) {
+    if (btn.getAttribute("aria-disabled") === "true") return;
+    if (!btn.classList.contains("is-confirm")) { // 1º toque pede confirmação, 2º remove
+      rmReset();
+      btn.classList.add("is-confirm");
+      btn.setAttribute("aria-label", "Confirmar: mover “" + (t.title || "Música") + "” para a pasta de removidas");
+      rmArmed = { btn, timer: setTimeout(rmReset, 4000) };
+      return;
+    }
+    rmReset();
+    btn.setAttribute("aria-disabled", "true");
+    const r = await libPost("/api/musicas/remover", { id: t.id });
+    btn.removeAttribute("aria-disabled");
+    if (r && r.ok && r.data.ok) {
+      toast("Movida para a pasta “_removidas”, dentro de Minhas músicas. Dá para recuperá-la de lá.", "success", { duration: 6500 });
+      libReload(true);
+      scheduler.kick("yt-state");
+    } else {
+      toast(libErr(r, "Não foi possível remover agora. Tente de novo."), "error");
+    }
+  }
+
+  libList.addEventListener("click", (e) => {
+    const btn = e.target instanceof Element ? e.target.closest("button[data-act]") : null;
+    if (!btn || !libList.contains(btn)) return;
+    const li = btn.closest(".lib__item");
+    const t = li ? lib.items.find((x) => x.id === li.dataset.key) : null;
+    if (!t) return;
+    const act = btn.dataset.act;
+    if (act === "play") libPlayNow(t);
+    else if (act === "add") libAddOne(t, btn);
+    else if (act === "remove" && !isRemote()) libRemove(t, btn);
+  });
+
+  // ---- Ações em pasta: Tocar pasta / Adicionar pasta à fila ----
+  /** Ids da seleção atual (pasta, busca ou tudo), na ordem da lista, até o teto da fila. */
+  async function libCollectIds() {
+    const ids = [];
+    const want = Math.min(lib.total, YT_QUEUE_MAX);
+    let off = 0;
+    while (ids.length < want) {
+      const page = await libFetch(off, Math.min(100, want - ids.length));
+      if (!page || !page.items.length) break;
+      for (const t of page.items) ids.push(t.id);
+      off += page.items.length;
+    }
+    return ids;
+  }
+
+  function queueAddedMessage(r) {
+    const n = Number.isInteger(r.adicionados) ? r.adicionados : 0;
+    let msg = n === 1 ? "1 música entrou na fila." : n + " músicas entraram na fila.";
+    if (Number.isInteger(r.cortados) && r.cortados > 0) msg += " A fila encheu: " + r.cortados + " ficaram de fora.";
+    if (Number.isInteger(r.ignorados) && r.ignorados > 0) msg += " " + r.ignorados + " não estavam mais na pasta.";
+    return msg;
+  }
+
+  let playAllTimer = 0;
+  function playAllReset() {
+    clearTimeout(playAllTimer);
+    if (btnLibPlayAll.classList.contains("is-confirm")) {
+      btnLibPlayAll.classList.remove("is-confirm");
+      libRenderBulk();
+    }
+  }
+
+  async function libBulkRun(mode) {
+    if (lib.busy) return;
+    if (mode === "play" && ytqItems.length > 0 && !btnLibPlayAll.classList.contains("is-confirm")) {
+      // tocar a pasta SUBSTITUI a fila: pede um segundo toque (igual ao "Limpar fila")
+      btnLibPlayAll.classList.add("is-confirm");
+      setText(btnLibPlayAllLabel, "Substituir a fila? Toque de novo");
+      clearTimeout(playAllTimer);
+      playAllTimer = setTimeout(playAllReset, 4500);
+      return;
+    }
+    playAllReset();
+    lib.busy = true;
+    libRenderBulk();
+    try {
+      const ids = await libCollectIds();
+      if (!ids.length) {
+        toast("Não encontrei músicas para adicionar.", "warn");
+        return;
+      }
+      const embaralhar = lib.shuffle;
+      if (mode === "add") {
+        const r = await ytQueueOp({ op: "add_many", music_ids: ids, posicao: "fim", embaralhar });
+        if (r) {
+          announceQueue("Músicas adicionadas à fila.");
+          toast(queueAddedMessage(r), r.adicionados > 0 ? "success" : "warn", { duration: 4200, action: { label: "Ver fila", onClick: scrollToQueue } });
+          scheduler.kick("yt-state");
+        }
+        return;
+      }
+      // Tocar pasta: UMA chamada troca a fila e já tira a primeira (o servidor faz tudo sob o mesmo
+      // lock: se algo falhar a fila antiga continua; o fim de uma música não "rouba" a segunda).
+      const semTocador = ytMode !== "player" && ytAlive === false;
+      const r = await ytQueueOp({
+        op: "add_many", music_ids: ids, posicao: "fim", embaralhar, substituir: true, tirar_primeiro: !semTocador,
+      });
+      if (!r) return;
+      if (semTocador) {
+        renderQueue([]);
+        scheduler.kick("yt-state");
+        noTocadorToast(null);
+        return;
+      }
+      const first = r.primeiro ? trackFromQueue(r.primeiro) : null;
+      if (!first) {
+        toast("A fila ficou pronta, mas não consegui começar. Toque em ▶.", "warn");
+      } else {
+        if (ytMode === "player") playFile(first, false);
+        else await youtubeEnqueue("load", { music_id: first.id }, true);
+        announceQueue("Fila nova.");
+        const n = Number.isInteger(r.adicionados) ? r.adicionados : ids.length;
+        let msg = "Tocando " + (n === 1 ? "1 música" : n + " músicas") + (embaralhar ? " em ordem aleatória" : "") + ".";
+        if (Number.isInteger(r.cortados) && r.cortados > 0) msg += " A fila encheu: " + r.cortados + " ficaram de fora.";
+        toast(msg, "success", { duration: 4200, action: { label: "Ver fila", onClick: scrollToQueue } });
+      }
+      scheduler.kick("yt-state");
+    } catch (e) {
+      if (!e || e.name !== "AuthLockedError") toast("Não foi possível falar com o servidor.", "error");
+    } finally {
+      lib.busy = false;
+      libRenderBulk();
+    }
+  }
+  btnLibPlayAll.addEventListener("click", () => libBulkRun("play"));
+  btnLibAddAll.addEventListener("click", () => libBulkRun("add"));
+
+  // ---- Abrir pasta / Atualizar ----
+  async function libOpenFolder() {
+    const r = await libPost("/api/musicas/abrir-pasta", {});
+    if (r && r.ok && r.data.ok) toast("Abrindo a pasta no computador da loja…", "success", { duration: 2800 });
+    else toast(libErr(r, "Não foi possível abrir a pasta agora."), r && r.status === 429 ? "info" : "error");
+  }
+  btnLibOpen.addEventListener("click", libOpenFolder);
+
+  async function libRefresh() {
+    if (btnLibRefresh.getAttribute("aria-disabled") === "true") return;
+    btnLibRefresh.setAttribute("aria-disabled", "true");
+    btnLibRefresh.classList.add("is-loading");
+    try {
+      const antes = lib.versao;
+      // "aguardar": o servidor só responde quando a varredura termina (sem adivinhar tempo com sleep)
+      const r = await libPost("/api/musicas/atualizar", { aguardar: true });
+      if (!r || !r.ok) {
+        toast(libErr(r, "Não foi possível atualizar agora."), r && r.status === 429 ? "info" : "error");
+        return;
+      }
+      await libReload(true);
+      if (!lib.failed && lib.versao === antes) {
+        // nada novo: pode haver um arquivo ainda sendo copiado (o servidor espera ~2 s antes de aceitá-lo)
+        await sleep(2300);
+        const r2 = await libPost("/api/musicas/atualizar", { aguardar: true });
+        if (r2 && r2.ok) await libReload(true);
+      }
+      if (lib.failed) toast("Não consegui recarregar a lista agora. Tente de novo.", "error");
+      else toast("Lista atualizada.", "success", { duration: 2000 });
+    } finally {
+      btnLibRefresh.removeAttribute("aria-disabled");
+      btnLibRefresh.classList.remove("is-loading");
+    }
+  }
+  btnLibRefresh.addEventListener("click", libRefresh);
+
+  btnLibEmptyAction.addEventListener("click", () => {
+    const act = btnLibEmptyAction.dataset.act;
+    if (act === "open") libOpenFolder();
+    else if (act === "upload") libFile.click();
+    else if (act === "retry") libReload(false);
+    else if (act === "clear") {
+      libSearch.value = "";
+      lib.q = "";
+      lib.pasta = "";
+      libRenderChips();
+      libReload(false);
+    }
+  });
+
+  // ---- Enviar músicas (multipart por XHR, com barra de progresso) ----
+  const upl = { active: false, xhr: null, cancelled: false };
+  const fileExt = (name) => (name.lastIndexOf(".") >= 0 ? name.slice(name.lastIndexOf(".")).toLowerCase() : "");
+
+  /** POST multipart/form-data. Sem Content-Type manual: o navegador põe o boundary (e o Origin). */
+  function xhrUpload(files, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      upl.xhr = xhr;
+      xhr.open("POST", "/api/musicas/enviar");
+      xhr.responseType = "json";
+      xhr.setRequestHeader("Accept", "application/json");
+      xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) onProgress(ev.loaded); };
+      xhr.onload = () => {
+        const body = xhr.response && typeof xhr.response === "object" ? xhr.response : {};
+        resolve({ status: xhr.status, data: body });
+      };
+      xhr.onerror = () => reject(new Error("rede"));
+      xhr.ontimeout = () => reject(new Error("tempo"));
+      xhr.onabort = () => { const e = new Error("cancelado"); e.name = "AbortError"; reject(e); };
+      const form = new FormData();
+      for (const f of files) form.append("arquivos", f, f.name);
+      xhr.send(form);
+    });
+  }
+
+  function upItem(ok, nome, motivo) {
+    const li = document.createElement("li");
+    li.className = "lib__up-item " + (ok ? "is-ok" : "is-bad");
+    li.appendChild(makeIcon(ok ? "check" : "alert"));
+    const text = document.createElement("span");
+    text.className = "lib__up-name";
+    text.textContent = nome;
+    if (motivo) {
+      const why = document.createElement("span");
+      why.className = "lib__up-why";
+      why.textContent = motivo;
+      text.appendChild(why);
+    }
+    li.appendChild(text);
+    return li;
+  }
+
+  let upLastPct = -1;
+  function libUploadProgress(done, total, count) {
+    const pct = total > 0 ? clamp(Math.floor((done / total) * 100), 0, 99) : 0;
+    if (pct === upLastPct) return;
+    upLastPct = pct;
+    libUpFill.style.setProperty("transform", "scaleX(" + (pct / 100).toFixed(2) + ")");
+    libUpBar.setAttribute("aria-valuenow", String(pct));
+    setText(libUpTitle, "Enviando " + (count === 1 ? "1 música" : count + " músicas") + "… " + pct + "%");
+  }
+
+  function libUploadShow(running) {
+    libUpload.hidden = false;
+    libUpload.classList.toggle("is-done", !running);
+    btnLibUpCancel.hidden = !running;
+    btnLibUpClose.hidden = running;
+    btnLibUpload.setAttribute("aria-disabled", String(running));
+  }
+
+  const MSG_STATUS = {
+    413: "O envio ficou grande demais. Mande menos músicas de uma vez.",
+    429: "Muitos envios seguidos. Espere um minuto e tente de novo.",
+    403: "O envio de músicas não está liberado neste computador.",
+    507: "O computador da loja está com pouco espaço livre.",
+  };
+
+  async function libUploadFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    if (upl.active) {
+      toast("Já há um envio em andamento. Espere terminar.", "info");
+      return;
+    }
+    const env = lib.envio;
+    if (!env.habilitado) {
+      toast("O envio de músicas está desativado neste computador.", "warn");
+      return;
+    }
+    // 1) o que dá para mandar (o servidor confere tudo de novo; aqui só poupa tráfego e explica cedo)
+    const okExt = new Set(env.formatos);
+    const accepted = [];
+    const refused = [];
+    for (const f of files) {
+      const nome = String(f.name || "arquivo").slice(0, 120);
+      if (!okExt.has(fileExt(nome))) refused.push({ nome, motivo: "Formato não aceito. Use " + fmtFormats(env.formatos) + "." });
+      else if (!(f.size > 0)) refused.push({ nome, motivo: "O arquivo está vazio." });
+      else if (f.size > env.max_bytes_arquivo) refused.push({ nome, motivo: "Maior que " + Math.floor(env.max_bytes_arquivo / MB) + " MB." });
+      else accepted.push(f);
+    }
+    // 2) lotes: até max_arquivos por vez e sem passar do teto de corpo do servidor
+    const batches = [];
+    let cur = [];
+    let curBytes = 0;
+    const cap = Math.floor(env.max_bytes_total * 0.9);
+    for (const f of accepted) {
+      if (cur.length >= env.max_arquivos || (cur.length && curBytes + f.size > cap)) {
+        batches.push(cur);
+        cur = [];
+        curBytes = 0;
+      }
+      cur.push(f);
+      curBytes += f.size;
+    }
+    if (cur.length) batches.push(cur);
+
+    upl.active = true;
+    upl.cancelled = false;
+    upLastPct = -1;
+    libUpList.replaceChildren();
+    setText(libUpNote, "");
+    libUploadShow(true);
+    libUploadProgress(0, 1, accepted.length);
+    setText(libUpLive, accepted.length ? "Enviando " + accepted.length + " músicas." : "");
+
+    const totalBytes = accepted.reduce((a, f) => a + f.size, 0);
+    const sent = []; // nomes das músicas que chegaram
+    let doneBytes = 0;
+    let stopMsg = "";
+    try {
+      for (let b = 0; b < batches.length && !upl.cancelled; b++) {
+        const batch = batches[b];
+        const batchBytes = batch.reduce((a, f) => a + f.size, 0);
+        let res;
+        try {
+          res = await xhrUpload(batch, (loaded) => libUploadProgress(doneBytes + Math.min(loaded, batchBytes), totalBytes, accepted.length));
+        } catch (e) {
+          if (e && e.name === "AbortError") { upl.cancelled = true; break; }
+          stopMsg = "A conexão caiu durante o envio.";
+          for (const f of batches.slice(b).flat()) refused.push({ nome: String(f.name).slice(0, 120), motivo: "Não foi enviada: " + stopMsg });
+          break;
+        }
+        doneBytes += batchBytes;
+        const d = res.data;
+        if ((res.status === 401 && d.auth === "pin_requerido") || (res.status === 403 && d.auth === "pin_nao_configurado")) {
+          lockApp(d.auth); // sessão caiu no meio do envio
+          return;
+        }
+        if (Array.isArray(d.enviados)) {
+          for (const it of d.enviados.slice(0, 100)) {
+            const t = trackFromLib(it);
+            if (t) sent.push(t.title || "Música");
+          }
+        }
+        if (Array.isArray(d.recusados)) {
+          for (const r of d.recusados.slice(0, 100)) {
+            if (r && typeof r.nome === "string") refused.push({ nome: r.nome.slice(0, 120), motivo: typeof r.motivo === "string" ? r.motivo.slice(0, 200) : "" });
+          }
+        }
+        if (res.status !== 200 && res.status !== 422) { // 413 (cota), 507 (disco), 429, 403…: não adianta insistir
+          stopMsg = (typeof d.error === "string" && d.error) || MSG_STATUS[res.status] || "O servidor não aceitou o envio.";
+          // recusa ANTES de olhar os arquivos (sem a lista "recusados"): o lote atual também não foi
+          const rest = Array.isArray(d.recusados) ? batches.slice(b + 1) : batches.slice(b);
+          for (const f of rest.flat()) refused.push({ nome: String(f.name).slice(0, 120), motivo: "Não foi enviada: " + stopMsg });
+          break;
+        }
+      }
+    } finally {
+      upl.active = false;
+      upl.xhr = null;
+    }
+    libUploadFinish(sent, refused, stopMsg, files.length);
+  }
+
+  function libUploadFinish(sent, refused, stopMsg, totalFiles) {
+    const wasCancelled = upl.cancelled;
+    upl.cancelled = false;
+    const nOk = sent.length;
+    const nBad = refused.length;
+    libUploadShow(false);
+    libUpFill.style.setProperty("transform", "scaleX(1)");
+    let title;
+    if (wasCancelled) title = "Envio cancelado" + (nOk ? ": " + nOk + (nOk === 1 ? " música já chegou." : " músicas já chegaram.") : ".");
+    else if (nOk && !nBad) title = nOk === 1 ? "1 música enviada" : nOk + " músicas enviadas";
+    else if (nOk) title = nOk + (nOk === 1 ? " enviada, " : " enviadas, ") + nBad + (nBad === 1 ? " não aceita" : " não aceitas");
+    else title = totalFiles === 1 ? "A música não foi aceita" : "Nenhuma música foi aceita";
+    setText(libUpTitle, title);
+    setText(libUpNote, stopMsg ? stopMsg : nBad ? "Veja abaixo o motivo de cada arquivo que não entrou." : "Elas já aparecem na lista, na pasta “Enviadas”.");
+    const frag = document.createDocumentFragment();
+    const shown = sent.slice(0, 60);
+    for (const nome of shown) frag.appendChild(upItem(true, nome, "Enviada"));
+    for (const r of refused.slice(0, 60)) frag.appendChild(upItem(false, r.nome, r.motivo));
+    const hidden = sent.length - shown.length + Math.max(0, refused.length - 60);
+    if (hidden > 0) {
+      const li = document.createElement("li");
+      li.className = "lib__up-item";
+      li.appendChild(makeIcon("info"));
+      const sp = document.createElement("span");
+      sp.className = "lib__up-name";
+      sp.textContent = "…e mais " + hidden + ".";
+      li.appendChild(sp);
+      frag.appendChild(li);
+    }
+    libUpList.replaceChildren(frag);
+    setText(libUpLive, title + (stopMsg ? ". " + stopMsg : ""));
+    if (nOk) {
+      toast(nOk === 1 ? "1 música enviada." : nOk + " músicas enviadas.", "success", { duration: 3200 });
+      libReload(true);
+      scheduler.kick("lib");
+    } else if (!wasCancelled) {
+      toast(stopMsg || "Nenhuma música foi aceita. Veja o motivo na lista.", "warn", { duration: 6000 });
+    }
+  }
+
+  btnLibUpload.addEventListener("click", () => {
+    if (btnLibUpload.getAttribute("aria-disabled") === "true") {
+      toast("Já há um envio em andamento. Espere terminar.", "info");
+      return;
+    }
+    libFile.click();
+  });
+  libFile.addEventListener("change", () => {
+    const files = Array.from(libFile.files || []);
+    libFile.value = ""; // permite escolher os mesmos arquivos de novo
+    libUploadFiles(files);
+  });
+  btnLibUpCancel.addEventListener("click", () => {
+    if (upl.xhr) { upl.cancelled = true; upl.xhr.abort(); }
+  });
+  btnLibUpClose.addEventListener("click", () => {
+    libUpload.hidden = true;
+    libUpList.replaceChildren();
+    btnLibUpload.focus({ preventScroll: true });
+  });
+
+  // ---- Início / fim ----
+  /** Recomeça do zero (login novo ou sessão que voltou). */
+  function libReset() {
+    lib.items = [];
+    lib.total = 0;
+    lib.totalAcervo = 0;
+    lib.pastas = [];
+    lib.versao = -1;
+    lib.loaded = false;
+    lib.loading = false;
+    lib.failed = false;
+    lib.listSig = "";
+    lib.chipsSig = "";
+    lib.pasta = "";
+    lib.q = "";
+    lib.busy = false;
+    libSearch.value = "";
+    libList.replaceChildren();
+    libChips.replaceChildren();
+  }
+
+  /** A porta de PIN fechou: nada continua falando com o servidor. */
+  function libStopAll() {
+    if (lib.ctrl) { lib.ctrl.abort(); lib.ctrl = null; }
+    lib.seq++;
+    clearTimeout(lib.scanTimer);
+    lib.scanTimer = 0;
+    clearTimeout(libSearchTimer);
+    if (upl.xhr) { upl.cancelled = true; try { upl.xhr.abort(); } catch (e) { /* já terminou */ } }
+    upl.active = false;
+    libUpload.hidden = true;
+    playAllReset();
+    rmReset();
+    libReset();
+  }
+
+  libLoadPrefs();
 
   // ======================================================================
   // 17. Configurações do Spotify (diálogo)
@@ -2806,6 +4393,8 @@
     if (ytPlayer || ytCreating) destroyYoutubePlayer();
     ytMode = "control"; // o modo salvo é restaurado por startApp()
     ytPendingLoad = null;
+    stopFile();
+    libStopAll();
     if (searchCtrl) { searchCtrl.abort(); searchCtrl = null; }
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
     toastHost.replaceChildren();
@@ -4146,7 +5735,7 @@
   renderHistory(false);
 
   const savedSource = store.get(LS.source);
-  sourceGroup.set(savedSource === "youtube" ? "youtube" : "spotify", true);
+  sourceGroup.set(savedSource === "youtube" || savedSource === "musicas" ? savedSource : "spotify", true);
   handleSpotifyRedirectBack(); // pode forçar aba Música + fonte Spotify
   tabGroup.set(activeTab, true);
 
@@ -4180,6 +5769,8 @@
     scheduler.add("yt-lamp", pollYoutubeState, 15000, { enabled: () => !youtubeActive(), immediate: true });
     // O tocador NUNCA pausa em segundo plano: precisa obedecer comandos e manter o heartbeat.
     scheduler.add("yt-heartbeat", pushYoutubeState, 3000, { always: true, immediate: true, enabled: () => ytMode === "player" });
+    // Minhas músicas: só confere a pasta enquanto a lista está à vista (a versão muda -> recarrega)
+    scheduler.add("lib", libPoll, 15000, { enabled: libActive, immediate: true });
 
     refreshSpotifyStatus();
 
