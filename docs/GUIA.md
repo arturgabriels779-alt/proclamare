@@ -1,4 +1,4 @@
-# Proclamare v2 — anúncio de voz + música (Spotify / YouTube), com controle remoto
+# Proclamare v2 — anúncio de voz + música (Spotify / YouTube / Minhas músicas), com controle remoto
 
 O Proclamare continua convertendo texto em anúncio de voz
 nas caixas da loja, e agora também toca música de fundo — do Spotify ou do
@@ -25,11 +25,11 @@ Esse é o ponto mais importante para não se confundir:
   `http://IP-DO-COMPUTADOR-DA-LOJA:8502` — não precisa instalar nada.
 
 Anúncios e o Spotify já funcionam remotamente "de graça" com essa
-arquitetura. O YouTube é a única exceção: como ele não tem um recurso
-parecido com o Spotify Connect, **um computador precisa ficar com a aba do
-Proclamare aberta e marcada como "O tocador"** — normalmente o próprio
-computador da loja, tocando em segundo plano. Os demais ficam em "Controle
-remoto". Isso é explicado com mais detalhe na seção 4.
+arquitetura. O YouTube e as **Minhas músicas** (arquivos de áudio) são a
+exceção: eles tocam numa aba do navegador, então **um computador precisa ficar
+com a aba do Proclamare aberta e marcada como "Tocador da loja"** — normalmente o
+próprio computador da loja, tocando em segundo plano. Os demais ficam em
+"Controle remoto". Isso é explicado com mais detalhe nas seções 4 e 4b.
 
 ---
 
@@ -163,6 +163,8 @@ alternativa; se as duas existirem, vale a `PROCLAMARE_*`.
 | `PROCLAMARE_PID_FILE` | (vazio) | Arquivo JSON (`pid`, `porta`, `criado_em`, `executavel`) gravado quando o servidor começa a atender e removido ao encerrar; o lançador usa para desligar o processo certo. O lançador de duplo clique já define esta variável (em `logs/`) |
 | `PROCLAMARE_SPOTIFY_REDIRECT` | `http://127.0.0.1:8502/spotify/callback` | Redirect URI do Spotify. O Spotify só aceita `http` para o IP de loopback `127.0.0.1`/`[::1]`; para outro endereço é preciso `https://` (ex.: proxy com certificado) |
 | `PROCLAMARE_CONFIAR_LOOPBACK` | `1` | `0` = nenhuma conexão é "local": todos precisam de PIN (use com proxy/túnel no PC da loja; veja "Acesso pela rede (PIN)") |
+| `PROCLAMARE_MUSICAS_DIR` | `Músicas` do Windows`\Músicas do Proclamare` | Pasta das Minhas músicas (veja a seção 4b). Fica fora da pasta do programa de propósito: sobrevive a baixar uma versão nova |
+| `PROCLAMARE_MUSICAS_ENVIO` | `1` | `0` desliga o envio de músicas pelo painel (a pasta continua funcionando). Use `0` se a Wi-Fi da loja for compartilhada com clientes — veja "Segurança do envio" na seção 4b |
 | `PROCLAMARE_ALLOWED_HOSTS` | (vazio) | Nomes de host extras aceitos, separados por vírgula (ex.: `proclamare.loja.local`). IPs, `localhost` e o nome deste computador já são aceitos; qualquer outro nome recebe erro 421 (proteção contra DNS rebinding) |
 
 ### Dicas para o acesso remoto funcionar sem dor de cabeça
@@ -359,6 +361,142 @@ Os comandos de um computador remoto chegam à aba tocadora de forma quase
 instantânea: ela fica conectada ao servidor por *long-poll* (a requisição
 espera até 20 segundos por novos comandos e responde no mesmo instante em
 que um chega), sem consultar o servidor a cada segundo.
+
+---
+
+## 4b. Minhas músicas (arquivos do computador e do celular)
+
+É para quem **baixa a música** e quer tocá-la na loja sem depender de internet,
+Spotify ou YouTube. Baixou, a música aparece no Proclamare; escolheu, ela toca.
+
+No painel, vá em **Música → Minhas músicas**.
+
+### Onde ficam as músicas
+
+Existe uma pasta chamada **Músicas do Proclamare** dentro da pasta *Músicas* do
+Windows do computador da loja (se o Windows guarda suas Músicas no OneDrive,
+é lá que ela fica). Ela é criada sozinha na primeira vez.
+
+- Para abri-la, clique em **Abrir pasta** (esse botão só existe no computador da
+  loja). Se a pasta estiver vazia, o painel mostra o endereço dela.
+- **Tudo que cair nessa pasta aparece no painel sozinho**, em poucos segundos
+  (o Proclamare confere a pasta a cada ~15 segundos). Se quiser na hora, clique no botão de
+  **atualizar** (as duas setas). Um arquivo que ainda está sendo copiado espera
+  uns 2 segundos para entrar na lista.
+- Você pode criar **subpastas** (até 3 níveis, por exemplo *Samba* ou
+  *Rock\Anos 80*): elas viram botões de pasta acima da lista.
+- A pasta fica **fora da pasta do programa**: baixar uma versão nova do
+  Proclamare não apaga suas músicas. Para guardá-la em outro lugar, defina
+  `PROCLAMARE_MUSICAS_DIR` (seção 2).
+
+### Mandar música pelo celular (ou por outro computador)
+
+1. Abra o Proclamare no aparelho (com o PIN) e vá em **Música → Minhas músicas**.
+2. Toque em **Enviar músicas** e escolha os arquivos — no celular dá para pegar
+   da **galeria**, de *Downloads* ou do app de arquivos. Pode escolher vários.
+3. Uma barra mostra o andamento; no fim, a lista diz **o que foi enviado e o que
+   foi recusado, com o motivo** de cada arquivo. Se precisar, toque em **Cancelar**.
+
+As músicas enviadas ficam na subpasta **Enviadas** e já entram na lista.
+
+**Limites do envio:**
+
+| O quê | Limite |
+|---|---|
+| Formatos | MP3, M4A, AAC, OGG, OPUS, WAV e FLAC (os que o navegador toca) |
+| Tamanho | até **100 MB por arquivo** |
+| Quantidade | até 20 arquivos por vez e **no máximo 100 MB somados em cada envio** (se escolher mais, o painel divide em lotes sozinho) |
+| Espaço | o computador da loja precisa ter pelo menos 1 GB livre; a pasta aceita até 20 GB no total (medidos no disco, **incluindo a subpasta *_removidas***) |
+| Subpasta *Enviadas* | até 2000 arquivos |
+
+O Proclamare confere se o arquivo é mesmo um áudio (não basta mudar a
+extensão) e **nunca sobrescreve**: se já existir uma música com o mesmo nome, a
+nova entra como *"nome (2)"*. Arquivos com informações embutidas (título, capa…)
+absurdamente grandes ou estranhas são recusados — um MP3 normal, mesmo com uma capa
+grande, passa sem problema.
+
+**Segurança do envio (por que existe um PIN e um limite):** o envio é a única parte
+do Proclamare que recebe um arquivo grande. Só o **computador da loja** e os aparelhos
+que **já digitaram o PIN** podem mandar mais de 64 KB; qualquer outro aparelho da rede
+é cortado logo no começo da conexão, sem que o computador da loja grave nada. Se a
+Wi-Fi da loja é usada por clientes, defina um PIN forte (seção 2) ou desligue o envio
+com `PROCLAMARE_MUSICAS_ENVIO=0` — a pasta *Músicas do Proclamare* continua valendo.
+
+### Tocar
+
+Cada música tem dois botões: **▶** (tocar agora) e **＋ Fila** (entrar na fila; em
+telas bem estreitas aparece só o ＋). Acima da lista:
+
+- **Buscar** por título, artista, álbum, pasta ou nome do arquivo. Não diferencia
+  maiúsculas nem acentos e aceita **várias palavras em qualquer ordem**: *garota
+  ipanema* e *ipanema garota* acham "Garota de Ipanema"; *tom jobim* acha as músicas
+  do artista. Todas as palavras digitadas precisam aparecer.
+- **Pastas**: toque numa pasta para ver só ela.
+- **Tocar pasta** (ou *Tocar tudo*, ou *Tocar resultados*, se estiver buscando)
+  começa a tocar a lista na ordem que você vê. Ela **substitui a fila**: se já houver
+  itens na fila, o painel pede um segundo toque para confirmar.
+- **Adicionar pasta à fila** coloca tudo no fim da fila sem interromper o que toca.
+- **Embaralhar** vale para os dois botões acima. A fila comporta até 200 itens
+  por vez.
+
+**Importante — onde a música toca:** as músicas tocam no **Tocador da loja**, a
+mesma aba do YouTube (seção 4). Por isso:
+
+- O computador das caixas precisa estar com o painel aberto e em **Tocador da loja**.
+  O painel avisa em *Minhas músicas* se não houver nenhum aberto, e no computador da
+  loja o botão **Usar este computador** resolve em um toque.
+- Músicas e vídeos do YouTube entram **na mesma fila** e se alternam. Quando um
+  termina, toca o próximo, seja música ou vídeo.
+- Tudo funciona também pelo celular: tocar, pausar, próxima, volume e a fila. No
+  celular, **voltar** reinicia a música que está tocando.
+- Como no YouTube, **a música abaixa sozinha durante o anúncio** e volta ao
+  volume normal no final.
+- Se o navegador bloquear o início automático (acontece depois de reabrir a aba
+  sem clicar em nada), aparece um aviso: clique em **Tocar** nesta aba uma vez.
+- **Sem internet** (ou com o player do YouTube que não carregou), as músicas
+  continuam tocando normalmente; um item do **YouTube** da fila avisa que o player
+  não carregou e **continua na fila** em vez de sumir.
+- As músicas saem pela **saída de som que o navegador usa** no computador da loja
+  (normalmente o som padrão do Windows) — a mesma do YouTube. A saída escolhida em
+  *Som da loja* vale só para os anúncios por voz.
+
+### Remover uma música
+
+No computador da loja, cada linha tem uma lixeira (toque duas vezes para
+confirmar). A música **não é apagada**: ela vai para a subpasta **_removidas**
+da própria pasta de músicas, de onde você pode recuperá-la. Pelo celular não
+dá para remover (só enviar).
+
+- Como a música só **muda de lugar**, ela continua ocupando espaço no disco e
+  conta no limite de 20 GB. Para liberar espaço de verdade, esvazie a pasta
+  *_removidas* no Explorer.
+- Uma música que está **tocando agora** pode não poder ser movida ("não consegui
+  mover a música agora"). Espere a música terminar (ou passe para a próxima) e tente
+  de novo — nada fica pela metade nem vira um arquivo vazio.
+
+### Se algo não funcionar
+
+- **A música não aparece:** confira se o formato é um dos aceitos e se não está
+  numa pasta oculta ou numa subpasta com mais de 3 níveis. Atalhos, pastas
+  ocultas e a pasta *_removidas* são ignorados. Clique em atualizar.
+- **O envio foi recusado:** a lista de resultados mostra o motivo (formato,
+  arquivo maior que 100 MB, arquivo que não é áudio, pouco espaço no disco…).
+- **"Falta um componente do Proclamare" / as músicas só mostram o nome do
+  arquivo:** o Proclamare foi atualizado sem rodar o instalador. Rode **Instalar
+  Proclamare** de novo no computador da loja (ele instala o que falta); o painel
+  também avisa isso embaixo do número de músicas.
+- **Copiei um arquivo e ele demorou a aparecer:** arquivos recém-copiados (ou com a
+  data do arquivo no futuro, comum em ZIPs e pendrives com relógio errado) esperam
+  uma conferência de tamanho antes de entrar — alguns segundos. O botão de atualizar
+  (as duas setas) espera a conferência terminar antes de dizer que atualizou.
+- **Arquivos do OneDrive "só na nuvem":** aparecem na lista só com o nome; ao
+  tocar, o Windows baixa o arquivo primeiro (pode demorar um pouco).
+- **A música toca mas o título está estranho:** o Proclamare usa os dados gravados
+  dentro do arquivo (título, artista, capa); sem eles, usa o nome do arquivo.
+
+> **Direitos autorais:** ter o arquivo no computador não dá o direito de tocá-lo
+> para os clientes. Música em estabelecimento comercial exige licenciamento — no
+> Brasil, pelo **ECAD** (veja a seção 5).
 
 ---
 
@@ -614,6 +752,11 @@ escolha de saída (apelido e uma referência interna) e continua fora do Git.
   Se o player mostrar o "Erro 153", o navegador não está enviando o Referer ao
   YouTube — o servidor já usa `Referrer-Policy: strict-origin-when-cross-origin`
   para isso; confira se não há extensão bloqueando referrer.
+- **Minhas músicas não tocam:** elas tocam no **Tocador da loja** (como o YouTube):
+  confira se o computador das caixas está com o painel aberto em "Tocador da
+  loja" (a lâmpada mostra "Tocador ativo"). Veja a seção 4b.
+- **Minhas músicas está vazio:** coloque os arquivos na pasta *Músicas do
+  Proclamare* (botão **Abrir pasta** no PC da loja) ou use **Enviar músicas**.
 - **Erro "Host não permitido" (421):** o endereço usado no navegador não é um
   IP, `localhost` nem o nome do computador. Acesse por IP ou adicione o nome em
   `PROCLAMARE_ALLOWED_HOSTS`.

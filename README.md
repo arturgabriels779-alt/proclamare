@@ -40,7 +40,8 @@ de fundo **abaixa sozinha** durante o anúncio e volta ao volume normal no final
 ### 🎵 Música ambiente
 - **Spotify (via Spotify Connect):** busca músicas e playlists, toca, pausa, avança, volta e ajusta volume do app oficial do Spotify no PC da loja — com capa do álbum e barra de progresso.
 - **YouTube:** toca vídeos ou playlists por link (começando na música do link, até em links de "Mix"), com **fila visível** — adicionar, reordenar, remover e ver as próximas da playlist; uma aba fica como "tocador" no PC da loja e os demais aparelhos viram controle remoto, com comandos chegando quase na hora.
-- **Abaixa a música automaticamente** durante cada anúncio (Spotify e YouTube) e restaura o volume no final.
+- **Minhas músicas:** baixou a música, ela aparece no painel — é só soltar os arquivos (MP3, M4A, AAC, OGG, OPUS, WAV, FLAC) na pasta *Músicas do Proclamare* do PC da loja, ou **enviar pelo celular**, direto da galeria. Busca, pastas, **Tocar pasta** com *Embaralhar* e a mesma fila do YouTube; toca na aba "Tocador da loja".
+- **Abaixa a música automaticamente** durante cada anúncio (Spotify, YouTube e Minhas músicas) e restaura o volume no final.
 
 ### 🖥️ Controle de qualquer lugar da rede
 - O som sempre sai no computador ligado ao amplificador; **qualquer PC, tablet ou celular** da rede local abre o painel no navegador, sem instalar nada.
@@ -106,6 +107,8 @@ Abra **http://127.0.0.1:8502** no PC da loja. Nos outros aparelhos, use **http:/
 | `PROCLAMARE_PID_FILE` | *(vazio)* | Arquivo JSON com o PID do servidor (usado pelo lançador para desligar o processo certo) |
 | `PROCLAMARE_CONFIAR_LOOPBACK` | `1` | `0` = nenhuma conexão é "local": todos precisam de PIN (use com proxy/túnel no PC da loja) |
 | `PROCLAMARE_SPOTIFY_REDIRECT` | `http://127.0.0.1:8502/spotify/callback` | Redirect URI cadastrado no painel do Spotify |
+| `PROCLAMARE_MUSICAS_DIR` | *Músicas do Windows*`\Músicas do Proclamare` | Pasta das Minhas músicas |
+| `PROCLAMARE_MUSICAS_ENVIO` | `1` | `0` desliga o envio de músicas pelo painel. Ligado, só o PC da loja e aparelhos com PIN podem mandar corpo grande (até 100 MB por envio); o resto da API aceita no máximo 64 KB |
 | `PROCLAMARE_ALLOWED_HOSTS` | *(vazio)* | Nomes de host extras aceitos, separados por vírgula |
 
 ## 🛡️ Segurança e desempenho

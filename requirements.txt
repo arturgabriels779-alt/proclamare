@@ -11,3 +11,5 @@ pycaw==20260927; platform_system == "Windows"
 psutil==7.2.2
 # dependencia do pycaw (gera codigo COM em runtime): fixada na versao testada
 comtypes==1.4.17; platform_system == "Windows"
+# Musicas do Proclamare (v2.4): tags, duracao e capa dos arquivos de audio (versao fixa)
+mutagen==1.48.1

@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.3 F1: saídas de som; base v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.4 "Minhas músicas"; base v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -31,6 +31,60 @@ da loja. Serve a interface (static/) e cuida de três coisas:
                                computadores também consigam controlá-la.
                                A aba tocadora recebe os comandos por
                                long-poll (latência quase instantânea).
+
+Contrato v2.4 ("Minhas músicas": arquivos de áudio na fila do Tocador da loja)
+-----------------------------------------------------------------------------
+  Módulo musicas.py (acervo, varredura, metadados, envio). O áudio NUNCA toca pelo pygame:
+  quem toca é um <audio> da aba "Tocador da loja", na MESMA fila do YouTube.
+  * Pasta: PROCLAMARE_MUSICAS_DIR ou <Músicas do Windows>/"Músicas do Proclamare" (criada se
+    não existir; fica fora da pasta do programa). Varredura em thread própria
+    ("musicas-varredura") a cada ~15 s + sob demanda; recursiva até 3 níveis; ignora ocultos,
+    "_removidas", arquivos vazios, atalhos/symlinks/junctions; .mp3 .m4a .aac .ogg .opus .wav
+    .flac; teto de 5000 arquivos ("Enviadas" é lida por último). Arquivo com data no futuro ou
+    ainda sendo copiado só entra quando o tamanho se repete entre duas varreduras. Ids OPACOS
+    (16 hex); o cliente nunca envia nem recebe caminho absoluto (exceção: "pasta_local" no
+    GET /api/musicas, só para requisições locais). Tag ID3 patológica (milhares de quadros)
+    não é lida (o mutagen é quadrático nela): o arquivo aparece só com o nome.
+  * GET  /api/musicas?q=&pasta=&offset=&limit=(1..100)&ordem=(recentes|titulo)
+         "q": PALAVRAS (todas precisam aparecer, qualquer ordem, sem acento/caixa).
+         -> {ok, versao, total, total_acervo, pastas:[{nome,total}], itens:[{id, titulo, artista,
+         album, duracao_s, pasta, formato, tem_capa, adicionada_em}], varrendo, truncado,
+         metadados (false = falta o mutagen no PC da loja), envio:{max_arquivos,
+         max_bytes_arquivo, max_bytes_total, formatos, habilitado}, pasta_local? (só local)}
+  * GET  /api/musicas/<id>/audio   arquivo com Range (206); id inexistente/forjado = 404.
+  * GET  /api/musicas/<id>/capa    imagem embutida (jpeg|png, ≤ 2 MB) ou 404. ETag sem caminho;
+         If-None-Match válido = 304 sem abrir o arquivo; cache do navegador de 1 h.
+  * POST /api/musicas/enviar       multipart/form-data (campo de arquivo: qualquer nome, ex.
+         "arquivos"). ÚNICA exceção à regra "POST só JSON": exige Origin do mesmo host (ou
+         Sec-Fetch-Site: same-origin), PIN (se remoto), até 20 arquivos de 100 MB cada, o corpo
+         INTEIRO da requisição ≤ 100 MB (+4 MB de multipart; o painel divide em lotes por
+         max_bytes_total), extensão + assinatura + mutagen. Resposta {ok, enviados:[itens],
+         recusados:[{nome, motivo}]}; 200 se ao menos um entrou, senão 422 (413 cota da pasta -
+         medida no DISCO, inclui "_removidas" - ou "Enviadas" cheia, 507 disco cheio, 503 sem o
+         mutagen instalado). 429 com envio em andamento ou em excesso. PROCLAMARE_MUSICAS_ENVIO=0
+         desliga a rota (403).
+         TETO DE CORPO NO WAITRESS (waitress_limites.py): qualquer outra rota/pessoa fica em 64 KB;
+         só quem é local ou traz cookie de sessão válido pode mandar o corpo grande desta rota. O
+         waitress responde 413 pelos cabeçalhos, antes de guardar o corpo em disco.
+  * POST /api/musicas/remover {"id"}   SÓ LOCAL (403): MOVE para "_removidas", não apaga.
+  * POST /api/musicas/abrir-pasta {}   SÓ LOCAL (403): abre o Explorer na pasta.
+  * POST /api/musicas/atualizar {}     pede varredura imediata (202; 429 em excesso). Com
+         {"aguardar": true} espera (≤ 8 s) a varredura que começa DEPOIS do pedido terminar e
+         responde 200 {ok, concluida, versao}.
+  * Fila (/api/youtube/queue, teto 200): {"op":"add","music_id"} (alternativa a "url") cria item
+    kind "arquivo" {id, kind, music_id, title, artista, duracao_s, tem_capa, added_at, video_id:
+    null, list_id: null, index: null, start: null}; {"op":"add_many","music_ids":[≤200],
+    "posicao":"fim"|"inicio","embaralhar"?,"substituir"?,"tirar_primeiro"?} -> {adicionados,
+    ignorados, cortados, queue_version, primeiro?}. "substituir" esvazia a fila e insere TUDO sob o
+    mesmo lock (se nenhuma música existir mais: 404 e a fila antiga fica); "tirar_primeiro" (só
+    com "substituir") devolve o 1º item novo já fora da fila em "primeiro" - é o "Tocar pasta"
+    numa chamada só. play_now/pop/heartbeat/GET state entendem kind "arquivo": o comando "load"
+    leva SÓ {"music_id"} (validado; nunca caminho). play_now de música que sumiu = 404;
+    play_now de item do YouTube com o player do YouTube da aba não carregado = 409 (o item fica).
+  * POST /api/youtube/command "load" também aceita params {"music_id"}.
+  * POST/GET /api/youtube/state ganham "source" ("youtube"|"arquivo") e "music_id"; o POST aceita
+    "yt_pronto" (bool; a aba diz se o player do YouTube carregou - ausente = true); o GET devolve
+    ainda "musica" (item público da música tocando ou null) e "yt_pronto".
 
 Contrato v2.3 (F1: saídas de som)
 ---------------------------------
@@ -74,7 +128,7 @@ Contrato v2.2.1 (fila do YouTube)
   * POST /api/youtube/command  "load" recebe {"url"} e repassa ao tocador SÓ
     {"video_id","list_id","index","start"} validados (nunca a URL crua). Nova ação
     "play_index" {"index": 0..199} (pula para um item da playlist em reprodução).
-  * POST /api/youtube/queue    fila do Proclamare (máx. 50, SÓ em memória: some se o
+  * POST /api/youtube/queue    fila do Proclamare (máx. 200 desde a v2.4, SÓ em memória: some se o
     servidor reiniciar). {"op": "add","url"} | {"op":"remove","item_id"} |
     {"op":"clear"} | {"op":"move","item_id","to"} | {"op":"play_now","item_id"}
     (tira da fila e manda "load" ao tocador) | {"op":"pop"} (tira e devolve o 1º).
@@ -136,6 +190,11 @@ Variáveis de ambiente (todas opcionais)
                          Redirect URI do Spotify (padrão
                          http://127.0.0.1:<porta>/spotify/callback). O Spotify só
                          aceita http para IP de loopback; fora disso use https://.
+  PROCLAMARE_MUSICAS_DIR pasta das músicas (padrão: <Músicas do Windows>/Músicas do Proclamare)
+  PROCLAMARE_MUSICAS_ENVIO
+                         "0" desliga o envio de músicas pelo painel (e volta o limite de corpo
+                         do servidor a 64 KB para todos). Padrão "1": o corpo grande só vale para
+                         o PC da loja e para aparelhos com sessão (PIN), nesta rota.
   PROCLAMARE_ALLOWED_HOSTS
                          nomes de host extras aceitos no cabeçalho Host, separados
                          por vírgula (defesa contra DNS rebinding). IPs literais,
@@ -166,11 +225,13 @@ import hmac
 import ipaddress
 import logging
 import logging.handlers
+import random
 import signal
 import sys
 import os
 import re
 import secrets
+import shutil
 import socket
 import tempfile
 import threading
@@ -191,14 +252,20 @@ import json
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from flask import Flask, Response, jsonify, redirect, request, send_from_directory
-from werkzeug.exceptions import HTTPException
+from flask import Flask, Response, jsonify, redirect, request, send_file, send_from_directory
+from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
+from werkzeug.http import parse_cookie
 
 # Subsistema "Saídas de som" (contrato v2.3). O pacote só importa stdlib na carga;
 # pycaw/pygame entram de forma tardia e tolerante dentro dele.
 import som as som_pkg
 from som import modelo as som_modelo
 from som.motor import frase_de_teste, gerar_bipe, texto_para_sapi
+
+# Acervo "Minhas músicas" (contrato v2.4). O módulo só usa stdlib na carga (mutagen entra
+# de forma tardia); nada toca o disco até a primeira consulta ou o main().
+import musicas
+import waitress_limites
 
 log = logging.getLogger("proclamare")
 
@@ -425,6 +492,23 @@ def _confiar_loopback() -> bool:
     return _env("CONFIAR_LOOPBACK", "1").strip() != "0"
 
 
+def _local_por(remote_addr: str, host: str, tem_via: bool) -> bool:
+    """
+    A regra "é o próprio computador" sobre os três dados que a definem (usada pelo Flask e pelo
+    filtro de corpo do waitress, que ainda não tem um `request`): endereço de origem em
+    loopback E cabeçalho Host de loopback E sem cabeçalho Via.
+    """
+    if not _confiar_loopback() or tem_via:
+        return False
+    try:
+        if not ipaddress.ip_address(remote_addr or "").is_loopback:
+            return False
+        nome = urlsplit("//" + host).hostname
+    except ValueError:
+        return False
+    return (nome or "").lower() in HOSTS_LOOPBACK
+
+
 def _requisicao_local() -> bool:
     """
     True só se a requisição vem MESMO do próprio computador: endereço de origem
@@ -432,15 +516,7 @@ def _requisicao_local() -> bool:
     ou "netsh portproxy" no PC da loja faz todo mundo chegar por loopback, mas
     normalmente com Host de rede/nome ou Via; sem isso o PIN seria contornado.
     """
-    if not _confiar_loopback():
-        return False
-    try:
-        if not ipaddress.ip_address(request.remote_addr or "").is_loopback:
-            return False
-        nome = urlsplit("//" + request.host).hostname
-    except ValueError:
-        return False
-    return (nome or "").lower() in HOSTS_LOOPBACK and "Via" not in request.headers
+    return _local_por(request.remote_addr or "", request.host, "Via" in request.headers)
 
 
 @app.before_request
@@ -448,7 +524,9 @@ def _verificar_requisicao() -> tuple[Response, int] | None:
     """
     Defesas baratas, nesta ordem: Host na lista branca (anti DNS rebinding);
     Origin igual ao host (CSRF); Sec-Fetch-Site cross-site bloqueado em /api/* e
-    /spotify/login (GET "no-cors" não envia Origin); POST /api/* só JSON.
+    /spotify/login (GET "no-cors" não envia Origin); POST /api/* só JSON, com UMA exceção
+    (v2.4): POST /api/musicas/enviar é multipart/form-data e passa por
+    _verificar_envio_multipart (exige Origin do mesmo host ou Sec-Fetch-Site same-origin).
     """
     if not host_permitido(request.host):
         return _resp_erro("Host não permitido.", 421)
@@ -464,12 +542,14 @@ def _verificar_requisicao() -> tuple[Response, int] | None:
         request.path.startswith("/api/") or request.path == "/spotify/login"
     ):
         return _resp_erro("Requisição entre sites não permitida.", 403)
-    if (
-        request.method in METODOS_ESCRITA
-        and request.path.startswith("/api/")
-        and request.mimetype != "application/json"
-    ):
-        return _resp_erro("Content-Type deve ser application/json.", 415)
+    if request.method in METODOS_ESCRITA and request.path.startswith("/api/"):
+        if request.path == ROTA_ENVIO_MUSICAS and request.method == "POST":
+            # ÚNICA exceção à regra "POST só JSON" (v2.4): envio de músicas em multipart.
+            erro = _verificar_envio_multipart()
+            if erro is not None:
+                return erro
+        elif request.mimetype != "application/json":
+            return _resp_erro("Content-Type deve ser application/json.", 415)
     # v2.2: depois de todas as checagens acima, /api/* (exceto as públicas)
     # exige PIN quando o cliente não está no próprio computador.
     return _exigir_sessao()
@@ -481,7 +561,15 @@ def _aplicar_cabecalhos(resp: Response) -> Response:
     for chave, valor in CABECALHOS_SEGURANCA.items():
         resp.headers[chave] = valor
     if request.path.startswith("/api/"):
-        resp.headers["Cache-Control"] = "no-store"
+        # Áudio das músicas: cache só do navegador, sempre revalidando (ETag/Range). Capa: a lista
+        # pede uma por linha, então o navegador a guarda por 1 h (o ETag muda se o arquivo mudar).
+        # O resto da API nunca é guardado.
+        if request.endpoint == "musicas_capa" and resp.status_code < 400:
+            resp.headers["Cache-Control"] = "private, max-age=3600"
+        elif request.endpoint == "musicas_audio" and resp.status_code < 400:
+            resp.headers["Cache-Control"] = "private, no-cache"
+        else:
+            resp.headers["Cache-Control"] = "no-store"
     elif request.endpoint in ("static", "home"):
         # ETag + no-cache: o navegador revalida e recebe 304 (barato) se não mudou.
         resp.headers["Cache-Control"] = "no-cache"
@@ -2163,7 +2251,7 @@ YOUTUBE_ACOES_CLIENTE = frozenset(
 YOUTUBE_HOSTS = frozenset(
     {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
 )
-YOUTUBE_FILA_MAX = 50           # itens na fila do Proclamare
+YOUTUBE_FILA_MAX = 200          # itens na fila do Proclamare (v2.4: 50 -> 200, cabem pastas inteiras)
 YOUTUBE_PLAYLIST_MAX = 200      # ids de playlist aceitos no heartbeat
 YOUTUBE_OEMBED_PENDENTES_MAX = 32  # buscas de título em andamento/esperando (anti-inflação)
 YOUTUBE_OEMBED_TAXA_MAX = 30         # consultas ao oEmbed por minuto (global)
@@ -2185,6 +2273,8 @@ _yt_estado_lock = threading.Lock()
 _yt_estado: dict[str, Any] = {
     "now_playing": "", "is_playing": False, "volume": 70, "last_heartbeat": None,
     "video_id": None, "list_id": None, "playlist_ids": [], "playlist_index": None,
+    "source": "youtube", "music_id": None,   # v2.4: o que a aba tocadora está tocando
+    "yt_pronto": True,   # v2.4: o player do YouTube da aba tocadora carregou (False = sem internet/API)
 }
 
 # Fila do Proclamare: SÓ em memória (não sobrevive a reinício do servidor).
@@ -2404,16 +2494,56 @@ def _pedir_titulo(url: str | None) -> None:
 
 # --- B) Fila do Proclamare --------------------------------------------------
 def _item_url(item: dict[str, Any]) -> str | None:
+    if item.get("kind") == "arquivo":
+        return None  # arquivo local: não há título para buscar no YouTube
     return _yt_url_canonica(item["video_id"], item["list_id"])
 
 
 def _item_publico(item: dict[str, Any]) -> dict[str, Any]:
-    """Cópia do item com o título do cache (se já resolvido)."""
+    """Cópia do item com o título atual (oEmbed no YouTube; metadado no arquivo)."""
+    if item.get("kind") == "arquivo":
+        m = ACERVO.obter(item["music_id"])
+        if m is None:  # sumiu da pasta: mantém o que foi guardado ao enfileirar
+            return dict(item)
+        return {**item, "title": m.titulo, "artista": m.artista, "duracao_s": m.duracao_s,
+                "tem_capa": m.tem_capa}
     return {**item, "title": _titulo_em_cache(_item_url(item))[1]}
 
 
 def _params_load(item: dict[str, Any]) -> dict[str, Any]:
+    if item.get("kind") == "arquivo":
+        return {"music_id": item["music_id"]}  # nunca caminho: o tocador busca /api/musicas/<id>/audio
     return {k: item.get(k) for k in ("video_id", "list_id", "index", "start")}
+
+
+def _item_arquivo(item_id: int, m: "musicas.Musica") -> dict[str, Any]:
+    """Item de fila para um arquivo do acervo (campos do YouTube ficam null)."""
+    return {
+        "id": item_id, "kind": "arquivo", "music_id": m.id,
+        "video_id": None, "list_id": None, "index": None, "start": None,
+        "title": m.titulo, "artista": m.artista, "duracao_s": m.duracao_s,
+        "tem_capa": m.tem_capa, "added_at": int(time.time()),
+    }
+
+
+def _musica_ou_erro(valor: Any, nome: str = "music_id") -> "musicas.Musica":
+    """Valida o formato do id (400) e exige que a música exista no acervo (404)."""
+    if not isinstance(valor, str) or not musicas.RE_ID.fullmatch(valor):
+        raise ErroApi(f"Campo '{nome}' inválido.")
+    m = ACERVO.obter(valor)
+    if m is None:
+        raise ErroApi("Essa música não está mais na pasta.", 404)
+    return m
+
+
+def fila_purgar_musica(music_id: str) -> None:
+    """Tira da fila do Proclamare as entradas de uma música removida da pasta."""
+    global _yt_fila_versao
+    with _yt_fila_lock:
+        antes = len(_yt_fila)
+        _yt_fila[:] = [i for i in _yt_fila if i.get("music_id") != music_id]
+        if len(_yt_fila) != antes:
+            _yt_fila_versao += 1
 
 
 def _achar_item(item_id: int) -> int:
@@ -2424,18 +2554,100 @@ def _achar_item(item_id: int) -> int:
     raise ErroApi("Item não encontrado na fila.", 404)
 
 
+def _limitar_adicoes() -> None:
+    """Teto de adições à fila por IP (compartilhado por URL, music_id e add_many)."""
+    if excedeu_limite("ytq:" + (request.remote_addr or "?"), 20, 10.0):
+        raise ErroApi("Muitas adições seguidas. Aguarde alguns segundos.", 429)
+
+
+def _adicionar_arquivos(
+    achadas: list["musicas.Musica"], *, posicao: str = "fim", substituir: bool = False,
+    tirar_primeiro: bool = False,
+) -> tuple[list[dict[str, Any]], int, int, dict[str, Any] | None]:
+    """
+    Põe músicas do acervo na fila, TUDO sob um único _yt_fila_lock (por isso "Tocar pasta" não
+    perde a fila antiga se algo falhar, e o 'ended' do tocador não corre entre o add e o pop).
+    `substituir` esvazia a fila antes; `tirar_primeiro` devolve o 1º item novo já fora da fila
+    (para o front mandar tocar). Devolve (novos, cortados, queue_version, primeiro|None).
+    """
+    global _yt_fila_prox_id, _yt_fila_versao
+    with _yt_fila_lock:
+        if substituir:
+            _yt_fila.clear()
+        espaco = YOUTUBE_FILA_MAX - len(_yt_fila)
+        if espaco <= 0:
+            raise ErroApi(f"A fila está cheia (máximo {YOUTUBE_FILA_MAX}).", 409)
+        entram = achadas[:espaco]
+        novos = []
+        for m in entram:
+            _yt_fila_prox_id += 1
+            novos.append(_item_arquivo(_yt_fila_prox_id, m))
+        if posicao == "inicio":
+            _yt_fila[0:0] = novos
+        else:
+            _yt_fila.extend(novos)
+        primeiro = _yt_fila.pop(0) if tirar_primeiro and novos else None
+        _yt_fila_versao += 1
+        return novos, len(achadas) - len(entram), _yt_fila_versao, primeiro
+
+
 @app.post("/api/youtube/queue")
 def youtube_queue() -> Response:
-    """Operações da fila: add, remove, clear, move, play_now, pop."""
+    """Operações da fila: add (url|music_id), add_many, remove, clear, move, play_now, pop."""
     global _yt_fila_prox_id, _yt_fila_versao
     body = corpo_json()
     op = body.get("op")
-    if not isinstance(op, str) or op not in {"add", "remove", "clear", "move", "play_now", "pop"}:
+    if not isinstance(op, str) or op not in {
+        "add", "add_many", "remove", "clear", "move", "play_now", "pop"
+    }:
         raise ErroApi("Operação inválida.")
 
+    if op == "add_many":
+        # "Tocar pasta" / "Adicionar pasta à fila" (v2.4): vários arquivos de uma vez.
+        _limitar_adicoes()
+        ids = body.get("music_ids")
+        if not isinstance(ids, list) or not 1 <= len(ids) <= YOUTUBE_FILA_MAX:
+            raise ErroApi(f"Campo 'music_ids' deve ter de 1 a {YOUTUBE_FILA_MAX} itens.")
+        for i in ids:
+            if not isinstance(i, str) or not musicas.RE_ID.fullmatch(i):
+                raise ErroApi("Campo 'music_ids' inválido.")
+        posicao = body.get("posicao", "fim")
+        if posicao not in ("fim", "inicio"):
+            raise ErroApi("Campo 'posicao' inválido.")
+        flags = {}
+        for nome in ("embaralhar", "substituir", "tirar_primeiro"):
+            flags[nome] = body.get(nome, False)
+            if not isinstance(flags[nome], bool):
+                raise ErroApi(f"Campo '{nome}' inválido.")
+        if flags["tirar_primeiro"] and not flags["substituir"]:
+            raise ErroApi("'tirar_primeiro' só vale junto com 'substituir'.")
+        achadas = [m for m in (ACERVO.obter(i) for i in ids) if m is not None]
+        if not achadas:  # nada mudou na fila: quem pediu 'substituir' não perde a fila antiga
+            raise ErroApi("Essas músicas não estão mais na pasta.", 404)
+        if flags["embaralhar"]:
+            random.shuffle(achadas)
+        novos, cortados, versao, primeiro = _adicionar_arquivos(
+            achadas, posicao=posicao, substituir=flags["substituir"],
+            tirar_primeiro=flags["tirar_primeiro"])
+        resp = {
+            "ok": True, "adicionados": len(novos), "ignorados": len(ids) - len(achadas),
+            "cortados": cortados, "queue_version": versao,
+        }
+        if primeiro is not None:
+            resp["primeiro"] = _item_publico(primeiro)
+        return jsonify(resp)
+
+    if op == "add" and "music_id" in body:
+        # Arquivo do acervo (v2.4): "music_id" e "url" são alternativas, nunca os dois.
+        if "url" in body:
+            raise ErroApi("Informe 'url' ou 'music_id', não os dois.")
+        _limitar_adicoes()
+        m = _musica_ou_erro(body.get("music_id"))
+        novos, _cortados, versao, _primeiro = _adicionar_arquivos([m])
+        return jsonify({"ok": True, "item": _item_publico(novos[0]), "queue_version": versao})
+
     if op == "add":
-        if excedeu_limite("ytq:" + (request.remote_addr or "?"), 20, 10.0):
-            raise ErroApi("Muitas adições seguidas. Aguarde alguns segundos.", 429)
+        _limitar_adicoes()
         alvo = parse_youtube_url(body.get("url"))  # valida ANTES de pegar o lock
         with _yt_fila_lock:
             if len(_yt_fila) >= YOUTUBE_FILA_MAX:
@@ -2467,6 +2679,11 @@ def youtube_queue() -> Response:
     if op == "pop":
         with _yt_fila_lock:
             item = _yt_fila.pop(0) if _yt_fila else None
+            # arquivo que sumiu da pasta não vale a pena entregar: pula para o próximo
+            while item is not None and item.get("kind") == "arquivo" \
+                    and ACERVO.obter(item["music_id"]) is None:
+                _yt_fila_versao += 1
+                item = _yt_fila.pop(0) if _yt_fila else None
             if item is not None:
                 _yt_fila_versao += 1
             versao = _yt_fila_versao
@@ -2495,7 +2712,13 @@ def youtube_queue() -> Response:
             if not vivo:
                 raise ErroApi("Nenhum tocador aberto. Abra o modo Tocador da loja primeiro.", 409)
             with _yt_fila_lock:
-                item = _yt_fila.pop(_achar_item(item_id))
+                pos = _achar_item(item_id)
+                if _yt_fila[pos].get("kind") != "arquivo" and not _yt_estado["yt_pronto"]:
+                    # tocador "vivo" só para arquivos (sem internet/API do YouTube): consumir o item
+                    # faria o comando 'load' ficar parado para sempre
+                    raise ErroApi("O player do YouTube desta aba ainda não carregou. Confira a "
+                                  "internet ou toque uma música do computador.", 409)
+                item = _yt_fila.pop(pos)
                 _yt_fila_versao += 1
                 versao = _yt_fila_versao
     else:
@@ -2504,6 +2727,10 @@ def youtube_queue() -> Response:
             _yt_fila_versao += 1
             versao = _yt_fila_versao
     if op == "play_now":
+        if item.get("kind") == "arquivo" and ACERVO.obter(item["music_id"]) is None:
+            # o item já saiu da fila (não adianta mantê-lo): avisa que a música sumiu
+            return jsonify({"ok": False, "error": "Essa música não está mais na pasta.",
+                            "queue_version": versao}), 404
         cmd_id = youtube_enqueue("load", _params_load(item))
         return jsonify({"ok": True, "item": _item_publico(item), "id": cmd_id,
                         "queue_version": versao})
@@ -2523,7 +2750,12 @@ def youtube_command() -> Response:
     if not isinstance(bruto, dict):
         raise ErroApi("Campo 'params' inválido.")
     params: dict[str, Any] = {}  # lista branca: só repassa o que foi validado
-    if action == "load":
+    if action == "load" and "music_id" in bruto:
+        # Arquivo do acervo (v2.4): só o id validado e existente; o caminho nunca sai do servidor.
+        if "url" in bruto:
+            raise ErroApi("Informe 'url' ou 'music_id', não os dois.")
+        params = {"music_id": _musica_ou_erro(bruto.get("music_id")).id}
+    elif action == "load":
         # O servidor interpreta o link e repassa só os campos validados (nunca a URL crua).
         params = parse_youtube_url(bruto.get("url"))
         _pedir_titulo(_yt_url_canonica(params["video_id"], params["list_id"]))
@@ -2614,6 +2846,18 @@ def youtube_state_push() -> Response:
             None if pi is None
             else validar_int(pi, "playlist_index", 0, YOUTUBE_PLAYLIST_MAX - 1)
         )
+    if "source" in body:  # v2.4: o que está tocando ("youtube" ou "arquivo")
+        if body["source"] not in ("youtube", "arquivo"):
+            raise ErroApi("Campo 'source' inválido.")
+        novo["source"] = body["source"]
+    if "music_id" in body:
+        novo["music_id"] = _id_opcional(body["music_id"], "music_id", musicas.RE_ID)
+    if novo.get("source") == "youtube" and "music_id" not in body:
+        novo["music_id"] = None  # trocou para o YouTube: não deixa um music_id velho para trás
+    if "yt_pronto" in body:  # v2.4: sem ele (aba antiga) vale "pronto", como antes
+        if not isinstance(body["yt_pronto"], bool):
+            raise ErroApi("Campo 'yt_pronto' inválido.")
+        novo["yt_pronto"] = body["yt_pronto"]
     with _yt_estado_lock:
         _yt_estado.update(novo)
         _yt_estado["last_heartbeat"] = time.monotonic()
@@ -2627,7 +2871,7 @@ def youtube_state_get() -> Response:
         vivo = beat is not None and (time.monotonic() - beat) < YOUTUBE_PLAYER_TIMEOUT
         snap = {k: _yt_estado[k] for k in (
             "now_playing", "is_playing", "volume", "video_id", "list_id",
-            "playlist_ids", "playlist_index",
+            "playlist_ids", "playlist_index", "source", "music_id", "yt_pronto",
         )}
     # Fila (com títulos já resolvidos) e versão lidas juntas, de forma consistente.
     with _yt_fila_lock:
@@ -2643,6 +2887,9 @@ def youtube_state_get() -> Response:
         snap["video_id"] = None
         snap["list_id"] = None
         snap["playlist_ids"] = []
+        snap["source"] = "youtube"
+        snap["music_id"] = None
+    tocando = ACERVO.obter(snap["music_id"]) if snap["music_id"] else None
     ids, idx = snap["playlist_ids"], snap["playlist_index"]
     if vivo and ids and idx is not None and idx < len(ids):
         proximos = ids[idx + 1: idx + 1 + YOUTUBE_PROXIMAS_MAX]
@@ -2664,6 +2911,10 @@ def youtube_state_get() -> Response:
             "player_alive": vivo,
             "video_id": snap["video_id"],
             "list_id": snap["list_id"],
+            "source": snap["source"],
+            "music_id": snap["music_id"],
+            "yt_pronto": bool(vivo and snap["yt_pronto"]),
+            "musica": tocando.publico() if tocando else None,
             "queue": fila,
             "queue_version": versao,
             "playlist": playlist,
@@ -3305,6 +3556,267 @@ def som_preferencias() -> tuple[Response, int] | Response:
 
 
 # ---------------------------------------------------------------------------
+# Minhas músicas (contrato v2.4) — arquivos de áudio da pasta "Músicas do Proclamare"
+# Toda rota exige PIN de aparelho remoto (nenhuma está em API_PUBLICAS). O cliente só
+# conhece ids opacos; a reprodução é do <audio> da aba tocadora (nunca do pygame).
+# A lógica (varredura, metadados, envio) mora em musicas.py; aqui ficam validação e HTTP.
+# ---------------------------------------------------------------------------
+ROTA_ENVIO_MUSICAS = "/api/musicas/enviar"
+MUSICAS_ENVIO_HABILITADO = _env("MUSICAS_ENVIO", "1").strip() != "0"
+MUSICAS_LISTA_MAX = 100             # itens por página
+MUSICAS_ENVIO_MAX_POR_MIN = 12      # requisições de envio por IP
+MUSICAS_ATUALIZAR_MAX_POR_MIN = 6   # por IP (atualizar e abrir-pasta)
+MUSICAS_BUSCA_MAX = 100
+MUSICAS_CAPA_MAX_POR_MIN = 600      # capas por IP (a lista pede uma por linha)
+MAX_CORPO_ENVIO = musicas.MAX_BYTES_ENVIO + musicas.FOLGA_MULTIPART
+TETO_CORPO_JSON = 64 * 1024         # corpo máximo de QUALQUER rota que não seja o envio de músicas
+FOLGA_TEMP_ENVIO = 256 * 1024 * 1024  # espaço livre extra exigido no disco da pasta temporária
+
+ACERVO = musicas.Acervo(musicas.pasta_padrao(_env("MUSICAS_DIR", "")))
+_envio_sem = threading.BoundedSemaphore(2)   # no máximo 2 envios simultâneos (cada um grava em disco)
+
+
+def _corpo_grande_permitido(metodo: str, caminho: str, cabecalhos: Any, origem: str) -> bool:
+    """
+    Filtro de corpo GRANDE, chamado pelo waitress logo depois de ler os cabeçalhos (ANTES de
+    receber o corpo: o waitress guarda o corpo inteiro em disco antes de o Flask rodar, então o
+    PIN, o Origin e o limite de taxa só valeriam depois do estrago). Só POST /api/musicas/enviar
+    com o envio ligado e de quem é local ou traz um cookie de sessão válido recebe o teto de
+    ~100 MB; todas as outras rotas e pessoas ficam em 64 KB.
+    `cabecalhos`: mapa do waitress (chaves em maiúsculas, "-" vira "_"); `origem`: IP do socket.
+    """
+    if metodo != "POST" or caminho != ROTA_ENVIO_MUSICAS or not MUSICAS_ENVIO_HABILITADO:
+        return False
+    try:
+        if _local_por(origem, cabecalhos.get("HOST", ""), "VIA" in cabecalhos):
+            return True
+        bruto = cabecalhos.get("COOKIE", "")
+        if not bruto or len(bruto) > 4096:
+            return False
+        token = parse_cookie(bruto).get(COOKIE_SESSAO)
+        return _token_valido_sessao(token, load_config())
+    except Exception:  # noqa: BLE001 - cabeçalho torto: sem permissão, nunca erro
+        return False
+
+
+def _verificar_envio_multipart() -> tuple[Response, int] | None:
+    """
+    before_request de POST /api/musicas/enviar (única rota que não é JSON). Mantém as defesas
+    do resto da API: Host e Origin já foram conferidos; aqui exigimos que o navegador tenha
+    declarado a origem (Origin do mesmo host ou Sec-Fetch-Site same-origin), porque um
+    <form> de outro site pode mandar multipart sem pré-voo CORS. Também fixa os limites de
+    corpo desta requisição (o padrão global de 16 KB continua valendo para as demais).
+    """
+    if not MUSICAS_ENVIO_HABILITADO:
+        return _resp_erro("O envio de músicas está desativado neste computador.", 403)
+    if request.mimetype != "multipart/form-data":
+        return _resp_erro("Content-Type deve ser multipart/form-data.", 415)
+    if request.headers.get("Origin") is None and request.headers.get("Sec-Fetch-Site") != "same-origin":
+        return _resp_erro("Origem não permitida.", 403)
+    if request.content_length is not None and request.content_length > MAX_CORPO_ENVIO:
+        return _resp_erro("Envio grande demais. Mande menos músicas de uma vez.", 413)
+    # O corpo vai ser copiado (waitress -> Werkzeug -> arquivo final): sem espaço na pasta
+    # temporária seria um "Erro interno" em vez de uma mensagem que o dono entende.
+    try:
+        livre_temp = shutil.disk_usage(tempfile.gettempdir()).free
+    except OSError:
+        livre_temp = None
+    if livre_temp is not None and livre_temp < (request.content_length or MAX_CORPO_ENVIO) * 2 + FOLGA_TEMP_ENVIO:
+        return _resp_erro("O disco do computador está quase cheio. Libere espaço e tente de novo.", 507)
+    request.max_content_length = MAX_CORPO_ENVIO
+    request.max_form_parts = musicas.MAX_ARQUIVOS_ENVIO + 10   # campos de texto + arquivos
+    # Werkzeug 3.1 também aplica este teto ao buffer do decodificador multipart (pedaço de 64 KB + sobra
+    # de fronteira): com exatamente 64 KB, qualquer arquivo de ~300 KB para cima dava 413 falso.
+    request.max_form_memory_size = 256 * 1024
+    return None
+
+
+def _musica_da_rota(music_id: str) -> "musicas.Musica | None":
+    return ACERVO.obter(music_id) if musicas.RE_ID.fullmatch(music_id) else None
+
+
+@app.get("/api/musicas")
+def musicas_listar() -> Response:
+    # Busca por PALAVRAS (todas precisam aparecer, em qualquer ordem, sem acento nem caixa):
+    # "garota ipanema" acha "Garota de Ipanema".
+    termos = musicas.normalizar_busca(validar_str(request.args.get("q", ""), "q", MUSICAS_BUSCA_MAX)).split()
+    pasta = validar_str(request.args.get("pasta", ""), "pasta", 300).replace("\\", "/").strip("/").casefold()
+    offset = validar_int(request.args.get("offset", "0"), "offset", 0, 10**7)
+    limite = validar_int(request.args.get("limit", "50"), "limit", 1, MUSICAS_LISTA_MAX, limitar=True)
+    ordem = request.args.get("ordem", "recentes")
+    if ordem not in ("recentes", "titulo"):
+        raise ErroApi("Campo 'ordem' inválido.")
+    versao, lista, truncado, varrendo = ACERVO.instantaneo()
+
+    contagem: dict[str, int] = {}
+    for m in lista:
+        if m.pasta:
+            contagem[m.pasta] = contagem.get(m.pasta, 0) + 1
+    pastas = [{"nome": nome, "total": contagem[nome]} for nome in sorted(contagem, key=str.casefold)]
+
+    achadas = [
+        m for m in lista
+        if all(t in m.busca for t in termos)
+        and (not pasta or m.pasta.casefold() == pasta or m.pasta.casefold().startswith(pasta + "/"))
+    ]
+    if ordem == "titulo":
+        achadas.sort(key=lambda m: (m.titulo.casefold(), m.rel))
+    resp: dict[str, Any] = {
+        "ok": True, "versao": versao, "total": len(achadas), "total_acervo": len(lista),
+        "pastas": pastas, "itens": [m.publico() for m in achadas[offset: offset + limite]],
+        "varrendo": varrendo, "truncado": truncado,
+        "metadados": ACERVO.metadados_ok,   # False: falta o mutagen (só o nome dos arquivos aparece)
+        "envio": {
+            "habilitado": MUSICAS_ENVIO_HABILITADO,
+            "max_arquivos": musicas.MAX_ARQUIVOS_ENVIO,
+            "max_bytes_arquivo": musicas.MAX_BYTES_ARQUIVO,
+            "max_bytes_total": musicas.MAX_BYTES_ENVIO,
+            "formatos": sorted(musicas.TIPOS_AUDIO),
+        },
+    }
+    if _requisicao_local():  # o caminho só aparece no próprio PC ("Coloque as músicas em ...")
+        resp["pasta_local"] = str(ACERVO.raiz)
+    return jsonify(resp)
+
+
+@app.get("/api/musicas/<music_id>/audio")
+def musicas_audio(music_id: str) -> Response | tuple[Response, int]:
+    """O arquivo, com suporte a Range (o <audio> precisa para buscar/avançar)."""
+    m = _musica_da_rota(music_id)
+    real = ACERVO.caminho_seguro(m) if m is not None else None
+    if m is None or real is None:
+        return _resp_erro("Música não encontrada.", 404)
+    try:
+        # etag em texto: o do Werkzeug (etag=True) inclui um checksum do CAMINHO ABSOLUTO
+        resp = send_file(real, mimetype=musicas.TIPOS_AUDIO[m.caminho.suffix.lower()],
+                         conditional=True, etag=m.etag, as_attachment=False)
+    except OSError:
+        return _resp_erro("Música não encontrada.", 404)
+    resp.headers.pop("Content-Disposition", None)  # nem o nome do arquivo precisa sair daqui
+    return resp
+
+
+@app.get("/api/musicas/<music_id>/capa")
+def musicas_capa(music_id: str) -> Response | tuple[Response, int]:
+    """Imagem embutida (jpeg|png, até 2 MB); 404 se não houver."""
+    m = _musica_da_rota(music_id)
+    if m is None or not m.tem_capa:
+        return _resp_erro("Capa não encontrada.", 404)
+    if request.if_none_match.contains(m.etag):      # revalidação: 304 sem abrir o arquivo
+        resp = Response(status=304)
+        resp.set_etag(m.etag)
+        return resp
+    if excedeu_limite("musicas-capa:" + (request.remote_addr or "?"), MUSICAS_CAPA_MAX_POR_MIN, 60.0):
+        return _resp_erro("Muitos pedidos seguidos. Aguarde um pouco.", 429)
+    capa = ACERVO.capa(m)
+    if capa is None:
+        return _resp_erro("Capa não encontrada.", 404)
+    dados, mime = capa
+    resp = Response(dados, mimetype=mime)
+    resp.set_etag(m.etag)
+    return resp.make_conditional(request)
+
+
+def _recusado(nome: Any, motivo: str) -> dict[str, str]:
+    return {"nome": musicas.nome_para_exibir(nome), "motivo": motivo}
+
+
+@app.post("/api/musicas/enviar")
+def musicas_enviar() -> Response | tuple[Response, int]:
+    """
+    Envio de músicas (multipart/form-data) pelo painel, inclusive da galeria do celular.
+    Cada arquivo é validado e gravado por musicas.Acervo.receber (assinatura + mutagen +
+    nome higienizado + temporário/os.replace + sem sobrescrever + disco e cota).
+    """
+    ip = request.remote_addr or "?"
+    if excedeu_limite("musicas-envio:" + ip, MUSICAS_ENVIO_MAX_POR_MIN, 60.0):
+        raise ErroApi("Muitos envios seguidos. Aguarde um minuto.", 429)
+    if not _envio_sem.acquire(blocking=False):
+        raise ErroApi("Já há um envio em andamento. Espere terminar e tente de novo.", 429)
+    try:
+        try:
+            partes = list(request.files.items(multi=True))
+        except RequestEntityTooLarge:
+            raise ErroApi("Envio grande demais. Mande menos músicas de uma vez.", 413) from None
+        if not partes:
+            raise ErroApi("Nenhum arquivo foi enviado.")
+        if len(partes) > musicas.MAX_ARQUIVOS_ENVIO:
+            raise ErroApi(f"Envie no máximo {musicas.MAX_ARQUIVOS_ENVIO} músicas por vez.", 413)
+        enviados: list[dict[str, Any]] = []
+        recusados: list[dict[str, str]] = []
+        parada: musicas.RecusaEnvio | None = None   # disco cheio / cota: o resto também falharia
+        for _campo, arquivo in partes:
+            if parada is not None:
+                recusados.append(_recusado(arquivo.filename, parada.motivo))
+                continue
+            try:
+                enviados.append(ACERVO.receber(arquivo.filename, arquivo.stream).publico())
+            except musicas.RecusaEnvio as exc:
+                recusados.append(_recusado(arquivo.filename, exc.motivo))
+                if exc.para_o_lote:     # disco cheio, cota ou componente ausente: o resto também falharia
+                    parada = exc
+            except Exception:  # noqa: BLE001 - falha de um arquivo não derruba o lote
+                log.exception("Falha ao salvar um arquivo enviado.")
+                recusados.append(_recusado(arquivo.filename, "Não foi possível salvar o arquivo."))
+        log.info("Envio de músicas: %d aceita(s), %d recusada(s).", len(enviados), len(recusados))
+        if enviados:
+            return jsonify({"ok": True, "enviados": enviados, "recusados": recusados})
+        status = parada.status if parada is not None else 422
+        mensagem = parada.motivo if parada is not None else "Nenhuma música foi aceita."
+        return jsonify({"ok": False, "error": mensagem, "enviados": [], "recusados": recusados}), status
+    finally:
+        _envio_sem.release()
+
+
+@app.post("/api/musicas/remover")
+@somente_local
+def musicas_remover() -> Response | tuple[Response, int]:
+    """SÓ no PC da loja: MOVE a música para "_removidas" (não apaga) e a tira da fila."""
+    body = corpo_json()
+    if set(body) - {"id"}:
+        raise ErroApi("Campo desconhecido.")
+    m = _musica_ou_erro(body.get("id"), "id")
+    if not ACERVO.remover(m):
+        raise ErroApi("Não consegui mover a música agora (ela pode estar em uso). Tente de novo.", 409)
+    fila_purgar_musica(m.id)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/musicas/abrir-pasta")
+@somente_local
+def musicas_abrir_pasta() -> Response | tuple[Response, int]:
+    """SÓ no PC da loja: abre a pasta de músicas no Explorer."""
+    if set(corpo_json()):
+        raise ErroApi("Campo desconhecido.")
+    if excedeu_limite("musicas-abrir:" + (request.remote_addr or "?"), MUSICAS_ATUALIZAR_MAX_POR_MIN, 60.0):
+        raise ErroApi("Muitos pedidos seguidos. Aguarde um pouco.", 429)
+    if not ACERVO.abrir_pasta():
+        raise ErroApi("Não foi possível abrir a pasta neste computador.", 503)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/musicas/atualizar")
+def musicas_atualizar() -> tuple[Response, int]:
+    """
+    Pede uma varredura imediata (a lista já se atualiza sozinha a cada ~15 s). Com
+    {"aguardar": true} espera até ~8 s a varredura terminar e responde 200 {ok, concluida,
+    versao}; sem isso responde 202 na hora.
+    """
+    corpo = corpo_json()
+    if set(corpo) - {"aguardar"}:
+        raise ErroApi("Campo desconhecido.")
+    aguardar = corpo.get("aguardar", False)
+    if not isinstance(aguardar, bool):
+        raise ErroApi("Campo 'aguardar' inválido.")
+    if excedeu_limite("musicas-atualizar:" + (request.remote_addr or "?"), MUSICAS_ATUALIZAR_MAX_POR_MIN, 60.0):
+        raise ErroApi("Muitos pedidos seguidos. Aguarde um pouco.", 429)
+    concluida = ACERVO.pedir_varredura(8.0 if aguardar else 0.0)
+    if not aguardar:
+        return jsonify({"ok": True}), 202
+    return jsonify({"ok": True, "concluida": concluida, "versao": ACERVO.instantaneo()[0]}), 200
+
+
+# ---------------------------------------------------------------------------
 # Inicialização
 # ---------------------------------------------------------------------------
 LOG_FORMATO = "%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s"
@@ -3503,12 +4015,26 @@ def main() -> None:
             srv.serve_forever()
     else:
         def criar() -> Any:
+            global MUSICAS_ENVIO_HABILITADO
             # Socket próprio e EXCLUSIVO (sem janela entre a checagem e o bind).
             # threads altas: cada long-poll do YouTube e cada anúncio segura uma thread.
-            return create_server(
+            # Teto do corpo: o waitress recebe o corpo INTEIRO (em disco, acima de 512 KB) antes de
+            # a rota checar o PIN. Por isso o teto grande (envio de músicas) só vale, por rota,
+            # para quem é local ou tem sessão (waitress_limites); todo o resto fica em 64 KB.
+            # PROCLAMARE_MUSICAS_ENVIO=0 desliga o envio e volta tudo a 64 KB.
+            srv = create_server(
                 app, sockets=[_criar_socket_escuta(host, PORT)], threads=32, channel_timeout=300,
-                max_request_body_size=64 * 1024, ident="proclamare",
+                max_request_body_size=MAX_CORPO_ENVIO if MUSICAS_ENVIO_HABILITADO else TETO_CORPO_JSON,
+                ident="proclamare",
             )
+            if MUSICAS_ENVIO_HABILITADO and not waitress_limites.instalar(
+                    srv, teto_pequeno=TETO_CORPO_JSON, permitir_grande=_corpo_grande_permitido):
+                # sem o filtro por rota, o teto grande valeria para TODOS: melhor sem envio que inseguro
+                srv.adj.max_request_body_size = TETO_CORPO_JSON
+                MUSICAS_ENVIO_HABILITADO = False
+                log.error("Esta versão do waitress não aceita o filtro de corpo por rota: o envio de "
+                          "músicas pelo painel foi DESLIGADO (as músicas na pasta continuam valendo).")
+            return srv
 
         def rodar(srv: Any) -> None:
             srv.run()
@@ -3524,6 +4050,8 @@ def main() -> None:
     _instalar_encerramento()
     atexit.register(SOM.parar)
     SOM.iniciar()  # primeira varredura LOCAL em segundo plano (só lê; não toca som)
+    atexit.register(ACERVO.parar)
+    ACERVO.iniciar()  # cria a pasta de músicas e varre em segundo plano (thread "musicas-varredura")
     caminho_pid = _caminho_pid_file()
     if caminho_pid is not None and not _gravar_pid_file(caminho_pid, PORT):
         log.error("Seguindo sem arquivo de PID (já registrado acima); o lançador pode não "
