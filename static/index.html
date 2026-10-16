@@ -55,6 +55,10 @@
     <symbol id="i-up" viewBox="0 0 24 24"><polyline points="6 15 12 9 18 15"/></symbol>
     <symbol id="i-down" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-bluetooth" viewBox="0 0 24 24"><path d="M6.5 7.5l11 9-5.5 4.5v-18l5.5 4.5-11 9"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2.5"/><path d="M8 20h8M12 16v4"/></symbol>
+    <symbol id="i-headphones" viewBox="0 0 24 24"><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 2v5M15 2v5M6 7h12v4a6 6 0 0 1-12 0V7zM12 17v5"/></symbol>
   </defs>
 </svg>
 
@@ -164,7 +168,19 @@
       </span>
       <span class="lamp" id="lamp-youtube-bulb"></span>
     </div>
+
+    <!-- Som da loja: botão que abre "Minhas saídas de som" (escondido se o servidor não tem som) -->
+    <button type="button" class="st st--som" id="som-tile" hidden title="Abrir as saídas de som">
+      <span class="st__icon" aria-hidden="true"><svg class="icon"><use href="#i-speaker"/></svg></span>
+      <span class="st__text">
+        <span class="st__label">Som da loja</span>
+        <span class="st__value" id="som-tile-label">Verificando…</span>
+      </span>
+    </button>
   </section>
+
+  <!-- Avisos persistentes do som (padrão do Windows mudou, troca remota da saída…) -->
+  <section class="som-notices" id="som-notices" aria-label="Avisos do som da loja" role="status" hidden></section>
 
   <!-- ============================== CONTEÚDO ============================ -->
   <main class="stage" id="main">
@@ -578,6 +594,172 @@
       </button>
     </div>
   </form>
+
+  <!-- Minhas saídas de som: procurar, escolher, testar e preferências (F1) -->
+  <section class="sheet sheet--som" id="som-section" aria-labelledby="som-title">
+    <h3 class="sheet__section" id="som-title" tabindex="-1">Minhas saídas de som</h3>
+    <p class="hint">Escolha por onde os anúncios saem, confira com um bipe e deixe o Proclamare vigiando.</p>
+    <p class="net__alert" id="som-off" hidden>As saídas de som não estão disponíveis neste computador. Os anúncios continuam saindo pelo som padrão do Windows.</p>
+
+    <div id="som-steps">
+      <!-- Passo 1 -->
+      <div class="som-step">
+        <h4 class="som-step__title"><span class="som-step__n" aria-hidden="true">1</span>Procurar</h4>
+        <p class="hint">Pareie a caixa nas Configurações do Windows e ela aparece aqui sozinha.</p>
+        <div class="actions som-scan">
+          <button type="button" class="btn btn--ghost" id="btn-som-scan">
+            <span class="spinner" aria-hidden="true"></span>
+            <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
+            <span id="btn-som-scan-label">Procurar de novo</span>
+          </button>
+          <span class="hint" id="som-scan-status" role="status"></span>
+        </div>
+      </div>
+
+      <!-- Passo 2 -->
+      <div class="som-step">
+        <h4 class="som-step__title"><span class="som-step__n" aria-hidden="true">2</span>Escolher a saída</h4>
+        <p class="hint" id="som-empty" hidden>Nenhuma saída encontrada ainda. Toque em “Procurar de novo”.</p>
+        <p class="form-error" id="som-list-error" role="alert" hidden></p>
+        <p class="som-ok" id="som-list-ok" role="status" hidden></p>
+        <div class="som-list" id="som-list"></div>
+      </div>
+
+      <!-- Passo 3 -->
+      <div class="som-step som-test" id="som-test" role="group" aria-labelledby="som-test-title" hidden>
+        <h4 class="som-step__title" id="som-test-title" tabindex="-1"><span class="som-step__n" aria-hidden="true">3</span>Testar <span class="som-test__name" id="som-test-name"></span></h4>
+        <p class="net__alert" id="som-test-need" hidden>Teste esta saída e confirme que ouviu antes de usá-la.</p>
+        <p class="net__alert" id="som-test-warn" hidden>A loja está aberta: o bipe vai sair nas caixas. Continuar?</p>
+        <label class="switch">
+          <input type="checkbox" role="switch" class="switch__input" id="som-test-duck">
+          <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+          <span class="switch__text">Abaixar a música durante o teste</span>
+        </label>
+        <div class="actions">
+          <button type="button" class="btn btn--primary" id="btn-som-play">
+            <span class="spinner" aria-hidden="true"></span>
+            <svg class="icon" aria-hidden="true"><use href="#i-speaker"/></svg>
+            <span id="btn-som-play-label">Tocar o bipe</span>
+          </button>
+          <button type="button" class="btn btn--text" id="btn-som-test-close">Fechar</button>
+        </div>
+        <p class="hint" id="som-test-status" role="status"></p>
+        <p class="form-error" id="som-test-error" role="alert" hidden></p>
+
+        <div class="som-card" id="som-heard" role="group" aria-labelledby="som-heard-title" hidden>
+          <p class="som-card__title" id="som-heard-title">Ouviu na loja?</p>
+          <div class="actions">
+            <button type="button" class="btn btn--primary" id="btn-som-yes">Sim</button>
+            <button type="button" class="btn btn--ghost" id="btn-som-no">Não</button>
+            <button type="button" class="btn btn--text" id="btn-som-again">Tocar de novo</button>
+          </div>
+        </div>
+
+        <div class="som-card som-card--warn" id="som-no" hidden>
+          <p class="som-card__title" id="som-signal"></p>
+          <p class="hint">Confira no rack, nesta ordem:</p>
+          <ul class="som-check">
+            <li>O canal do PC na mesa está aberto?</li>
+            <li>O FRAHM mostra LINE?</li>
+            <li>A chave do canal está em AUX1/USB?</li>
+            <li>O cabo está na saída verde (de linha)?</li>
+            <li>A saída não está mutada no Windows?</li>
+          </ul>
+          <div class="actions">
+            <button type="button" class="btn btn--ghost" id="btn-som-next">Testar a próxima sugerida</button>
+          </div>
+        </div>
+
+        <div class="som-card" id="som-save" hidden>
+          <div class="field">
+            <label class="label" for="som-nickname">Nome desta saída</label>
+            <div class="input"><input type="text" id="som-nickname" maxlength="40" autocomplete="off" spellcheck="false" placeholder="ex.: Cabo para a mesa"></div>
+          </div>
+          <div class="actions">
+            <button type="button" class="btn btn--primary" id="btn-som-use">
+              <span class="spinner" aria-hidden="true"></span>
+              <span>Usar para anúncios</span>
+            </button>
+            <button type="button" class="btn btn--ghost" id="btn-som-name">Só guardar o nome</button>
+          </div>
+        </div>
+
+        <div class="actions som-test__extra" id="som-extra" hidden>
+          <button type="button" class="btn btn--text" id="btn-som-use-untested" hidden>Usar sem testar</button>
+          <button type="button" class="btn btn--text btn--danger" id="btn-som-forget" hidden>Esquecer esta saída</button>
+        </div>
+
+        <p class="hint">Dá para testar pelo celular: vá até a área, entre com o PIN e toque em Testar.</p>
+      </div>
+
+      <!-- Preferências -->
+      <details class="som-prefs" id="som-prefs">
+        <summary class="som-prefs__summary">Preferências</summary>
+        <div class="som-prefs__body">
+          <p class="hint" id="pref-note">Os botões abaixo mostram o padrão até você mudar alguma coisa neste aparelho.</p>
+
+          <fieldset class="choices" id="pref-fallback">
+            <legend class="label">Se a saída dos anúncios sumir</legend>
+            <label class="choice">
+              <input type="radio" class="choice__input" name="pref-se-indisponivel" value="outra_aprovada_ou_falhar">
+              <span class="choice__box"><span class="choice__title">Tentar outra saída aprovada</span><span class="choice__hint">Se não houver, avisa que não deu para anunciar.</span></span>
+            </label>
+            <label class="choice">
+              <input type="radio" class="choice__input" name="pref-se-indisponivel" value="falhar">
+              <span class="choice__box"><span class="choice__title">Só avisar</span><span class="choice__hint">Não tenta nenhuma outra saída.</span></span>
+            </label>
+            <label class="choice" id="pref-fallback-windows">
+              <input type="radio" class="choice__input" name="pref-se-indisponivel" value="padrao_windows">
+              <span class="choice__box"><span class="choice__title">Usar o som padrão do Windows</span><span class="choice__hint" id="pref-fallback-windows-hint">Só pode ser escolhido no PC da loja.</span></span>
+            </label>
+          </fieldset>
+
+          <label class="switch">
+            <input type="checkbox" role="switch" class="switch__input" id="pref-abaixar-spotify" data-pref="abaixar.spotify_api">
+            <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+            <span class="switch__text">Abaixar o Spotify durante os anúncios</span>
+          </label>
+          <label class="switch">
+            <input type="checkbox" role="switch" class="switch__input" id="pref-abaixar-youtube" data-pref="abaixar.youtube">
+            <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+            <span class="switch__text">Abaixar o YouTube durante os anúncios</span>
+          </label>
+          <label class="switch">
+            <input type="checkbox" role="switch" class="switch__input" id="pref-teste-remoto" data-pref="teste.abaixar_musica_remoto">
+            <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+            <span class="switch__text">Abaixar a música nos testes feitos pelo celular</span>
+          </label>
+          <label class="switch">
+            <input type="checkbox" role="switch" class="switch__input" id="pref-teste-local" data-pref="teste.abaixar_musica_local">
+            <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+            <span class="switch__text">Abaixar a música nos testes feitos no PC da loja</span>
+          </label>
+          <label class="switch">
+            <input type="checkbox" role="switch" class="switch__input" id="pref-monitor-ativo" data-pref="monitor.ativo">
+            <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+            <span class="switch__text">Vigiar a saída e avisar de problemas</span>
+          </label>
+
+          <div class="net__pair">
+            <div class="field">
+              <label class="label" for="pref-silencio">Avisar se a loja ficar em silêncio por (minutos)</label>
+              <div class="input"><input type="number" id="pref-silencio" min="1" max="240" step="1" inputmode="numeric" data-pref="monitor.alerta_silencio_min"></div>
+            </div>
+            <div class="field">
+              <span class="label" id="pref-horario-label">Horário vigiado</span>
+              <div class="som-time" role="group" aria-labelledby="pref-horario-label">
+                <div class="input"><input type="time" id="pref-hor-ini" aria-label="Início do horário vigiado" data-pref="monitor.horario"></div>
+                <span aria-hidden="true">às</span>
+                <div class="input"><input type="time" id="pref-hor-fim" aria-label="Fim do horário vigiado" data-pref="monitor.horario"></div>
+              </div>
+            </div>
+          </div>
+          <p class="hint" id="pref-status" role="status"></p>
+          <p class="form-error" id="pref-error" role="alert" hidden></p>
+        </div>
+      </details>
+    </div>
+  </section>
 
   <!-- Acesso pela rede: o PC da loja define o PIN; aparelhos remotos só saem da sessão -->
   <section class="sheet sheet--net" id="net-section" aria-labelledby="net-title" hidden>

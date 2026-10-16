@@ -6,7 +6,7 @@
 
 **A central de som da sua loja: anúncios de voz e música ambiente, controlados de qualquer tela da rede.**
 
-![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Flask](https://img.shields.io/badge/Flask-3.1-000000?logo=flask&logoColor=white)
 ![Spotify Connect](https://img.shields.io/badge/Spotify-Connect-1DB954?logo=spotify&logoColor=white)
 ![YouTube](https://img.shields.io/badge/YouTube-player-FF0000?logo=youtube&logoColor=white)
@@ -46,6 +46,7 @@ de fundo **abaixa sozinha** durante o anúncio e volta ao volume normal no final
 - O som sempre sai no computador ligado ao amplificador; **qualquer PC, tablet ou celular** da rede local abre o painel no navegador, sem instalar nada.
 - **Outros aparelhos pedem um PIN** (6 a 8 números, definido no PC da loja em Configurações → Acesso pela rede, ou por `python server.py --definir-pin`). O PC da loja nunca pede PIN; sem PIN definido, o acesso pela rede fica desligado.
 - Indicadores ao vivo: servidor online, anúncio no ar, Spotify conectado, tocador do YouTube ativo.
+- **Som da loja:** reconhece tudo o que está ligado ao PC e garante que o anúncio saiu no lugar certo — você testa a saída com um bipe, e o painel avisa se o padrão do Windows mudou, se a saída está mutada ou em 0%, ou se outro app a tomou (seção "Som da loja" do [guia](docs/GUIA.md)).
 
 ### 🎨 Interface
 - Layout **Bento Grid** limpo, inspirado no estilo Apple.
@@ -86,7 +87,7 @@ git clone https://github.com/arturgabriels779-alt/proclamare.git
 cd proclamare
 python -m venv venv
 venv\Scripts\activate          # Linux/Mac: source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt   # Windows: pip install --require-hashes --only-binary :all: --no-deps -r requirements.lock
 python server.py
 ```
 

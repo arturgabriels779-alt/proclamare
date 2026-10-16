@@ -1,4 +1,4 @@
-/* Proclamare — interface do painel de controle (v2.2.1 (fila do YouTube))
+/* Proclamare — interface do painel de controle (v2.3 (saídas de som))
    -----------------------------------------------------------------------
    Sem frameworks e sem build: um único IIFE.
 
@@ -218,6 +218,8 @@
       let data = null;
       try { data = await res.json(); } catch (e) { data = null; }
       const out = { ok: res.ok, status: res.status, data: data && typeof data === "object" ? data : {} };
+      const retry = Number(res.headers.get("Retry-After")); // segundos (429 do /api/som/*)
+      out.retryAfter = Number.isFinite(retry) && retry > 0 ? retry : 0;
       // Sessão expirada / PIN trocado / acesso remoto desativado: centralizado aqui.
       // (chamadas de /api/auth/* passam `auth: true` e tratam a própria resposta)
       if (!o.auth) {
@@ -918,6 +920,8 @@
         setStatus(msg, "");
         toast(msg, "success", { silent: true });
         if (typeof data.warning === "string" && data.warning) toast(data.warning, "warn");
+        // v2.3: saída de anúncio em fallback (a configurada estava indisponível): o operador precisa saber onde saiu
+        if (typeof data.aviso === "string" && data.aviso) toast(data.aviso, "warn", { duration: 9000 });
         if (!isTest) addHistory(text);
       } else if (status === 409) {
         const msg = "Já existe um anúncio tocando. Aguarde terminar e tente de novo.";
@@ -2682,6 +2686,7 @@
     btnSettingsSave.setAttribute("aria-disabled", "true"); // só libera se a config carregar
     let loaded = false;
     settingsDialog.showModal();
+    somAoAbrir(target === "som");
     if (target === "net" && !netSection.hidden && !netLocal.hidden) {
       netSection.scrollIntoView({ block: "nearest" });
       pinNew.focus({ preventScroll: true });
@@ -3197,6 +3202,940 @@
   }
 
   // ======================================================================
+  // 17c. Som da loja (tile, avisos e assistente "Minhas saídas de som")
+  // ======================================================================
+  // Contrato v2.3 (F1). O navegador só LÊ o estado e pede ações ao servidor;
+  // quem decide (e recusa) é sempre o servidor. A interface apenas esconde o
+  // que o aparelho remoto não pode fazer (o servidor devolve 403 de qualquer jeito).
+  // Todo texto que vem da API (apelido, nome do sistema, alertas) entra no DOM
+  // só por textContent — nomes de terceiros nunca passam por innerHTML.
+  const SOM_HEARD_TTL_MS = 5 * 60 * 1000; // igual ao servidor: teste vale por 5 min
+  const SOM_VISTO_KEY = "proclamare_som_visto"; // alertas "visto" neste aparelho
+  const SOM_AVISOS_FIXOS = ["padrao_windows_mudou", "saida_alterada_remoto", "usb_mudou_retestar", "saida_mudou"];
+  const SOM_GRUPOS = [
+    ["pc", "Neste PC"],
+    ["bluetooth", "Bluetooth"],
+    ["musica_spotify", "Música do Spotify"],
+    ["rede", "Na rede"],
+  ];
+  const SOM_NOME_SUGERIDO = {
+    linha: "Cabo para a mesa",
+    placa_interna: "Alto-falantes do PC",
+    usb: "Placa USB",
+    usb_multicanal: "Interface USB",
+    hdmi: "Monitor (HDMI)",
+    fone: "Fone de ouvido",
+    bt_a2dp: "Caixa Bluetooth",
+  };
+  const SOM_ICONE = { linha: "plug", placa_interna: "speaker", usb: "plug", usb_multicanal: "plug", hdmi: "monitor", fone: "headphones", bt_a2dp: "bluetooth" };
+  const SOM_PREFS_PADRAO = {
+    se_indisponivel: "outra_aprovada_ou_falhar",
+    abaixar: { spotify_api: true, youtube: true },
+    teste: { abaixar_musica_remoto: true, abaixar_musica_local: false },
+    monitor: { ativo: true, alerta_silencio_min: 10, horario: { inicio: "07:00", fim: "22:00" } },
+  };
+  const SOM_MSG = {
+    teste_necessario: "Teste esta saída e confirme que ouviu antes de usá-la.",
+    em_uso_exclusivo: "Outro programa está usando esta saída em modo exclusivo (por exemplo, o Spotify). Desligue o modo exclusivo dele e tente de novo.",
+    motor_contaminado: "O Proclamare precisa ser reiniciado para voltar a tocar.",
+    ausente: "Não consegui abrir esta saída. Confira o cabo ou a caixa e tente de novo.",
+    indisponivel: "As saídas de som não estão disponíveis neste computador.",
+    varredura_em_andamento: "Já existe uma busca em andamento.",
+    saida_em_uso: "Esta é a saída dos anúncios. Escolha outra antes de desaprovar.",
+    nao_suportada: "O Proclamare não consegue tocar nesta saída.",
+    nada_a_adotar: "Não há uma saída aprovada ausente para substituir.",
+  };
+  const NET_FAIL_MSG = "Não foi possível falar com o servidor. Tente de novo.";
+
+  // ---- elementos ----
+  const somTile = $("som-tile");
+  const somTileLabel = $("som-tile-label");
+  const somStatusRow = somTile.closest(".status-row");
+  const somNotices = $("som-notices");
+  const somSection = $("som-section");
+  const somTitle = $("som-title");
+  const somOff = $("som-off");
+  const somSteps = $("som-steps");
+  const btnSomScan = $("btn-som-scan");
+  const btnSomScanLabel = $("btn-som-scan-label");
+  const somScanStatus = $("som-scan-status");
+  const somEmpty = $("som-empty");
+  const somListError = $("som-list-error");
+  const somListOk = $("som-list-ok");
+  const somList = $("som-list");
+  const somTestEl = $("som-test");
+  const somTestTitle = $("som-test-title");
+  const somTestName = $("som-test-name");
+  const somTestNeed = $("som-test-need");
+  const somTestWarn = $("som-test-warn");
+  const somTestDuck = $("som-test-duck");
+  const btnSomPlay = $("btn-som-play");
+  const btnSomPlayLabel = $("btn-som-play-label");
+  const btnSomTestClose = $("btn-som-test-close");
+  const somTestStatus = $("som-test-status");
+  const somTestError = $("som-test-error");
+  const somHeard = $("som-heard");
+  const btnSomYes = $("btn-som-yes");
+  const btnSomNo = $("btn-som-no");
+  const btnSomAgain = $("btn-som-again");
+  const somNo = $("som-no");
+  const somSignal = $("som-signal");
+  const btnSomNext = $("btn-som-next");
+  const somSave = $("som-save");
+  const somNickname = $("som-nickname");
+  const btnSomUse = $("btn-som-use");
+  const btnSomName = $("btn-som-name");
+  const somExtra = $("som-extra");
+  const btnSomUseUntested = $("btn-som-use-untested");
+  const btnSomForget = $("btn-som-forget");
+  const somPrefsEl = $("som-prefs");
+  const prefNote = $("pref-note");
+  const prefStatus = $("pref-status");
+  const prefError = $("pref-error");
+  const prefFallbackWindows = $("pref-fallback-windows");
+  const prefFallbackWindowsHint = $("pref-fallback-windows-hint");
+  const prefSilencio = $("pref-silencio");
+  const prefHorIni = $("pref-hor-ini");
+  const prefHorFim = $("pref-hor-fim");
+
+  // ---- estado ----
+  const somState = { estado: null, saidas: [], varredura: null, scanned: false, scanBusy: false, falhas: 0 };
+  const somOuviu = new Map(); // sid -> instante (ms) em que ESTE aparelho confirmou "ouviu"
+  const somToastVistos = new Set(); // "codigo|desde": cada alerta vira toast uma vez só
+  const somTeste = { sid: null, intent: "testar", busy: false, sinal: null, tentadas: new Set(), opener: null, cooldown: 0, esquecer: 0 };
+  let somAberto = false; // diálogo de Configurações aberto: liga o poll de 1 s
+  let somEstadoSig = "";
+  let somListaSig = "";
+  let somListaPendente = false;
+  let somAvisosSig = "";
+  let somComoCorrigir = false;
+  let somPrefs = null; // últimas preferências CONHECIDAS (null = o servidor ainda não disse)
+  let somPrefsFila = Promise.resolve();
+  let somPrefTimer = 0;
+  let somOcupado = false; // uma ação de /saida em andamento
+  let somErroDoPoll = false;
+  let somOkTimer = 0;
+
+  function somEl(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = text;
+    return n;
+  }
+
+  /** Mensagem humana para uma resposta de erro de /api/som/*. */
+  function somErro(r, fallback) {
+    const d = (r && r.data) || {};
+    if (SOM_MSG[d.codigo]) return SOM_MSG[d.codigo];
+    switch (r && r.status) {
+      case 403: return "Isto só pode ser feito no computador da loja (PC do Proclamare).";
+      case 404: return "Esta saída não existe mais. Toque em “Procurar de novo”.";
+      case 409: return "Já existe um anúncio ou teste tocando. Aguarde terminar.";
+      case 412: return SOM_MSG.teste_necessario;
+      case 429: return "Muitas tentativas seguidas. Aguarde alguns segundos.";
+      default: break;
+    }
+    if (typeof d.error === "string" && d.error) return d.error;
+    return fallback;
+  }
+
+  const somFind = (sid) => somState.saidas.find((s) => s.sid === sid) || null;
+  const somAtual = () => (somState.estado && somState.estado.saida_anuncio ? somState.estado.saida_anuncio : null);
+  const somEhAtual = (sid) => { const a = somAtual(); return !!a && a.sid === sid; };
+  const somAlerta = (codigo) => !!(somState.estado && Array.isArray(somState.estado.alertas) && somState.estado.alertas.some((a) => a.codigo === codigo));
+  const somOuviuRecente = (sid) => { const t = somOuviu.get(sid); return t !== undefined && Date.now() - t < SOM_HEARD_TTL_MS; };
+  const somHorarioComercial = () => { const h = new Date().getHours(); return h >= 7 && h < 22; };
+
+  /** Nome mostrado em negrito: apelido, ou o nome sugerido para o tipo da saída. */
+  function somNome(s) {
+    if (s.apelido) return s.apelido;
+    if (s.tipo === "spotify_connect") return s.nome_sistema || "Aparelho Spotify";
+    const base = SOM_NOME_SUGERIDO[s.subtipo];
+    if (!base) return s.nome_sistema || "Saída de som";
+    if (s.subtipo === "usb") {
+      const irmas = somState.saidas.filter((x) => x.subtipo === "usb");
+      return base + " " + (irmas.findIndex((x) => x.sid === s.sid) + 1);
+    }
+    return base;
+  }
+
+  const somOk = (s) => s.estado === "disponivel" || s.estado === "mutada" || s.estado === "volume_zero" || s.estado === "em_uso_exclusivo";
+  const somPodeAnunciar = (s) => !!(s.capacidades && s.capacidades.anuncio);
+  const somSoNoPc = (s) => isRemote() && s.exige_local === true;
+  /** Há uma saída dos anúncios sumida/suspensa e esta é uma candidata a assumir o lugar dela. */
+  function somSubstitui(s) {
+    const a = somAtual();
+    return !!a && (a.estado === "ausente" || a.estado === "suspensa") && !s.aprovada && s.sid !== a.sid
+      && (s.tipo === "local" || s.tipo === "bluetooth") && s.estado === "disponivel";
+  }
+  const somPrecisaTeste = (s) => !somOuviuRecente(s.sid) && (isRemote() || !s.confirmada_em);
+
+  // ---------------------------------------------------------------------
+  // Tile "Som da loja" e avisos
+  // ---------------------------------------------------------------------
+  /** Texto e tom do tile a partir de /estado (null = esconder o tile). */
+  function somTileView(d) {
+    if (!d || d.disponivel !== true) return null;
+    if (d.motor_ok === false) return { text: "Reinicie o Proclamare", tone: "bad" };
+    const a = d.saida_anuncio;
+    if (!a) return { text: "Padrão do Windows · Configurar", tone: "warn" };
+    const nome = a.apelido || "Saída dos anúncios";
+    switch (a.estado) {
+      case "ok":
+        return somAlerta("silencio") ? { text: nome + " · em silêncio", tone: "" } : { text: nome + " · pronta", tone: "ok" };
+      case "mutada": return { text: "Saída mutada no Windows", tone: "bad" };
+      case "volume_zero": return { text: "Volume em 0% no Windows", tone: "bad" };
+      case "em_uso_exclusivo": return { text: "Em uso exclusivo por outro app", tone: "bad" };
+      case "suspensa": return { text: "Saída suspensa · teste de novo", tone: "warn" };
+      default:
+        if (a.tipo === "bluetooth") return { text: "Bluetooth desconectado", tone: "bad" };
+        return { text: a.tipo === "local" ? "Cabo desconectado" : "Saída desconectada", tone: "bad" };
+    }
+  }
+
+  function somAplicarTile(view) {
+    somTile.hidden = !view;
+    somStatusRow.classList.toggle("has-som", !!view);
+    if (!view) return;
+    setText(somTileLabel, view.text);
+    somTile.classList.toggle("is-ok", view.tone === "ok");
+    somTile.classList.toggle("is-warn", view.tone === "warn");
+    somTile.classList.toggle("is-bad", view.tone === "bad");
+    const title = view.text + " — abrir as saídas de som";
+    if (somTile.title !== title) somTile.title = title;
+  }
+
+  function somLerVistos() {
+    try { const v = JSON.parse(store.get(SOM_VISTO_KEY) || "{}"); return v && typeof v === "object" ? v : {}; } catch (e) { return {}; }
+  }
+
+  /** Um botão de texto para os avisos (alvo de toque de 44 px). */
+  function somBotaoTexto(label, act) {
+    const b = somEl("button", "btn btn--text", label);
+    b.type = "button";
+    b.dataset.act = act;
+    return b;
+  }
+
+  function somAplicarAvisos(d) {
+    const vistos = somLerVistos();
+    const lista = d && d.disponivel === true && Array.isArray(d.alertas) ? d.alertas : [];
+    const fixos = lista.filter((a) => a && SOM_AVISOS_FIXOS.includes(a.codigo) && !(a.codigo === "saida_alterada_remoto" && vistos[a.codigo] === a.desde));
+    const sig = JSON.stringify([fixos.map((a) => [a.codigo, a.desde, a.mensagem]), somComoCorrigir]);
+    if (sig === somAvisosSig) return;
+    somAvisosSig = sig;
+    somNotices.hidden = fixos.length === 0;
+    const frag = document.createDocumentFragment();
+    for (const a of fixos) {
+      const bad = a.codigo === "saida_alterada_remoto";
+      const card = somEl("div", "som-notice" + (bad ? " som-notice--bad" : ""));
+      const icon = makeIcon("alert");
+      icon.classList.add("som-notice__icon");
+      const body = somEl("div", "som-notice__body");
+      body.appendChild(somEl("p", "som-notice__text", String(a.mensagem || ""))); // a mensagem do servidor já diz onde os anúncios continuam
+      if (a.codigo === "padrao_windows_mudou" && somComoCorrigir) {
+        body.appendChild(somEl("p", "som-notice__more",
+          "No Windows: Configurações → Sistema → Som → Saída, e escolha o aparelho que toca a música da loja. O Proclamare não troca o padrão do Windows por você."));
+      }
+      const acoes = somEl("div", "som-notice__actions");
+      if (a.codigo === "padrao_windows_mudou") {
+        const b = somBotaoTexto(somComoCorrigir ? "Ocultar" : "Como corrigir", "como-corrigir");
+        b.setAttribute("aria-expanded", String(somComoCorrigir));
+        acoes.appendChild(b);
+      }
+      if (a.codigo === "saida_alterada_remoto") {
+        const b = somBotaoTexto("Marcar como visto", "visto");
+        b.dataset.codigo = a.codigo;
+        b.dataset.desde = String(a.desde || "");
+        acoes.appendChild(b);
+      }
+      acoes.appendChild(somBotaoTexto("Ver saídas de som", "abrir"));
+      body.appendChild(acoes);
+      card.append(icon, body);
+      frag.appendChild(card);
+    }
+    somNotices.replaceChildren(frag);
+  }
+
+  somNotices.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-act]");
+    if (!b) return;
+    if (b.dataset.act === "abrir") { openSettings("som"); return; }
+    if (b.dataset.act === "como-corrigir") { somComoCorrigir = !somComoCorrigir; somAvisosSig = ""; somAplicarAvisos(somState.estado); return; }
+    if (b.dataset.act === "visto") {
+      // Só este aparelho esconde o aviso; ele some de vez quando o destino é escolhido no PC da loja.
+      const vistos = somLerVistos();
+      vistos[b.dataset.codigo] = b.dataset.desde;
+      store.set(SOM_VISTO_KEY, JSON.stringify(vistos));
+      somAvisosSig = "";
+      somAplicarAvisos(somState.estado);
+    }
+  });
+  somTile.addEventListener("click", () => openSettings("som"));
+
+  /** Cada alerta novo vira um toast discreto, uma vez (os fixos já têm cartão próprio). */
+  function somToasts(d) {
+    if (!d || d.disponivel !== true || !Array.isArray(d.alertas)) return;
+    for (const a of d.alertas) {
+      if (!a || SOM_AVISOS_FIXOS.includes(a.codigo) || typeof a.mensagem !== "string" || !a.mensagem) continue;
+      const chave = a.codigo + "|" + a.desde;
+      if (somToastVistos.has(chave)) continue;
+      somToastVistos.add(chave);
+      toast(a.mensagem, a.codigo === "motor_contaminado" ? "error" : "warn", { duration: 9000 });
+    }
+  }
+
+  function somLerPrefs(p) {
+    if (!p || typeof p !== "object" || typeof p.se_indisponivel !== "string") return null;
+    if (!p.abaixar || !p.teste || !p.monitor || !p.monitor.horario) return null;
+    return p;
+  }
+
+  function somAplicarEstado(d) {
+    // assinatura sem a geração: só mexe no DOM quando algo visível mudou
+    const sig = JSON.stringify([d.disponivel, d.motor_ok, d.saida_anuncio, d.padrao_windows, d.alertas, d.anuncio_em_andamento, d.preferencias]);
+    if (sig === somEstadoSig) return;
+    somEstadoSig = sig;
+    somState.estado = d;
+    somAplicarTile(somTileView(d));
+    somAplicarAvisos(d);
+    somToasts(d);
+    const prefs = somLerPrefs(d.preferencias); // o servidor ainda não manda; se passar a mandar, já funciona
+    if (prefs) somPrefs = prefs;
+    if (somAberto) {
+      somRenderOff();
+      somRenderLista();
+      somRenderPrefs();
+    }
+  }
+
+  async function pollSomEstado() {
+    try {
+      const r = await getJSON("/api/som/estado", { timeout: 6000 });
+      if (r.status === 404 || (r.ok && typeof r.data.disponivel !== "boolean")) { somAplicarTile(null); return; } // servidor sem som
+      if (!r.ok) throw new Error("estado");
+      somState.falhas = 0;
+      somAplicarEstado(r.data);
+    } catch (e) {
+      if (e && e.name === "AuthLockedError") return;
+      somState.falhas += 1;
+      // Sem resposta duas vezes seguidas: não deixa um "pronta" verde velho na tela
+      if (somState.falhas === 2 && !somTile.hidden) somAplicarTile({ text: "Sem resposta do servidor", tone: "" });
+    }
+  }
+
+  function somRenderOff() {
+    const indisponivel = !!somState.estado && somState.estado.disponivel !== true;
+    somOff.hidden = !indisponivel;
+    somSteps.hidden = indisponivel;
+  }
+
+  // ---------------------------------------------------------------------
+  // Passos 1 e 2: procurar e listar
+  // ---------------------------------------------------------------------
+  function somAtualizarBusca() {
+    const rodando = somState.scanBusy || !!(somState.varredura && somState.varredura.em_andamento);
+    btnSomScan.classList.toggle("is-loading", rodando);
+    if (rodando) btnSomScan.setAttribute("aria-disabled", "true");
+    else btnSomScan.removeAttribute("aria-disabled");
+    setText(btnSomScanLabel, rodando ? "Procurando…" : "Procurar de novo");
+    const n = somState.saidas.length;
+    setText(somScanStatus, rodando ? "Procurando saídas…" : somState.scanned ? (n === 1 ? "1 saída na lista." : n + " saídas na lista.") : "");
+  }
+
+  async function somProcurar() {
+    if (btnSomScan.getAttribute("aria-disabled") === "true") return;
+    somState.scanBusy = true;
+    somState.scanned = true;
+    somAtualizarBusca();
+    showSomListError("");
+    try {
+      const r = await postJSON("/api/som/descobrir", { tipos: ["local", "spotify"] });
+      // 409: já havia uma busca rodando; o poll de 1 s acompanha do mesmo jeito
+      if (!r.ok && r.data.codigo !== "varredura_em_andamento") showSomListError(somErro(r, "Não foi possível procurar agora."));
+    } catch (e) {
+      if (!e || e.name !== "AuthLockedError") showSomListError(NET_FAIL_MSG);
+    } finally {
+      somState.scanBusy = false;
+      somAtualizarBusca();
+      scheduler.kick("som-saidas");
+    }
+  }
+  btnSomScan.addEventListener("click", somProcurar);
+
+  function showSomListError(msg) {
+    setText(somListError, msg);
+    somListError.hidden = !msg;
+    if (msg) showSomListOk("");
+  }
+
+  /** Confirmação dentro do diálogo (o toast pode ficar atrás da gaveta). */
+  function showSomListOk(msg) {
+    setText(somListOk, msg);
+    somListOk.hidden = !msg;
+    clearTimeout(somOkTimer);
+    if (msg) somOkTimer = setTimeout(() => showSomListOk(""), 9000);
+  }
+  async function pollSomSaidas() {
+    try {
+      const r = await getJSON("/api/som/saidas", { timeout: 6000 });
+      if (!r.ok || !Array.isArray(r.data.saidas)) {
+        if (r.status !== 503) { showSomListError(somErro(r, "Não foi possível carregar as saídas.")); somErroDoPoll = true; }
+        return;
+      }
+      if (somErroDoPoll) { showSomListError(""); somErroDoPoll = false; } // só apaga o erro que o próprio poll criou
+      somState.varredura = r.data.varredura && typeof r.data.varredura === "object" ? r.data.varredura : null;
+      somAtualizarBusca();
+      const sig = JSON.stringify(r.data.saidas);
+      if (sig === somListaSig) return; // nada mudou: nada de re-render
+      somListaSig = sig;
+      somState.saidas = r.data.saidas;
+      somRenderLista();
+      somAtualizarBusca();
+    } catch (e) {
+      if (e && e.name === "AuthLockedError") return;
+      if (!somState.saidas.length) { showSomListError(NET_FAIL_MSG); somErroDoPoll = true; }
+    }
+  }
+
+  /** Selos de uma linha: cada um é [texto, tom]. */
+  function somSelos(s, atual) {
+    const b = [];
+    if (atual) b.push(["Usada para anúncios", "ok"]);
+    else if (s.aprovada) b.push(["Aprovada", "info"]);
+    if (s.sugestao && s.sugestao.sugerida) b.push(["Sugerida", "info"]);
+    if (s.padrao_windows) b.push(["Padrão do Windows", ""]);
+    switch (s.estado) {
+      case "mutada": b.push(["Mutada no Windows", "warn"]); break;
+      case "volume_zero": b.push(["Volume em 0%", "warn"]); break;
+      case "ausente":
+      case "desconectada": b.push(["Desconectada", "bad"]); break;
+      case "suspensa": b.push(["Suspensa: teste de novo", "warn"]); break;
+      case "em_uso_exclusivo": b.push(["Em uso exclusivo", "bad"]); break;
+      case "nao_suportada": b.push(["Não suportada" + (s.motivo_nao_suportada ? ": " + s.motivo_nao_suportada : ""), "bad"]); break;
+      default: break;
+    }
+    if (s.nome_incomum) b.push(["Nome com caracteres incomuns", "warn"]);
+    return b;
+  }
+
+  function somLinha(s) {
+    const atual = somEhAtual(s.sid);
+    const li = somEl("li", "som-row" + (atual ? " is-current" : ""));
+    li.dataset.sid = s.sid;
+
+    const icone = somEl("span", "som-row__icon");
+    icone.setAttribute("aria-hidden", "true");
+    icone.appendChild(makeIcon(s.tipo === "spotify_connect" ? "music" : SOM_ICONE[s.subtipo] || "speaker"));
+
+    const main = somEl("div", "som-row__main");
+    const titulo = somEl("div", "som-row__title");
+    titulo.appendChild(somEl("b", "som-row__name", somNome(s)));
+    if (s.sufixo_id) titulo.appendChild(somEl("span", "som-row__suffix", s.sufixo_id)); // sempre separado do nome
+    main.appendChild(titulo);
+    if (s.nome_sistema) main.appendChild(somEl("span", "som-row__sys", s.nome_sistema));
+    const selos = somSelos(s, atual);
+    if (selos.length) {
+      const bx = somEl("div", "som-row__badges");
+      for (const [texto, tom] of selos) bx.appendChild(somEl("span", "badge" + (tom ? " badge--" + tom : ""), texto));
+      main.appendChild(bx);
+    }
+    li.append(icone, main);
+
+    if (s.tipo === "spotify_connect") {
+      li.appendChild(somEl("p", "som-row__note", "Só toca música: os anúncios não saem por aqui."));
+      return li;
+    }
+    if (s.subtipo === "hdmi") li.appendChild(somEl("p", "som-row__note", "Normalmente não vai para as caixas da loja."));
+    if (!somPodeAnunciar(s)) return li;
+
+    const acoes = somEl("div", "som-row__actions");
+    const testar = somEl("button", "btn btn--ghost", "Testar");
+    testar.type = "button";
+    testar.dataset.act = "testar";
+    testar.dataset.sid = s.sid;
+    testar.setAttribute("aria-label", "Testar " + somNome(s));
+    testar.disabled = !(s.estado === "disponivel" || s.estado === "mutada" || s.estado === "volume_zero" || s.estado === "em_uso_exclusivo");
+    acoes.appendChild(testar);
+    if (!atual && !somSoNoPc(s)) {
+      const usar = somEl("button", "btn btn--primary", somSubstitui(s) ? "Usar no lugar" : "Usar");
+      usar.type = "button";
+      usar.dataset.act = "usar";
+      usar.dataset.sid = s.sid;
+      usar.setAttribute("aria-label", (somSubstitui(s) ? "Usar no lugar da saída ausente: " : "Usar para anúncios: ") + somNome(s));
+      usar.disabled = !somOk(s) || s.estado === "em_uso_exclusivo";
+      acoes.appendChild(usar);
+    }
+    li.appendChild(acoes);
+    if (!atual && somSoNoPc(s)) li.appendChild(somEl("p", "som-row__note", "Para usar esta saída nos anúncios, aprove no PC do Proclamare."));
+    return li;
+  }
+
+  function somRenderLista() {
+    // não destrói a lista com o foco dentro de um campo (some o texto digitado)
+    const ativo = document.activeElement;
+    if (ativo && somList.contains(ativo) && ativo.tagName === "INPUT") { somListaPendente = true; return; }
+    somListaPendente = false;
+    const chaveFoco = ativo && somList.contains(ativo) && ativo.dataset ? { sid: ativo.dataset.sid, act: ativo.dataset.act } : null;
+    const frag = document.createDocumentFragment();
+    let total = 0;
+    for (const [grupo, titulo] of SOM_GRUPOS) {
+      const itens = somState.saidas.filter((s) => s.grupo === grupo);
+      if (!itens.length) continue;
+      total += itens.length;
+      const sec = somEl("section", "som-group");
+      const h = somEl("h5", "som-group__title", titulo);
+      sec.appendChild(h);
+      const ul = somEl("ul", "som-rows");
+      for (const s of itens) ul.appendChild(somLinha(s));
+      sec.appendChild(ul);
+      frag.appendChild(sec);
+    }
+    somList.replaceChildren(frag);
+    somEmpty.hidden = total > 0;
+    if (chaveFoco && chaveFoco.sid) {
+      const alvo = Array.from(somList.querySelectorAll("button[data-act]")).find((b) => b.dataset.sid === chaveFoco.sid && b.dataset.act === chaveFoco.act);
+      if (alvo && !alvo.disabled) alvo.focus({ preventScroll: true });
+    }
+  }
+
+  function somFocarLinha(sid, act) {
+    const alvo = Array.from(somList.querySelectorAll("button[data-act]")).find((b) => b.dataset.sid === sid && (!act || b.dataset.act === act))
+      || Array.from(somList.querySelectorAll("button[data-act]")).find((b) => b.dataset.sid === sid);
+    if (alvo) alvo.focus({ preventScroll: false });
+  }
+
+  somList.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-act]");
+    if (!b || b.disabled || somOcupado) return;
+    const s = somFind(b.dataset.sid);
+    if (!s) return;
+    if (b.dataset.act === "testar") somAbrirTeste(s.sid, "testar", b);
+    else if (b.dataset.act === "usar") {
+      if (somPrecisaTeste(s)) somAbrirTeste(s.sid, "usar", b);
+      else somUsar(s, {}, b);
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // Escritas em /api/som/saida
+  // ---------------------------------------------------------------------
+  /** Envia um corpo a /saida. Devolve a resposta (ou null se a rede falhou; já avisou na tela). */
+  async function somPostSaida(body, onErro) {
+    if (somOcupado) return null;
+    somOcupado = true;
+    somList.setAttribute("aria-busy", "true");
+    try {
+      return await postJSON("/api/som/saida", body, { timeout: 15000 });
+    } catch (e) {
+      if (!e || e.name !== "AuthLockedError") onErro(NET_FAIL_MSG);
+      return null;
+    } finally {
+      somOcupado = false;
+      somList.removeAttribute("aria-busy");
+    }
+  }
+
+  function somAtualizarDepois() {
+    scheduler.kick("som-estado");
+    scheduler.kick("som-saidas");
+  }
+
+  /** "Usar para anúncios" (ou, com saída ausente, "usar no lugar"). */
+  async function somUsar(s, extra, opener) {
+    const body = Object.assign({ sid: s.sid }, extra || {});
+    const troca = somSubstitui(s);
+    if (troca) body.aceitar_nova_ref = true;
+    else body.usar_para_anuncios = true;
+    let r = await somPostSaida(body, showSomListError);
+    if (r && !r.ok && r.data.codigo === "nada_a_adotar") { // não havia o que substituir: usa direto
+      delete body.aceitar_nova_ref;
+      body.usar_para_anuncios = true;
+      r = await somPostSaida(body, showSomListError);
+    }
+    if (!r) return false;
+    if (r.ok && r.data.ok) {
+      showSomListError("");
+      const nome = r.data.saida && r.data.saida.apelido ? r.data.saida.apelido : somNome(s);
+      const aviso = "Pronto: os anúncios vão sair em " + nome + "." + (isRemote() ? " A troca fica registrada no PC da loja." : "");
+      toast(aviso, "success", { silent: true });
+      showSomListOk(aviso);
+      somAtualizarDepois();
+      return true;
+    }
+    const msg = somErro(r, "Não foi possível usar esta saída.");
+    if (r.status === 412 && opener) somAbrirTeste(s.sid, "usar", opener);
+    else showSomListError(msg);
+    if (somTestEl.hidden === false) showSomTestError(msg);
+    return false;
+  }
+
+  // ---------------------------------------------------------------------
+  // Passo 3: testar
+  // ---------------------------------------------------------------------
+  function showSomTestError(msg) {
+    setText(somTestError, msg);
+    somTestError.hidden = !msg;
+  }
+
+  function somLimparCooldown() {
+    if (somTeste.cooldown) { clearInterval(somTeste.cooldown); somTeste.cooldown = 0; }
+    btnSomPlay.disabled = false;
+    btnSomAgain.disabled = false;
+    setText(btnSomPlayLabel, "Tocar o bipe");
+  }
+
+  function somLimparEsquecer() {
+    if (somTeste.esquecer) { clearTimeout(somTeste.esquecer); somTeste.esquecer = 0; }
+    setText(btnSomForget, "Esquecer esta saída");
+  }
+
+  function somPainelSalvar(s) {
+    somSave.hidden = false;
+    if (!somNickname.value) somNickname.value = (s.apelido || somNome(s)).slice(0, 40);
+    const so = somSoNoPc(s);
+    btnSomUse.hidden = somEhAtual(s.sid) || so;
+    if (so) {
+      setText(somTestNeed, "Esta saída só pode ser aprovada no PC do Proclamare. Daqui você pode testá-la e dar um nome.");
+      somTestNeed.hidden = false;
+    }
+  }
+
+  function somAbrirTeste(sid, intent, opener, manterTentadas) {
+    const s = somFind(sid);
+    if (!s) return;
+    somLimparCooldown();
+    somLimparEsquecer();
+    if (!manterTentadas) somTeste.tentadas = new Set();
+    Object.assign(somTeste, { sid, intent, busy: false, sinal: null, opener: opener || somTeste.opener });
+    setText(somTestName, "· " + somNome(s));
+    setText(somTestNeed, SOM_MSG.teste_necessario);
+    somTestNeed.hidden = intent !== "usar";
+    somTestWarn.hidden = !somHorarioComercial();
+    const prefs = somPrefs || SOM_PREFS_PADRAO;
+    somTestDuck.checked = isRemote() ? !!prefs.teste.abaixar_musica_remoto : !!prefs.teste.abaixar_musica_local;
+    somHeard.hidden = true;
+    somNo.hidden = true;
+    somSave.hidden = true;
+    somNickname.value = "";
+    setText(somTestStatus, "");
+    showSomTestError("");
+    btnSomPlay.classList.remove("is-loading");
+    btnSomPlay.removeAttribute("aria-disabled");
+    // já aprovada antes: dá para renomear sem testar de novo
+    if (s.aprovada || somOuviuRecente(sid)) somPainelSalvar(s);
+    btnSomUseUntested.hidden = !(!isRemote() && intent === "usar" && !somEhAtual(sid) && !somSoNoPc(s));
+    btnSomForget.hidden = !(s.aprovada && !somEhAtual(sid) && !somSoNoPc(s));
+    somExtra.hidden = btnSomUseUntested.hidden && btnSomForget.hidden;
+    somTestEl.hidden = false;
+    somTestEl.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    somTestTitle.focus({ preventScroll: true });
+  }
+
+  function somFecharTeste(devolverFoco) {
+    somLimparCooldown();
+    somLimparEsquecer();
+    const sid = somTeste.sid;
+    const act = somTeste.opener && somTeste.opener.dataset ? somTeste.opener.dataset.act : "testar";
+    somTeste.sid = null;
+    somTestEl.hidden = true;
+    if (devolverFoco && sid) somFocarLinha(sid, act);
+  }
+  btnSomTestClose.addEventListener("click", () => somFecharTeste(true));
+
+  function somCooldown(segundos) {
+    somLimparCooldown();
+    let falta = Math.max(1, Math.min(120, Math.round(segundos)));
+    btnSomPlay.disabled = true;
+    btnSomAgain.disabled = true;
+    const tick = () => {
+      if (falta <= 0) { somLimparCooldown(); setText(somTestStatus, "Pode testar de novo."); return; }
+      setText(btnSomPlayLabel, "Aguarde " + falta + " s");
+      falta -= 1;
+    };
+    tick();
+    somTeste.cooldown = setInterval(tick, 1000);
+  }
+
+  async function somTocar() {
+    if (somTeste.busy || !somTeste.sid || btnSomPlay.disabled) return;
+    const sid = somTeste.sid;
+    somTeste.busy = true;
+    btnSomPlay.classList.add("is-loading");
+    btnSomPlay.setAttribute("aria-disabled", "true");
+    somHeard.hidden = true;
+    somNo.hidden = true;
+    showSomTestError("");
+    setText(somTestStatus, "Tocando o bipe nas caixas…");
+    let r = null;
+    try {
+      r = await postJSON("/api/som/testar", { sid, abaixar_musica: somTestDuck.checked }, { timeout: 100000 });
+    } catch (e) {
+      if (e && e.name === "AuthLockedError") return;
+      setText(somTestStatus, "");
+      showSomTestError(e && e.name === "TimeoutError" ? "O teste demorou demais. Confira a saída e tente de novo." : NET_FAIL_MSG);
+    } finally {
+      somTeste.busy = false;
+      btnSomPlay.classList.remove("is-loading");
+      btnSomPlay.removeAttribute("aria-disabled");
+    }
+    if (!r || somTeste.sid !== sid) return;
+    if (r.ok && r.data.ok) {
+      somTeste.sinal = typeof r.data.sinal_detectado === "boolean" ? r.data.sinal_detectado : null;
+      setText(somTestStatus, "Bipe tocado.");
+      somHeard.hidden = false;
+      btnSomYes.focus({ preventScroll: true });
+      return;
+    }
+    setText(somTestStatus, "");
+    showSomTestError(somErro(r, "Não foi possível tocar o teste."));
+    if (r.status === 429) somCooldown(r.retryAfter || 20);
+  }
+  btnSomPlay.addEventListener("click", somTocar);
+  btnSomAgain.addEventListener("click", somTocar);
+
+  btnSomYes.addEventListener("click", async () => {
+    const sid = somTeste.sid;
+    const s = sid && somFind(sid);
+    if (!s || btnSomYes.getAttribute("aria-disabled") === "true") return;
+    btnSomYes.setAttribute("aria-disabled", "true");
+    const r = await somPostSaida({ sid, confirmada: true }, showSomTestError);
+    btnSomYes.removeAttribute("aria-disabled");
+    if (!r || somTeste.sid !== sid) return;
+    if (r.ok && r.data.ok) {
+      somOuviu.set(sid, Date.now());
+      somHeard.hidden = true;
+      somTestNeed.hidden = true;
+      showSomTestError("");
+      setText(somTestStatus, "Ótimo. Dê um nome a esta saída e escolha se vai usá-la para os anúncios.");
+      somPainelSalvar(s);
+      somNickname.focus({ preventScroll: true });
+      somAtualizarDepois();
+    } else {
+      showSomTestError(somErro(r, "Não foi possível registrar a confirmação."));
+    }
+  });
+
+  btnSomNo.addEventListener("click", () => {
+    const sinal = somTeste.sinal;
+    somHeard.hidden = true;
+    somTeste.tentadas.add(somTeste.sid);
+    setText(somSignal, "O PC enviou sinal: " + (sinal === true ? "sim" : sinal === false ? "não" : "não deu para medir"));
+    somSignal.tabIndex = -1;
+    const proxima = somProximaSugerida();
+    btnSomNext.hidden = !proxima;
+    somNo.hidden = false;
+    somSignal.focus({ preventScroll: true });
+  });
+
+  /** Próxima saída que vale testar: a de maior pontuação ainda não tentada. */
+  function somProximaSugerida() {
+    const pontos = (s) => (s.sugestao && isNum(s.sugestao.pontos) ? s.sugestao.pontos : -999);
+    const candidatas = somState.saidas.filter((s) => somPodeAnunciar(s) && (s.estado === "disponivel" || s.estado === "mutada" || s.estado === "volume_zero")
+      && s.sid !== somTeste.sid && !somTeste.tentadas.has(s.sid));
+    candidatas.sort((a, b) => pontos(b) - pontos(a));
+    return candidatas[0] || null;
+  }
+  btnSomNext.addEventListener("click", () => {
+    const proxima = somProximaSugerida();
+    if (!proxima) { btnSomNext.hidden = true; return; }
+    somAbrirTeste(proxima.sid, somTeste.intent, somTeste.opener, true);
+  });
+
+  /** Apelido digitado: sem caracteres de controle, espaços normalizados, até 40. */
+  function somApelidoLimpo() {
+    return somNickname.value.replace(/[\p{C}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 40);
+  }
+
+  btnSomUse.addEventListener("click", async () => {
+    const s = somTeste.sid && somFind(somTeste.sid);
+    if (!s || btnSomUse.getAttribute("aria-disabled") === "true") return;
+    const apelido = somApelidoLimpo();
+    const extra = apelido && apelido !== (s.apelido || "") ? { apelido } : {};
+    btnSomUse.setAttribute("aria-disabled", "true");
+    btnSomUse.classList.add("is-loading");
+    const ok = await somUsar(s, extra, null);
+    btnSomUse.removeAttribute("aria-disabled");
+    btnSomUse.classList.remove("is-loading");
+    if (ok) somFecharTeste(true);
+  });
+
+  btnSomName.addEventListener("click", async () => {
+    const s = somTeste.sid && somFind(somTeste.sid);
+    if (!s) return;
+    const apelido = somApelidoLimpo();
+    if (!apelido) { showSomTestError("Digite um nome de 1 a 40 caracteres."); somNickname.focus(); return; }
+    const r = await somPostSaida({ sid: s.sid, apelido }, showSomTestError);
+    if (!r) return;
+    if (r.ok && r.data.ok) {
+      toast("Nome guardado.", "success", { duration: 2400 });
+      showSomTestError("");
+      somAtualizarDepois();
+    } else {
+      showSomTestError(somErro(r, "Não foi possível guardar o nome."));
+    }
+  });
+
+  btnSomUseUntested.addEventListener("click", async () => {
+    const s = somTeste.sid && somFind(somTeste.sid);
+    if (!s) return;
+    if (await somUsar(s, {}, null)) somFecharTeste(true);
+  });
+
+  btnSomForget.addEventListener("click", async () => {
+    const s = somTeste.sid && somFind(somTeste.sid);
+    if (!s) return;
+    if (!somTeste.esquecer) { // primeiro toque só pede confirmação
+      setText(btnSomForget, "Toque de novo para esquecer");
+      somTeste.esquecer = setTimeout(somLimparEsquecer, 4000);
+      return;
+    }
+    somLimparEsquecer();
+    const r = await somPostSaida({ sid: s.sid, esquecer: true }, showSomTestError);
+    if (!r) return;
+    if (r.ok && r.data.ok) {
+      toast("Saída esquecida.", "success", { duration: 2400 });
+      somFecharTeste(false);
+      somAtualizarDepois();
+    } else {
+      showSomTestError(somErro(r, "Não foi possível esquecer esta saída."));
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // Passo 5: preferências (recolhidas)
+  // ---------------------------------------------------------------------
+  function somRenderPrefs() {
+    const p = somPrefs || SOM_PREFS_PADRAO;
+    prefNote.hidden = somPrefs !== null;
+    const remoto = isRemote();
+    somPrefsEl.querySelectorAll('input[name="pref-se-indisponivel"]').forEach((r) => {
+      r.checked = r.value === p.se_indisponivel;
+      if (r.value === "padrao_windows") r.disabled = remoto;
+    });
+    setText(prefFallbackWindowsHint, remoto
+      ? "Só pode ser escolhido no PC da loja."
+      : "Atenção: pode ser o monitor, não as caixas da loja.");
+    prefFallbackWindows.classList.toggle("is-disabled", remoto);
+    const marcar = (id, valor) => { const c = $(id); if (c.checked !== !!valor) c.checked = !!valor; };
+    marcar("pref-abaixar-spotify", p.abaixar.spotify_api);
+    marcar("pref-abaixar-youtube", p.abaixar.youtube);
+    marcar("pref-teste-remoto", p.teste.abaixar_musica_remoto);
+    marcar("pref-teste-local", p.teste.abaixar_musica_local);
+    marcar("pref-monitor-ativo", p.monitor.ativo);
+    if (document.activeElement !== prefSilencio) prefSilencio.value = String(p.monitor.alerta_silencio_min);
+    if (document.activeElement !== prefHorIni) prefHorIni.value = p.monitor.horario.inicio;
+    if (document.activeElement !== prefHorFim) prefHorFim.value = p.monitor.horario.fim;
+  }
+
+  function showPrefError(msg) {
+    setText(prefError, msg);
+    prefError.hidden = !msg;
+  }
+
+  /** Envia um merge parcial; as gravações saem uma depois da outra (sem corrida). */
+  function somSalvarPref(corpo) {
+    somPrefsFila = somPrefsFila.then(async () => {
+      try {
+        const r = await postJSON("/api/som/preferencias", corpo, { timeout: 10000 });
+        if (r.ok && r.data.ok) {
+          const novas = somLerPrefs(r.data.preferencias);
+          if (novas) somPrefs = novas;
+          showPrefError("");
+          setText(prefStatus, "Salvo.");
+          clearTimeout(somPrefTimer);
+          somPrefTimer = setTimeout(() => setText(prefStatus, ""), 3000);
+        } else {
+          setText(prefStatus, "");
+          showPrefError(somErro(r, "Não foi possível salvar a preferência."));
+        }
+      } catch (e) {
+        if (!e || e.name !== "AuthLockedError") { setText(prefStatus, ""); showPrefError(NET_FAIL_MSG); }
+      }
+      somRenderPrefs(); // volta ao que o servidor confirmou
+    });
+  }
+
+  somPrefsEl.addEventListener("change", (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement)) return;
+    if (t.name === "pref-se-indisponivel") { somSalvarPref({ se_indisponivel: t.value }); return; }
+    if (t.type === "checkbox" && t.dataset.pref) {
+      const [grupo, chave] = t.dataset.pref.split(".");
+      somSalvarPref({ [grupo]: { [chave]: t.checked } });
+      return;
+    }
+    if (t === prefSilencio) {
+      const n = Number(prefSilencio.value);
+      if (prefSilencio.value.trim() === "" || !Number.isInteger(n) || n < 1 || n > 240) {
+        showPrefError("Use um número inteiro de 1 a 240 minutos.");
+        somRenderPrefs();
+        return;
+      }
+      somSalvarPref({ monitor: { alerta_silencio_min: n } });
+      return;
+    }
+    if (t === prefHorIni || t === prefHorFim) {
+      const re = /^([01]\d|2[0-3]):[0-5]\d$/;
+      if (!re.test(prefHorIni.value) || !re.test(prefHorFim.value)) {
+        showPrefError("Informe o começo e o fim no formato 00:00.");
+        return;
+      }
+      somSalvarPref({ monitor: { horario: { inicio: prefHorIni.value, fim: prefHorFim.value } } });
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // Abrir/fechar o assistente (o diálogo de Configurações é o mesmo)
+  // ---------------------------------------------------------------------
+  function somAoAbrir(focarSecao) {
+    somAberto = true;
+    somListaSig = "";
+    showSomListError("");
+    showPrefError("");
+    setText(prefStatus, "");
+    somTestEl.hidden = true;
+    somTeste.sid = null;
+    somRenderOff();
+    somRenderLista();
+    somRenderPrefs();
+    somAtualizarBusca();
+    scheduler.kick("som-saidas"); // mostra o cache logo ao abrir
+    if (focarSecao) {
+      requestAnimationFrame(() => {
+        somSection.scrollIntoView({ block: "start" });
+        somTitle.focus({ preventScroll: true });
+      });
+    }
+  }
+
+  function somAoFechar() {
+    somAberto = false;
+    somLimparCooldown();
+    somLimparEsquecer();
+    somTestEl.hidden = true;
+    somTeste.sid = null;
+    somTeste.busy = false;
+    somNickname.value = "";
+    somList.replaceChildren();
+  }
+  settingsDialog.addEventListener("close", somAoFechar);
+
+  /** Recomeça do zero (login novo ou sessão que voltou). */
+  function somReiniciar() {
+    somState.estado = null;
+    somState.falhas = 0;
+    somEstadoSig = "";
+    somAvisosSig = "";
+    somAplicarTile(null);
+    somNotices.hidden = true;
+    somNotices.replaceChildren();
+  }
+
+  // Ao voltar o foco numa lista que ficou pendente (campo de texto), atualiza.
+  somList.addEventListener("focusout", () => { if (somListaPendente) setTimeout(somRenderLista, 0); });
+
+  // ======================================================================
   // 18. Inicialização
   // ======================================================================
   loadPrefs();
@@ -3228,6 +4167,10 @@
 
     // Tarefas de polling (todas passam pelo agendador único)
     scheduler.add("status", pollStatus, 15000, { immediate: true });
+    // Som da loja: tile a cada 10 s; a lista do assistente a 1 s, só com o diálogo aberto
+    somReiniciar();
+    scheduler.add("som-estado", pollSomEstado, 10000, { immediate: true });
+    scheduler.add("som-saidas", pollSomSaidas, 1000, { enabled: () => somAberto });
     scheduler.add("spotify-now", pollSpotifyNow, 4000, { enabled: spotifyActive });
     // Reconfere a conexão do Spotify (falha transitória no 1º carregamento, token revogado, login em outro PC)
     // (a linha de status do topo é visível em qualquer aba/fonte, então a lâmpada não pode ficar velha)
