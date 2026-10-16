@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.2.1 (fila do YouTube); base v2.2 com PIN)
+Proclamare — servidor local (v2.3 F1: saídas de som; base v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -31,6 +31,39 @@ da loja. Serve a interface (static/) e cuida de três coisas:
                                computadores também consigam controlá-la.
                                A aba tocadora recebe os comandos por
                                long-poll (latência quase instantânea).
+
+Contrato v2.3 (F1: saídas de som)
+---------------------------------
+  Detalhes e motivos: docs/PLANO-SAIDAS-DE-SOM.md. Pacote som/ (modelo, local, motor, vigia).
+  * Sem a chave "som" no config.json (ou sem "saida_anuncio") tudo funciona EXATAMENTE
+    como na v2.2.1: pygame.mixer.init() padrão, voz offline direta pelo SAPI.
+  * Todas as rotas /api/som/* exigem PIN para aparelhos remotos (nenhuma é pública).
+    POST: JSON (415) e Origin do mesmo host (403); esquema estrito (chave desconhecida
+    em qualquer nível = 400). Erros: {"ok": false, "error", "erro", "codigo"?}.
+  * GET  /api/som/estado       tile: motor_ok, saida_anuncio, padrao_windows, alertas, preferencias...
+  * GET  /api/som/saidas       lista de saídas (visão com lista branca; sem IDs internos)
+  * POST /api/som/descobrir    {"tipos": ["local","spotify"]} -> 202 (varredura em 2º plano)
+  * POST /api/som/saida        {"sid", aprovada?, apelido?, confirmada?, esquecer?,
+                               usar_para_anuncios?, aceitar_nova_ref?, rack?}. Campos que
+                               só valem no PC (BT, HDMI, fone) = 403; troca remota exige
+                               /testar da MESMA sessão nos 5 min anteriores (412
+                               "teste_necessario"); 409 com anúncio tocando. Auditoria e
+                               alerta "saida_alterada_remoto" nas trocas remotas.
+  * POST /api/som/testar       {"sid", "abaixar_musica"?} bipe + "Teste do Proclamare: ..."
+                               (nunca o nome do sistema). 3/min por IP e 10/10 min no total
+                               (429); 409 com anúncio/teste tocando; 503 com "codigo"
+                               ausente | em_uso_exclusivo | motor_contaminado.
+  * POST /api/som/preferencias merge parcial: se_indisponivel, abaixar.spotify_api/youtube,
+                               teste, monitor.ativo/alerta_silencio_min/horario.
+  * POST /api/announce         com "saida_anuncio": resolve e ABRE a saída antes de
+                               abaixar a música; a música é restaurada sempre; fallback
+                               conforme se_indisponivel; 503 com "codigo" sem saída. A
+                               resposta ganha saidas_usadas, parcial, sinal_detectado
+                               (sessão do próprio processo; null se não deu para medir) e,
+                               no fallback, aviso. Voz offline: SAPI -> WAV -> mesmo motor.
+  * Vigia de progresso: teto da reprodução min(duração + 3 s, 80 s) < TIMEOUT_AUDIO_S; se o
+    executor de áudio for substituído, o motor fica "contaminado" (503 até reiniciar).
+  * /api/som/zonas NÃO existe (F3); 409 tarefa_agendada_tocando e "forcar" são F2.
 
 Contrato v2.2.1 (fila do YouTube)
 ---------------------------------
@@ -126,6 +159,7 @@ import asyncio
 import atexit
 import base64
 import contextlib
+import functools
 import getpass
 import hashlib
 import hmac
@@ -146,6 +180,7 @@ from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturoTimeout
 from contextlib import contextmanager
+from datetime import datetime
 from http.cookiejar import DefaultCookiePolicy
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -158,6 +193,12 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from flask import Flask, Response, jsonify, redirect, request, send_from_directory
 from werkzeug.exceptions import HTTPException
+
+# Subsistema "Saídas de som" (contrato v2.3). O pacote só importa stdlib na carga;
+# pycaw/pygame entram de forma tardia e tolerante dentro dele.
+import som as som_pkg
+from som import modelo as som_modelo
+from som.motor import frase_de_teste, gerar_bipe, texto_para_sapi
 
 log = logging.getLogger("proclamare")
 
@@ -343,7 +384,9 @@ def host_permitido(host_header: str) -> bool:
 # --- Limite de taxa simples por IP (janela deslizante, em memória) -------------
 _taxa_lock = threading.Lock()
 _taxa_hist: dict[str, deque] = {}
+_taxa_janela: dict[str, float] = {}      # chave -> janela (s) usada por ela
 _TAXA_MAX_CHAVES = 512
+_TAXA_GLOBAIS = frozenset({"testar:global"})   # tetos da loja toda: nunca são descartados
 
 
 def excedeu_limite(chave: str, maximo: int, janela_s: float) -> bool:
@@ -351,11 +394,21 @@ def excedeu_limite(chave: str, maximo: int, janela_s: float) -> bool:
     agora = time.monotonic()
     with _taxa_lock:
         if len(_taxa_hist) >= _TAXA_MAX_CHAVES:  # evita crescer sem limite
-            for k in [k for k, h in _taxa_hist.items() if not h or agora - h[-1] > janela_s]:
+            # Limpa pela janela de CADA chave (não pela da chamada atual) e nunca as globais.
+            for k in [k for k, h in _taxa_hist.items()
+                      if k not in _TAXA_GLOBAIS
+                      and (not h or agora - h[-1] > _taxa_janela.get(k, janela_s))]:
                 del _taxa_hist[k]
+                _taxa_janela.pop(k, None)
             if len(_taxa_hist) >= _TAXA_MAX_CHAVES:
-                _taxa_hist.clear()
+                # ainda cheio (inundação por muitos IPs): descarta as mais antigas, sem clear() geral
+                antigas = sorted((k for k in _taxa_hist if k not in _TAXA_GLOBAIS),
+                                 key=lambda k: _taxa_hist[k][-1] if _taxa_hist[k] else 0.0)
+                for k in antigas[: _TAXA_MAX_CHAVES // 4]:
+                    del _taxa_hist[k]
+                    _taxa_janela.pop(k, None)
         hist = _taxa_hist.setdefault(chave, deque())
+        _taxa_janela[chave] = max(janela_s, _taxa_janela.get(chave, 0.0))
         while hist and agora - hist[0] > janela_s:
             hist.popleft()
         if len(hist) >= maximo:
@@ -1215,6 +1268,22 @@ def _substituir_executor_audio() -> None:
         "Thread de áudio travada: executor substituído. Se o problema se repetir, "
         "reinicie o servidor (a thread antiga continua presa até lá)."
     )
+    _sinalizar_executor_substituido()
+
+
+def _sinalizar_executor_substituido() -> None:
+    """
+    Com o modo "saídas de som" em uso, a thread órfã pode estar dentro do pygame: o motor
+    fica CONTAMINADO (ninguém mexe no pygame; 503 motor_contaminado) até reiniciar. Sem
+    "saida_anuncio" e sem o motor ter sido usado, nada muda em relação à v2.2.1.
+    """
+    try:
+        som = SOM.config_som()
+        if SOM.motor_em_uso or (som is not None and som["saida_anuncio"] is not None):
+            SOM.marcar_contaminado()
+            log.error("Motor de áudio contaminado: reinicie o Proclamare.")
+    except Exception:  # noqa: BLE001 - nunca atrapalha a troca do executor
+        log.warning("Não foi possível marcar o motor de áudio como contaminado.", exc_info=True)
 
 
 def executar_no_audio(func: Callable[..., Any], *args: Any, timeout: float = TIMEOUT_AUDIO_S) -> Any:
@@ -1237,10 +1306,20 @@ def _garantir_mixer(reiniciar: bool = False) -> Any:
     """(Thread de áudio) Inicia o mixer uma vez; `reiniciar` descarta e recria."""
     import pygame
 
+    # Se o mixer ficou aberto pelo motor de "saídas de som" (teste ou anúncio anterior em
+    # outra saída), fecha: o caminho antigo SEMPRE usa o dispositivo padrão do Windows.
+    if SOM.motor_em_uso and SOM.motor.aberto:
+        SOM.motor.fechar()
+    if not SOM.motor_ok:
+        raise RuntimeError("motor de áudio contaminado")
     if reiniciar and pygame.mixer.get_init():
-        pygame.mixer.quit()
+        with som_pkg.bloqueio_sdl:   # a vigia lê a lista do SDL: o quit não pode correr junto
+            pygame.mixer.quit()
     if not pygame.mixer.get_init():
-        pygame.mixer.init()
+        # O lock evita que a varredura de saídas (som/local.py) esteja com o SDL de
+        # áudio inicializado (e SDL_AUDIODRIVER temporário) no mesmo instante.
+        with som_pkg.bloqueio_sdl:
+            pygame.mixer.init()
     return pygame
 
 
@@ -1280,7 +1359,7 @@ _ultima_limpeza = 0.0
 
 def limpar_audios_antigos(forcar: bool = False) -> None:
     """
-    Rede de segurança: mantém no máximo MAX_ARQUIVOS_TEMP mp3 na pasta
+    Rede de segurança: mantém no máximo MAX_ARQUIVOS_TEMP mp3/wav na pasta
     (normalmente cada mp3 já é apagado logo após tocar). Roda raramente.
     """
     global _ultima_limpeza
@@ -1289,7 +1368,7 @@ def limpar_audios_antigos(forcar: bool = False) -> None:
         return
     _ultima_limpeza = agora
     arquivos: list[tuple[float, Path]] = []
-    for p in AUDIO_DIR.glob("anuncio_*.mp3"):
+    for p in [*AUDIO_DIR.glob("anuncio_*.mp3"), *AUDIO_DIR.glob("anuncio_*.wav")]:
         try:
             arquivos.append((p.stat().st_mtime, p))
         except OSError:
@@ -1366,7 +1445,7 @@ def _falar_offline(texto: str, velocidade_wpm: int, voz_id: str | None) -> None:
         engine.setProperty("rate", velocidade_wpm)
         if voz_id:
             engine.setProperty("voice", voz_id)
-        engine.say(texto)
+        engine.say(texto_para_sapi(texto))   # sem XML/SSML do SAPI (<audio src>, <silence>)
         engine.runAndWait()
     finally:
         with contextlib.suppress(Exception):
@@ -2618,15 +2697,20 @@ _anuncio_lock = threading.Lock()  # um anúncio por vez (não bloqueante -> 409)
 
 
 @contextmanager
-def musica_abaixada() -> Iterator[None]:
-    """Abaixa Spotify + YouTube durante o bloco e SEMPRE restaura ao sair."""
-    volume_anterior = spotify_duck()
-    youtube_enqueue("duck")
+def musica_abaixada(spotify: bool = True, youtube: bool = True) -> Iterator[None]:
+    """
+    Abaixa Spotify + YouTube durante o bloco e SEMPRE restaura ao sair. `spotify` e
+    `youtube` (som.abaixar) desligam cada camada; os padrões mantêm o comportamento da v2.2.1.
+    """
+    volume_anterior = spotify_duck() if spotify else None
+    if youtube:
+        youtube_enqueue("duck")
     try:
         yield
     finally:
         spotify_restore(volume_anterior)
-        youtube_enqueue("restore")
+        if youtube:
+            youtube_enqueue("restore")
 
 
 def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
@@ -2679,16 +2763,30 @@ def announce() -> Response | tuple[Response, int]:
     if not _anuncio_lock.acquire(blocking=False):
         return _resp_erro("Já existe um anúncio tocando. Aguarde terminar.", 409)
     try:
+        # v2.3: com "saida_anuncio" configurada o anúncio vai para a saída escolhida.
+        # Sem a chave "som" (ou sem saída) o fluxo abaixo é o da v2.2.1, sem mudança.
+        som = SOM.config_som()
+        if not SOM.motor_ok:   # contaminado (executor trocado com o pygame preso): vale com ou sem "som"
+            raise ErroSom("O áudio do Proclamare travou. Reinicie o Proclamare.", 503, "motor_contaminado")
         internet_ok = tem_internet()
         if modo == "online" and not internet_ok:
             return _resp_erro("Sem internet — não é possível usar o motor online.", 503)
         usar_online = internet_ok and modo != "offline"
         log.info("Anúncio: %d caracteres, motor=%s, online=%s", len(texto), modo, usar_online)
+        extra: dict[str, Any] | None = None
         try:
-            engine_usado, aviso = _anunciar(
-                texto, modo, VOZES_ONLINE[chave_voz], velocidade,
-                data.get("offline_voice_id"), usar_online,
-            )
+            if som is not None and som["saida_anuncio"] is not None:
+                engine_usado, aviso, extra = _anunciar_na_saida(
+                    texto, modo, VOZES_ONLINE[chave_voz], velocidade,
+                    data.get("offline_voice_id"), usar_online, som,
+                )
+            else:
+                engine_usado, aviso = _anunciar(
+                    texto, modo, VOZES_ONLINE[chave_voz], velocidade,
+                    data.get("offline_voice_id"), usar_online,
+                )
+        except ErroSom:
+            raise  # 503 com "codigo" (sem saída, em uso exclusivo, motor contaminado)
         except Exception:  # noqa: BLE001
             log.exception("Falha ao reproduzir o anúncio.")
             return _resp_erro("Não foi possível reproduzir o anúncio.", 500)
@@ -2696,9 +2794,514 @@ def announce() -> Response | tuple[Response, int]:
         resposta: dict[str, Any] = {"ok": True, "engine_used": engine_usado}
         if aviso:
             resposta["warning"] = aviso
+        if extra:
+            resposta.update(extra)
         return jsonify(resposta)
     finally:
         _anuncio_lock.release()
+
+
+# ---------------------------------------------------------------------------
+# Saídas de som (contrato v2.3, F1 — parte que LÊ)
+# Todas as rotas /api/som/* exigem PIN para remotos (_exigir_sessao) e NENHUMA
+# está em API_PUBLICAS. As respostas vêm de som/modelo.py (visões com lista
+# branca): nunca devolvem endpoint_id, MAC, host, UUID nem segredos.
+# Os handlers só leem o cache do SomService; a varredura roda em outra thread.
+# ---------------------------------------------------------------------------
+MSG_SOMENTE_LOCAL = "Disponível só no PC do Proclamare"
+DESCOBRIR_MAX_POR_MIN = 6  # por IP
+
+
+class ErroSom(ErroApi):
+    """Erro de /api/som/*: além de "error" leva "erro" (contrato v2.3) e, se útil, "codigo"."""
+
+    def __init__(self, mensagem: str, status: int = 400, codigo: str | None = None) -> None:
+        super().__init__(mensagem, status)
+        self.codigo = codigo
+
+
+def _resp_erro_som(mensagem: str, status: int, codigo: str | None = None) -> tuple[Response, int]:
+    corpo: dict[str, Any] = {"ok": False, "error": mensagem, "erro": mensagem}
+    if codigo:
+        corpo["codigo"] = codigo
+    return jsonify(corpo), status
+
+
+@app.errorhandler(ErroSom)
+def _tratar_erro_som(e: ErroSom) -> tuple[Response, int]:
+    return _resp_erro_som(e.mensagem, e.status, e.codigo)
+
+
+@app.errorhandler(som_pkg.ErroEsquema)
+def _tratar_erro_esquema(e: som_pkg.ErroEsquema) -> tuple[Response, int]:
+    # A mensagem é montada por nós (nunca repete texto do cliente).
+    return _resp_erro_som(str(e) or "Requisição inválida.", 400)
+
+
+def somente_local(func: Callable[..., Any]) -> Callable[..., Any]:
+    """
+    Decorador (ponto único nº 1 da regra "somente local"): a rota inteira só atende o
+    PC do Proclamare, MESMO com PIN (403). O critério é _requisicao_local(); com
+    PROCLAMARE_CONFIAR_LOOPBACK=0 ninguém é local e a rota fica indisponível para todos.
+    """
+    @functools.wraps(func)
+    def envoltorio(*args: Any, **kwargs: Any) -> Any:
+        if not _requisicao_local():
+            return _resp_erro_som(MSG_SOMENTE_LOCAL, 403)
+        return func(*args, **kwargs)
+
+    return envoltorio
+
+
+def campos_somente_local(corpo_validado: dict, alvo: Any = None) -> None:
+    """
+    Ponto único nº 2: chamada DEPOIS de validar o esquema estrito e ANTES de qualquer
+    efeito. Se o corpo traz campos que só valem no PC do Proclamare (aprovar/usar BT,
+    rede, HDMI ou fone; se_indisponivel=padrao_windows; sessoes_locais; rede; microfone)
+    e a requisição não é local, responde 403. `alvo`: Saida da rota /saida (ou lista de
+    saídas nas zonas, F3). A regra em si mora em som_modelo.campos_locais_exigidos.
+    """
+    if som_modelo.campos_locais_exigidos(corpo_validado, alvo) and not _requisicao_local():
+        raise ErroSom(MSG_SOMENTE_LOCAL, 403)
+
+
+def _aparelhos_spotify_para_som() -> list[dict] | None:
+    """Fonte da descoberta "spotify": aparelhos Connect da conta (None = sem token/sem rede)."""
+    dados, status = spotify_api("GET", "/me/player/devices")
+    if status != 200:
+        return None
+    return [
+        {"id": d.get("id"), "name": d.get("name"), "type": d.get("type"),
+         "volume_percent": d.get("volume_percent"), "is_restricted": bool(d.get("is_restricted"))}
+        for d in (dados.get("devices") or []) if isinstance(d, dict) and d.get("id")
+    ]
+
+
+# O serviço é criado já, mas só liga a varredura em main() (SOM.iniciar()).
+# Armazém = o MESMO _config_lock/load_config/_gravar_config_atomico do servidor,
+# para o read-modify-write da chave "som" ser atômico com o resto do config.
+SOM = som_pkg.SomService(
+    armazem=som_pkg.Armazem(lock=_config_lock, carregar=load_config, salvar=save_config),
+    fonte_spotify=_aparelhos_spotify_para_som,
+    motor=som_pkg.MotorAudio(teto_reproducao_s=TIMEOUT_REPRODUCAO_S),
+)
+
+
+@app.get("/api/som/estado")
+def som_estado() -> Response:
+    """Estado para o tile (poll de 10 s). Só lê o cache."""
+    return jsonify(SOM.estado_publico(anuncio_em_andamento=_anuncio_lock.locked()))
+
+
+@app.get("/api/som/saidas")
+def som_saidas() -> Response:
+    """Lista de saídas (poll de 1 s só com o assistente aberto). Só lê o cache + config."""
+    return jsonify(SOM.saidas_publicas(remoto=not _requisicao_local()))
+
+
+@app.post("/api/som/descobrir")
+def som_descobrir() -> tuple[Response, int]:
+    """Dispara a varredura em segundo plano (202). Ordem: 400, 403, 503, 429, 409."""
+    tipos = som_modelo.validar_descobrir(corpo_json())  # 400: tipo fora da lista ou "rede" (F5)
+    campos_somente_local({"tipos": tipos})
+    if not SOM.disponivel:
+        raise ErroSom("Saídas de som indisponíveis neste computador.", 503, "indisponivel")
+    ip = request.remote_addr or "?"
+    if excedeu_limite(f"descobrir:{ip}", DESCOBRIR_MAX_POR_MIN, 60.0):
+        resp, status = _resp_erro_som("Muitas buscas seguidas. Aguarde um minuto.", 429)
+        resp.headers["Retry-After"] = "10"
+        return resp, status
+    try:
+        varredura = SOM.iniciar_varredura(tipos)
+    except som_pkg.VarreduraEmAndamento:
+        raise ErroSom("Já existe uma busca em andamento.", 409, "varredura_em_andamento") from None
+    except som_pkg.SomIndisponivel:
+        raise ErroSom("Saídas de som indisponíveis neste computador.", 503, "indisponivel") from None
+    log.info("Busca de saídas de som iniciada (%s).", ",".join(tipos))
+    return jsonify({"ok": True, "varredura": varredura}), 202
+
+
+# ---------------------------------------------------------------------------
+# Saídas de som — reprodução e rotas que ESCREVEM (contrato v2.3, F1 etapa 2)
+# O áudio roda SEMPRE na thread de áudio (executar_no_audio). A saída é resolvida e
+# ABERTA antes de abaixar a música; o finally de musica_abaixada() restaura sempre.
+# ---------------------------------------------------------------------------
+auditoria = logging.getLogger("proclamare.som.auditoria")  # quem mudou o quê (sem segredo, sem ref)
+TESTAR_MAX_POR_MIN = 3             # por IP
+TESTAR_GLOBAL_MAX = 10             # na loja toda...
+TESTAR_GLOBAL_JANELA_S = 600.0     # ...a cada 10 minutos
+ESCRITA_SOM_MAX_POR_MIN = 30       # POST /saida e /preferencias, por IP
+SOM_ABRIR_TIMEOUT_S = 30.0         # teto para resolver + abrir o dispositivo
+
+
+def _id_sessao() -> str:
+    """
+    Identificador da sessão do cliente para `testes_recentes` ("a MESMA sessão"). O PC da
+    loja é "local"; aparelho remoto = hash do momento do login (`iat`, que as renovações
+    do cookie preservam) + IP. Nunca o cookie. Estas rotas já exigem sessão válida.
+    """
+    if _requisicao_local():
+        return "local"
+    carga = _carga_token(request.cookies.get(COOKIE_SESSAO), load_config())
+    if carga is None:
+        return ""
+    base = f"{carga[1]!r}|{request.remote_addr}"
+    return "r:" + hashlib.sha256(base.encode("utf-8")).hexdigest()[:16]
+
+
+def _resp_429_som(mensagem: str, espera_s: int) -> tuple[Response, int]:
+    resp, status = _resp_erro_som(mensagem, 429)
+    resp.headers["Retry-After"] = str(espera_s)
+    return resp, status
+
+
+def _rotulo_saida(sid: str | None, som: dict) -> str:
+    """Apelido (texto humano) ou rótulo genérico do tipo; nunca o nome do sistema."""
+    if sid is None:
+        return "Padrão do Windows"
+    entrada = som["saidas"].get(sid) or {}
+    if entrada.get("apelido"):
+        return str(entrada["apelido"])
+    saida = SOM.obter_saida(sid)
+    return som_modelo.rotulo_do_subtipo(saida.subtipo if saida else entrada.get("subtipo"))
+
+
+def _musica_abaixada_som(som: dict, ativo: bool = True) -> Any:
+    """`musica_abaixada()` conforme som.abaixar (spotify_api/youtube); sem abaixar se `ativo` é falso."""
+    if not ativo:
+        return contextlib.nullcontext()
+    return musica_abaixada(spotify=som["abaixar"]["spotify_api"], youtube=som["abaixar"]["youtube"])
+
+
+# --- funções que rodam NA THREAD DE ÁUDIO ------------------------------------------
+def _som_abrir_saida(candidatas: list[Any]) -> Any:
+    """(Thread de áudio) Resolve o devicename na hora e abre a 1ª candidata que funcionar."""
+    return SOM.motor.abrir_primeira(candidatas, SOM.resolver_devicename, SOM.classificar_falha)
+
+
+def _som_sintetizar(texto: str, voz_id: str | None, destino: Path) -> Path:
+    """(Thread de áudio) Voz offline para WAV (pyttsx3.save_to_file); quem toca é o motor."""
+    return SOM.motor.sintetizar(texto, VELOCIDADE_OFFLINE_WPM, voz_id, destino)
+
+
+def _som_medir(caminhos: list[Path]) -> list[float | None]:
+    """(Thread de áudio) Durações dos arquivos, medidas ANTES de abaixar a música (mp3 é decodificado)."""
+    return [SOM.motor.medir(c) for c in caminhos]
+
+
+def _som_tocar(caminhos: list[Path], duracoes: list[float | None] | None = None) -> float:
+    """(Thread de áudio) Toca os arquivos em sequência com o vigia de progresso; devolve segundos."""
+    motor = SOM.motor
+    prazo = motor.agora() + TIMEOUT_AUDIO_S - 5.0   # sempre antes do teto do executor
+    medidas = duracoes if duracoes and len(duracoes) == len(caminhos) else [None] * len(caminhos)
+    return sum(motor.tocar(c, prazo=prazo, duracao=d) for c, d in zip(caminhos, medidas))
+
+
+def _abrir_saida_som(candidatas: list[Any]) -> Any:
+    """Abre a saída ANTES de abaixar a música; falha vira 503 com "codigo" (nada foi tocado)."""
+    try:
+        return executar_no_audio(_som_abrir_saida, candidatas, timeout=SOM_ABRIR_TIMEOUT_S)
+    except som_pkg.SaidaIndisponivel as exc:
+        raise ErroSom(exc.mensagem, 503, exc.codigo) from None
+    except TimeoutError:
+        codigo = "ausente" if SOM.motor_ok else "motor_contaminado"
+        raise ErroSom("A saída de som não respondeu.", 503, codigo) from None
+
+
+def _anunciar_na_saida(texto: str, modo: str, voz_online: str, velocidade: int,
+                       voz_offline_id: Any, usar_online: bool, som: dict) -> tuple[str, str | None, dict]:
+    """
+    Anúncio na saída configurada (v2.3). Devolve (engine_used, warning, extra da resposta).
+    Ordem: gera o áudio (música ainda alta) -> resolve e ABRE a saída -> só então abaixa a
+    música -> toca -> restaura (finally). Voz offline: pyttsx3 -> WAV -> o mesmo motor.
+    Sem saída utilizável: ErroSom 503 com "codigo" e a música nem chega a ser abaixada.
+    """
+    aviso: str | None = None
+    caminho: Path | None = None
+    try:
+        if usar_online:
+            try:
+                caminho = gerar_audio_online(texto, voz_online, velocidade)
+            except Exception:  # noqa: BLE001
+                log.exception("Falha no motor online de voz.")
+                _invalidar_cache_internet()
+                if modo != "auto":
+                    raise
+                aviso = "O motor online falhou; foi usado o motor offline."
+        engine = "online" if caminho is not None else ("offline_fallback" if aviso else "offline")
+        usada = _abrir_saida_som(SOM.candidatas_anuncio(som))   # ANTES de abaixar a música
+        if caminho is None:
+            caminho = AUDIO_DIR / f"anuncio_{uuid.uuid4().hex}.wav"
+            executar_no_audio(_som_sintetizar, texto, resolver_voz_offline(voz_offline_id), caminho)
+        sid_medicao = usada.sid if usada.sid is not None else SOM.padrao_sid()
+        duracoes = executar_no_audio(_som_medir, [caminho])   # fora da janela com a música baixa
+        with SOM.medir_sinal(sid_medicao) as medida, _musica_abaixada_som(som):
+            executar_no_audio(_som_tocar, [caminho], duracoes)
+        sinal = medida.resultado
+    finally:
+        apagar_audio(caminho)  # mp3 ou wav; no-op se já foi
+    SOM.registrar_sinal(sinal)
+    rotulo = _rotulo_saida(usada.sid, som)
+    extra: dict[str, Any] = {
+        "saidas_usadas": [{"zona_id": "loja", "apelido": rotulo, "resultado": "tocado"}],
+        "parcial": False,
+        "sinal_detectado": sinal,
+    }
+    if usada.sid != som["saida_anuncio"]:
+        extra["aviso"] = f"A saída dos anúncios não estava disponível; o anúncio saiu em: {rotulo}."
+        log.warning("Anúncio desviado para outra saída aprovada (fallback %s).", som["se_indisponivel"])
+    return engine, aviso, extra
+
+
+# --- POST /api/som/testar -------------------------------------------------------------
+def _voz_offline_do_teste() -> str | None:
+    """Voz offline padrão (pt-BR se houver) para a frase do teste; None = voz do sistema."""
+    try:
+        vozes = obter_vozes_offline()
+    except Exception:  # noqa: BLE001
+        return None
+    return vozes["default"] if vozes else None
+
+
+def _executar_teste(sid: str, corpo: dict, ip: str) -> tuple[Response, int] | Response:
+    """(Com _anuncio_lock) Abre a saída, toca bipe + frase e mede o sinal da sessão própria."""
+    som = SOM.config_som() or som_modelo.som_padrao()
+    if not SOM.motor_ok:
+        raise ErroSom("O áudio do Proclamare travou. Reinicie o Proclamare.", 503, "motor_contaminado")
+    entrada = som["saidas"].get(sid) or {}
+    estado = som_modelo.estado_da_saida(SOM.obter_saida(sid))
+    if estado == "em_uso_exclusivo":
+        raise ErroSom("Outro programa está usando esta saída em modo exclusivo.", 503, "em_uso_exclusivo")
+    if estado in ("ausente", "desconectada", "nao_suportada"):
+        raise ErroSom("Esta saída não está disponível agora.", 503, "ausente")
+    abaixar = corpo.get("abaixar_musica")
+    if abaixar is None:
+        abaixar = som["teste"]["abaixar_musica_local" if _requisicao_local() else "abaixar_musica_remoto"]
+    frase = frase_de_teste(entrada.get("apelido"), SOM.numero_da_saida(sid))
+    arquivos: list[Path] = []
+    try:
+        _abrir_saida_som([som_pkg.Candidata(sid, entrada.get("apelido"))])
+        bipe = AUDIO_DIR / f"anuncio_{uuid.uuid4().hex}.wav"
+        arquivos.append(bipe)
+        gerar_bipe(bipe)
+        tocar: list[Path] = [bipe]
+        fala = AUDIO_DIR / f"anuncio_{uuid.uuid4().hex}.wav"
+        arquivos.append(fala)
+        try:
+            executar_no_audio(_som_sintetizar, frase, _voz_offline_do_teste(), fala)
+            tocar.append(fala)
+        except TimeoutError:   # síntese presa: o executor foi trocado; não segue tocando
+            raise ErroSom("O áudio do Proclamare não respondeu.", 503,
+                          "ausente" if SOM.motor_ok else "motor_contaminado") from None
+        except Exception:  # noqa: BLE001 - sem voz offline: o bipe sozinho já testa a saída
+            log.warning("Voz offline indisponível no teste; tocando só o bipe.")
+        with SOM.medir_sinal(sid) as medida, _musica_abaixada_som(som, bool(abaixar)):
+            segundos = executar_no_audio(_som_tocar, tocar)
+    except som_pkg.ErroReproducao as exc:
+        raise ErroSom(str(exc), 503, "ausente") from None
+    except som_pkg.SaidaIndisponivel as exc:   # ex.: motor contaminado no meio do teste
+        raise ErroSom(exc.mensagem, 503, exc.codigo) from None
+    finally:
+        for arquivo in arquivos:
+            apagar_audio(arquivo)
+        # O teste NUNCA muda por onde os anúncios saem: se a saída testada não é a dos anúncios
+        # (ou não há saída de anúncio), solta o dispositivo para o fluxo antigo/outra saída
+        # não herdarem o mixer aberto no HDMI/fone/BT testado.
+        if sid != som.get("saida_anuncio") and SOM.motor_em_uso and SOM.motor_ok:
+            try:
+                executar_no_audio(SOM.motor.fechar, timeout=10.0)
+            except Exception:  # noqa: BLE001
+                log.warning("Não foi possível soltar a saída testada.", exc_info=True)
+    SOM.registrar_teste(_id_sessao(), sid)
+    auditoria.info("acao=testar ip=%s sid=%s sinal=%s", ip, sid, medida.resultado)
+    return jsonify({"ok": True, "duracao_ms": int(round(segundos * 1000)), "sinal_detectado": medida.resultado})
+
+
+@app.post("/api/som/testar")
+def som_testar() -> tuple[Response, int] | Response:
+    """
+    Bipe + "Teste do Proclamare: <apelido ou 'saída N'>" numa saída. Permitido a remotos
+    com PIN, de propósito. Ordem: 400, 404, 503 (indisponível), 429, 409, 503 (saída).
+    """
+    corpo = som_modelo.validar_testar(corpo_json())               # 400
+    sid = corpo["sid"]
+    if not SOM.sid_conhecido(sid):
+        raise ErroSom("Saída não encontrada.", 404)               # 404: só vale sid que já existe
+    saida = SOM.obter_saida(sid)
+    if saida is not None and saida.tipo == "spotify_connect":
+        raise ErroSom("Aparelhos do Spotify não recebem teste de anúncio.", 400)
+    if not SOM.disponivel:
+        raise ErroSom("Saídas de som indisponíveis neste computador.", 503, "indisponivel")
+    ip = request.remote_addr or "?"
+    if (excedeu_limite(f"testar:{ip}", TESTAR_MAX_POR_MIN, 60.0)
+            or excedeu_limite("testar:global", TESTAR_GLOBAL_MAX, TESTAR_GLOBAL_JANELA_S)):
+        return _resp_429_som("Muitos testes seguidos. Aguarde um pouco.", 20)
+    if not _anuncio_lock.acquire(blocking=False):                 # 409: anúncio ou outro teste
+        raise ErroSom("Já existe um anúncio ou teste tocando. Aguarde terminar.", 409)
+    try:
+        return _executar_teste(sid, corpo, ip)
+    finally:
+        _anuncio_lock.release()
+
+
+# --- POST /api/som/saida --------------------------------------------------------------
+def _fechar_mixer_som() -> None:
+    """A saída dos anúncios foi esquecida: solta o dispositivo aberto pelo motor."""
+    try:
+        executar_no_audio(SOM.motor.fechar, timeout=10.0)
+    except Exception:  # noqa: BLE001
+        log.warning("Não foi possível fechar o mixer ao esquecer a saída.", exc_info=True)
+
+
+def _adotar_nova_ref(som: dict, sid_novo: str, nova: Any, origem: str, agora: str) -> None:
+    """
+    `aceitar_nova_ref`: a saída NOVA (sid_novo, já descoberta) assume o lugar da saída
+    aprovada que sumiu (a dos anúncios, ou a única candidata do mesmo tipo). A referência
+    antiga some do config; apelido e perfil do rack passam para a nova, que precisa ser
+    testada de novo (confirmada_em volta a nulo). Nunca é automático.
+    """
+    if nova is None or nova.estado_dispositivo != "disponivel":
+        raise ErroSom("A saída nova não está disponível agora.", 400, "ausente")
+    if sid_novo in som["saidas"]:
+        raise ErroSom("Esta saída já está cadastrada.", 400)
+    cache = SOM.instantaneo()
+    candidatos = [
+        s for s, e in som["saidas"].items()
+        if e.get("aprovada") and e.get("tipo") == nova.tipo and e.get("subtipo") == nova.subtipo
+        and (cache.get(s) is None or cache[s].estado_dispositivo == "ausente")
+    ]
+    if som["saida_anuncio"] in candidatos:
+        velho = som["saida_anuncio"]
+    elif len(candidatos) == 1:
+        velho = candidatos[0]
+    else:
+        raise ErroSom("Não há uma saída aprovada ausente para substituir.", 400, "nada_a_adotar")
+    antiga = som["saidas"].pop(velho)
+    entrada = som_modelo.entrada_de_saida(nova, agora)
+    entrada.update(apelido=antiga.get("apelido"), rack=antiga.get("rack") or entrada["rack"],
+                   aprovada=True, aprovada_por=origem)
+    som["saidas"][sid_novo] = entrada
+    if som["saida_anuncio"] == velho:
+        som["saida_anuncio"] = sid_novo
+        som["padrao_referencia"] = SOM.padrao_sid()
+
+
+@app.post("/api/som/saida")
+def som_saida() -> tuple[Response, int] | Response:
+    """
+    Nomear, aprovar, confirmar, esquecer ou usar uma saída para os anúncios. Não toca som.
+    Ordem: 400, 404, 403 (campos só locais), 429, 412 (teste recente), 409 (anúncio
+    tocando), efeito. Troca REMOTA do destino: teste + "ouviu" da mesma sessão, auditoria e alerta.
+    """
+    corpo = som_modelo.validar_saida(corpo_json())                # 400
+    sid = corpo["sid"]
+    ip = request.remote_addr or "?"
+    saida = SOM.obter_saida(sid)
+    som_atual = SOM.config_som()
+    entrada_atual = ((som_atual or {}).get("saidas") or {}).get(sid)
+    if saida is None and entrada_atual is None:
+        raise ErroSom("Saída não encontrada.", 404)               # 404: só vale sid que já existe
+    if saida is not None and saida.tipo == "spotify_connect":
+        raise ErroSom("Aparelhos do Spotify não são saídas de anúncio.", 400)
+    alvo = saida if saida is not None else entrada_atual
+    campos_somente_local(corpo, alvo)                             # 403, antes de qualquer efeito
+    local = _requisicao_local()
+    anuncio_atual = (som_atual or {}).get("saida_anuncio")
+    if corpo.get("esquecer") and not local and (som_modelo.alvo_exige_local(alvo) or sid == anuncio_atual):
+        raise ErroSom(MSG_SOMENTE_LOCAL, 403)
+    if excedeu_limite(f"escrita-som:{ip}", ESCRITA_SOM_MAX_POR_MIN, 60.0):
+        return _resp_429_som("Muitas alterações seguidas. Aguarde um minuto.", 10)
+    sessao = _id_sessao()
+    recente, ouviu = SOM.teste_recente(sessao, sid)
+    if corpo.get("confirmada") and not recente:
+        raise ErroSom("Teste esta saída e confirme que ouviu antes de usá-la.", 412, "teste_necessario")
+    troca = bool(corpo.get("usar_para_anuncios") or corpo.get("aceitar_nova_ref"))
+    if not local and (troca or corpo.get("aprovada") is True) and not (
+            recente and (ouviu or corpo.get("confirmada"))):
+        raise ErroSom("Teste esta saída e confirme que ouviu antes de usá-la.", 412, "teste_necessario")
+    muda_destino = troca or (sid == anuncio_atual and (bool(corpo.get("esquecer")) or corpo.get("aprovada") is False))
+    if muda_destino and not _anuncio_lock.acquire(blocking=False):
+        raise ErroSom("Já existe um anúncio tocando. Aguarde terminar para trocar a saída.", 409)
+    origem = "local" if local else "remoto"
+    agora = datetime.now().astimezone().isoformat(timespec="seconds")
+
+    def mutador(som: dict) -> None:
+        saidas = som["saidas"]
+        if corpo.get("esquecer"):
+            saidas.pop(sid, None)
+            if som["saida_anuncio"] == sid:
+                som["saida_anuncio"] = None
+            return
+        if corpo.get("aceitar_nova_ref"):
+            _adotar_nova_ref(som, sid, saida, origem, agora)
+        entrada = saidas.get(sid)
+        if entrada is None:
+            if saida is None:
+                raise ErroSom("Saída não encontrada.", 404)
+            if len(saidas) >= som_modelo.MAX_SAIDAS:
+                raise ErroSom("Limite de saídas guardadas atingido.", 400)
+            entrada = saidas[sid] = som_modelo.entrada_de_saida(saida, agora)
+        if "apelido" in corpo:
+            entrada["apelido"] = corpo["apelido"]
+        if "rack" in corpo:
+            entrada["rack"].update(corpo["rack"])
+        if "aprovada" in corpo:
+            if not corpo["aprovada"] and som["saida_anuncio"] == sid:
+                raise ErroSom("Esta é a saída dos anúncios; escolha outra antes de desaprovar.", 400, "saida_em_uso")
+            entrada["aprovada"] = corpo["aprovada"]
+            entrada["aprovada_por"] = origem if corpo["aprovada"] else None
+        if corpo.get("confirmada"):
+            entrada["confirmada_em"] = agora
+        if corpo.get("usar_para_anuncios"):
+            if saida is not None and saida.estado_dispositivo == "nao_suportada":
+                raise ErroSom("O Proclamare não consegue tocar nesta saída.", 400, "nao_suportada")
+            entrada["aprovada"] = True
+            entrada["aprovada_por"] = origem
+            som["saida_anuncio"] = sid
+            som["padrao_referencia"] = SOM.padrao_sid()
+
+    try:
+        SOM.atualizar_config(mutador)
+    finally:
+        if muda_destino:
+            _anuncio_lock.release()
+    if corpo.get("confirmada"):
+        SOM.marcar_ouviu(sessao, sid)
+    if muda_destino:
+        SOM.dispositivos_mudaram()                                # recria o stream no próximo uso
+        if corpo.get("esquecer") and sid == anuncio_atual and SOM.motor_em_uso:
+            _fechar_mixer_som()
+    if troca:
+        if local:
+            SOM.limpar_alerta("saida_alterada_remoto")
+        else:
+            SOM.definir_alerta("saida_alterada_remoto", f"Saída de anúncio alterada por aparelho remoto (IP {ip}).")
+    elif not local and ("aprovada" in corpo or (corpo.get("esquecer") and (entrada_atual or {}).get("aprovada"))):
+        # aprovar/desaprovar/esquecer uma saída aprovada mexe nas reservas do fallback: avisa no tile
+        SOM.definir_alerta("saida_alterada_remoto", f"Saídas aprovadas alteradas por aparelho remoto (IP {ip}).")
+    auditoria.info("acao=saida ip=%s sid=%s origem=%s campos=%s", ip, sid, origem,
+                   ",".join(sorted(k for k in corpo if k != "sid")))
+    visoes = SOM.saidas_publicas(remoto=not local)["saidas"]
+    return jsonify({"ok": True, "saida": next((v for v in visoes if v["sid"] == sid), None)})
+
+
+# --- POST /api/som/preferencias --------------------------------------------------------
+@app.post("/api/som/preferencias")
+def som_preferencias() -> tuple[Response, int] | Response:
+    """Merge parcial das preferências da F1 (esquema estrito). Ordem: 400, 403, 429, efeito."""
+    corpo = som_modelo.validar_preferencias(corpo_json())         # 400 (inclui chaves das fases F2+)
+    campos_somente_local(corpo)                                   # 403: se_indisponivel=padrao_windows
+    ip = request.remote_addr or "?"
+    if excedeu_limite(f"escrita-som:{ip}", ESCRITA_SOM_MAX_POR_MIN, 60.0):
+        return _resp_429_som("Muitas alterações seguidas. Aguarde um minuto.", 10)
+    som = SOM.atualizar_config(lambda s: som_modelo.aplicar_preferencias(s, corpo))
+    if not _requisicao_local() and (
+            "se_indisponivel" in corpo or "ativo" in (corpo.get("monitor") or {})):
+        # fallback e monitor decidem se uma falha aparece: mudança remota fica visível no tile
+        SOM.definir_alerta("saida_alterada_remoto", f"Preferências de saída alteradas por aparelho remoto (IP {ip}).")
+    auditoria.info("acao=preferencias ip=%s origem=%s campos=%s", ip,
+                   "local" if _requisicao_local() else "remoto", ",".join(sorted(corpo)))
+    return jsonify({"ok": True, "preferencias": som_modelo.visao_preferencias(som)})
 
 
 # ---------------------------------------------------------------------------
@@ -2919,6 +3522,8 @@ def main() -> None:
         sys.exit(1)
 
     _instalar_encerramento()
+    atexit.register(SOM.parar)
+    SOM.iniciar()  # primeira varredura LOCAL em segundo plano (só lê; não toca som)
     caminho_pid = _caminho_pid_file()
     if caminho_pid is not None and not _gravar_pid_file(caminho_pid, PORT):
         log.error("Seguindo sem arquivo de PID (já registrado acima); o lançador pode não "
@@ -2928,6 +3533,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        SOM.parar()  # desregistra o callback do Windows (também registrado no atexit)
         _remover_pid_file()
 
 

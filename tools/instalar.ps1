@@ -1,13 +1,20 @@
 ﻿<#
 .SYNOPSIS
     Instala (ou desinstala) o Proclamare no Windows: ambiente Python, atalhos e inicio com o Windows.
+    Requer Python 3.10 ou mais novo (lock de dependencias testado em 3.10 a 3.13).
+    As dependencias vem de requirements.lock com verificacao de hashes; se pip-audit estiver
+    disponivel, a auditoria de vulnerabilidades roda em MODO AVISO (nunca bloqueia a instalacao).
 
 .PARAMETER PastaAtalhos
     (Teste/automacao) Cria/remove TODOS os atalhos nesta pasta em vez de Area de Trabalho,
     Menu Iniciar e Inicializar.
 
 .PARAMETER SemDependencias
-    Pula a criacao do .venv e o pip install; usa o Python atual encontrado.
+    Pula a criacao do .venv, o pip install e a auditoria; usa o Python atual encontrado.
+
+.PARAMETER PermitirSemHashes
+    So se requirements.lock estiver faltando: aceita instalar pelo requirements.txt SEM verificacao
+    de hashes (menos seguro). Sem este parametro, a instalacao para e pede o projeto completo.
 
 .PARAMETER IniciarComWindows
     Cria o atalho de inicializacao sem perguntar.
@@ -22,6 +29,7 @@
 param(
     [string]$PastaAtalhos = '',
     [switch]$SemDependencias,
+    [switch]$PermitirSemHashes,
     [switch]$IniciarComWindows,
     [switch]$NaoIniciarComWindows,
     [switch]$Desinstalar
@@ -35,6 +43,8 @@ $Raiz = Split-Path -Parent $PSScriptRoot
 $Pyw = Join-Path $Raiz 'Proclamare.pyw'
 $Icone = Join-Path $Raiz 'assets\proclamare.ico'
 $Requisitos = Join-Path $Raiz 'requirements.txt'
+# Dependencias travadas com hashes (pip --require-hashes). Se faltar, cai no requirements.txt com aviso.
+$TravaHashes = Join-Path $Raiz 'requirements.lock'
 $Script = Join-Path $Raiz 'tools\instalar.ps1'
 $PowerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
@@ -184,11 +194,15 @@ if ($pastasPerigo.Count -gt 0) {
 }
 
 # ---- 1. Python ---------------------------------------------------------
-# Testa um interpretador; devolve @{ Caminho; Versao } se for 3.9+ e nao for o alias da Store.
+# Testa um interpretador; devolve @{ Caminho; Versao } se for 3.10+ e nao for o alias da Store.
 function Testar-Python([string]$Exe, [string[]]$Argumentos) {
     try {
         # aspas simples dentro do codigo: o PowerShell 5.1 perde aspas duplas ao chamar programas nativos
-        $codigo = "import sys; print(sys.executable + '|' + '%d.%d.%d' % sys.version_info[:3]) if sys.version_info >= (3, 9) else sys.exit(3)"
+        # Com o lock (hashes), so as versoes em que ele foi testado: 3.10 a 3.13. Em Python mais novo
+        # (ex.: 3.14) o pygame nao tem wheel e o pip compilaria o codigo-fonte, com dependencias de
+        # build SEM verificacao de hash.
+        $limite = if (Test-Path -LiteralPath $TravaHashes) { '(3, 14)' } else { '(99, 0)' }
+        $codigo = "import sys; print(sys.executable + '|' + '%d.%d.%d' % sys.version_info[:3]) if (3, 10) <= sys.version_info[:2] < $limite else sys.exit(3)"
         $saida = & $Exe @Argumentos -c $codigo 2>$null
         if ($LASTEXITCODE -eq 0 -and $saida) {
             $partes = ($saida | Select-Object -Last 1).ToString().Trim().Split('|')
@@ -202,7 +216,7 @@ function Testar-Python([string]$Exe, [string[]]$Argumentos) {
 
 function Achar-Python {
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        foreach ($v in @('-3.12', '-3.11', '-3.13', '-3')) {
+        foreach ($v in @('-3.12', '-3.11', '-3.13', '-3.10', '-3')) {
             $p = Testar-Python 'py' @($v)
             if ($p) { return $p }
         }
@@ -215,15 +229,70 @@ function Achar-Python {
     return $null
 }
 
-Escrever-Passo 'Procurando o Python 3.9 ou mais novo...'
+Escrever-Passo 'Procurando o Python 3.10 ou mais novo...'
 $py = Achar-Python
 if (-not $py) {
-    Falhar ("Python 3.9+ não encontrado.`n" +
-        "    Baixe em https://www.python.org/downloads/ e, na primeira tela do instalador,`n" +
+    Falhar ("Python 3.10 a 3.13 não encontrado (com o requirements.lock o Proclamare aceita 3.10 a 3.13).`n" +
+        "    Instale o Python 3.12 em https://www.python.org/downloads/ e, na primeira tela do instalador,`n" +
         "    MARQUE a opção 'Add python.exe to PATH'. Depois execute este instalador de novo.")
 }
 $python = $py.Caminho
 Escrever-Ok "$python (Python $($py.Versao))"
+
+# ---- Auditoria de vulnerabilidades (MODO AVISO) ------------------------
+# Procura o pip-audit (comando no PATH ou modulo do Python escolhido). Nao instala nada:
+# so roda se o usuario ja o tiver. Devolve @{ Exe; Args } ou $null.
+function Achar-PipAudit([string]$PythonBase) {
+    $cmd = Get-Command pip-audit -ErrorAction SilentlyContinue
+    if ($cmd) { return @{ Exe = $cmd.Source; Args = @() } }
+    try {
+        & $PythonBase -I -m pip_audit --version *> $null
+        if ($LASTEXITCODE -eq 0) { return @{ Exe = $PythonBase; Args = @('-I', '-m', 'pip_audit') } }
+    } catch { }
+    return $null
+}
+
+# Roda o pip-audit sobre o lock, com limite de 2 minutos. NUNCA falha a instalacao:
+# qualquer problema (sem internet, achados, tempo esgotado) vira so um aviso.
+function Auditar-Dependencias([string]$PythonBase, [string]$Lock) {
+    $audit = Achar-PipAudit $PythonBase
+    if (-not $audit) {
+        Write-Host ("    pip-audit não encontrado (opcional): a verificação de vulnerabilidades foi pulada.`n" +
+            "    Para ativá-la, instale-o FORA do ambiente do Proclamare (ex.: py -m pip install --user pip-audit)`n" +
+            "    e rode o instalador de novo.")
+        return
+    }
+    Escrever-Passo 'Verificando vulnerabilidades conhecidas nas dependências (pip-audit, só aviso)...'
+    $saida = Join-Path ([System.IO.Path]::GetTempPath()) ('proclamare-audit-' + [guid]::NewGuid().ToString('N') + '.txt')
+    try {
+        # --no-deps --disable-pip: usa só as versões fixadas do lock (não resolve nem instala nada)
+        $argumentos = @($audit.Args) + @('-r', $Lock, '--no-deps', '--disable-pip', '--progress-spinner', 'off')
+        $proc = Start-Process -FilePath $audit.Exe -ArgumentList ($argumentos | ForEach-Object { '"' + $_ + '"' }) `
+            -NoNewWindow -PassThru -RedirectStandardOutput $saida -RedirectStandardError ($saida + '.err')
+        $null = $proc.Handle   # guarda o handle: sem isto o ExitCode vem vazio no Windows PowerShell 5.1
+        if (-not $proc.WaitForExit(120000)) {
+            try { $proc.Kill() } catch { }
+            Write-Host '    AVISO: a verificação demorou demais e foi cancelada (a instalação segue normalmente).' -ForegroundColor Yellow
+            return
+        }
+        $proc.WaitForExit()
+        $texto = ''
+        foreach ($arq in @($saida, ($saida + '.err'))) {
+            if (Test-Path -LiteralPath $arq) { $texto += (Get-Content -LiteralPath $arq -Raw -ErrorAction SilentlyContinue) }
+        }
+        if ($proc.ExitCode -eq 0) {
+            Escrever-Ok 'nenhuma vulnerabilidade conhecida nas versões fixadas.'
+        } else {
+            Write-Host '    AVISO: o pip-audit apontou algo (ou não conseguiu consultar a internet). A instalação NÃO foi bloqueada:' -ForegroundColor Yellow
+            if ($texto) { Write-Host $texto }
+            Write-Host '    Se houver vulnerabilidades, atualize o Proclamare quando sair uma versão nova.' -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host '    AVISO: não foi possível rodar o pip-audit; seguindo sem ele.' -ForegroundColor Yellow
+    } finally {
+        Remove-Item -LiteralPath $saida, ($saida + '.err') -Force -ErrorAction SilentlyContinue
+    }
+}
 
 # ---- 2. Ambiente virtual e dependencias --------------------------------
 if ($SemDependencias) {
@@ -255,17 +324,43 @@ if ($SemDependencias) {
             Falhar "Não foi possível criar o ambiente .venv com o Python $($py.Versao)."
         }
     }
-    Escrever-Passo 'Instalando as dependências (precisa de internet)...'
+    # Preferido: requirements.lock com hashes (cada arquivo baixado e conferido; versoes fixas).
+    $usaLock = Test-Path -LiteralPath $TravaHashes
+    if ($usaLock) {
+        Escrever-Passo 'Instalando as dependências com verificação de hashes (precisa de internet)...'
+        # --only-binary: nunca compila codigo-fonte (dependencias de build nao tem hash);
+        # --no-deps: o lock e fechado, o pip nao resolve nada fora dele.
+        $argsPip = @('-I', '-m', 'pip', 'install', '--require-hashes', '--only-binary', ':all:', '--no-deps', '-r', $TravaHashes)
+    } else {
+        if (-not $PermitirSemHashes) {
+            Falhar ("Não encontrei o requirements.lock em $TravaHashes.`n" +
+                "    Baixe o projeto completo de novo (ele traz o requirements.lock com as verificações de segurança).`n" +
+                '    Para instalar mesmo assim, SEM verificação de hashes (menos seguro), rode com -PermitirSemHashes.')
+        }
+        Write-Host ("`nAVISO: não encontrei o requirements.lock em $TravaHashes.`n" +
+            '       Vou instalar pelo requirements.txt, SEM verificação de hashes (menos seguro).' +
+            "`n       Baixe o projeto completo de novo para ter o requirements.lock.") -ForegroundColor Yellow
+        Escrever-Passo 'Instalando as dependências SEM verificação de hashes (precisa de internet)...'
+        $argsPip = @('-I', '-m', 'pip', 'install', '-r', $Requisitos)
+    }
     $ErrorActionPreference = 'Continue'   # avisos do pip no stderr não devem abortar
-    & $venvPython -I -m pip install -r $Requisitos
+    & $venvPython @argsPip
     $codigoPip = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
     if ($codigoPip -ne 0) {
+        if ($usaLock) {
+            Falhar ("A instalação das dependências falhou (Python $($py.Versao)).`n" +
+                '    Verifique a internet. Se o erro citar "hash" ou "THESE PACKAGES DO NOT MATCH THE HASHES",' +
+                "`n    o arquivo requirements.lock foi alterado ou corrompido: baixe o projeto de novo." +
+                "`n    Se citar um pacote sem versão compatível, o lock foi testado nos Pythons 3.10 a 3.13:" +
+                ' instale o Python 3.12 e tente de novo.')
+        }
         Falhar ("A instalação das dependências falhou (Python $($py.Versao)).`n" +
             '    Verifique a internet; se o erro citar um pacote sem versão compatível,' +
             ' instale o Python 3.12 e tente de novo.')
     }
     Escrever-Ok 'Dependências instaladas.'
+    if ($usaLock) { Auditar-Dependencias $python $TravaHashes }
     $pythonw = Join-Path $venvDir 'Scripts\pythonw.exe'
 }
 if (-not (Test-Path -LiteralPath $pythonw)) { Falhar "Não encontrei o pythonw.exe em $pythonw." }

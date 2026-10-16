@@ -35,7 +35,7 @@ remoto". Isso é explicado com mais detalhe na seção 4.
 
 ## 1. Instalação (no computador da loja)
 
-Requer **Python 3.9+**.
+Requer **Python 3.10+**.
 
 ```bash
 cd proclamare   # pasta do projeto (clonada do GitHub)
@@ -45,6 +45,13 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
+No Windows, o instalador (abaixo) usa o `requirements.lock`, que trava a versão de
+cada pacote **com hashes**
+(`pip install --require-hashes --only-binary :all: --no-deps -r requirements.lock`):
+o pip recusa qualquer arquivo diferente do que foi testado e nunca compila código-fonte.
+Se você instalar à mão no Windows, prefira essa forma. O lock vale para Python 3.10 a
+3.13; com o lock presente o instalador **recusa** Python 3.14 ou mais novo (instale o 3.12).
+
 ### Instalar e ligar com duplo clique (Windows)
 
 Para quem não quer usar o terminal:
@@ -53,10 +60,10 @@ Para quem não quer usar o terminal:
    de usuário** (ex.: Documentos), não em `C:\` nem em pastas públicas. Se mover
    a pasta de lugar depois, **rode o instalador de novo** (os atalhos guardam o
    caminho antigo).
-2. **Instalar (uma vez só):** instale o Python 3.9+ de [python.org](https://www.python.org/downloads/)
+2. **Instalar (uma vez só):** instale o Python 3.10+ de [python.org](https://www.python.org/downloads/)
    marcando **"Add python.exe to PATH"**. Depois dê duplo clique em
    **`Instalar Proclamare.bat`**. Ele cria o ambiente `.venv`, instala as
-   dependências (precisa de internet) e cria os atalhos **Proclamare** (Área de
+   dependências pelo `requirements.lock` (precisa de internet) e cria os atalhos **Proclamare** (Área de
    Trabalho e Menu Iniciar), **Desligar Proclamare** e **Desinstalar Proclamare**
    (Menu Iniciar). Se o instalador avisar em amarelo que a pasta é gravável por
    todos os usuários do computador, mova-a para a sua pasta de usuário.
@@ -92,6 +99,13 @@ direto pelo navegador nesse endereço.
 
 Para definir o PIN (6 a 8 dígitos) sem abrir o painel, rode no terminal, dentro
 da pasta do projeto: `.venv\Scripts\python server.py --definir-pin`.
+
+Se o **pip-audit** já estiver instalado no computador (opcional; instale-o fora do
+ambiente do Proclamare, ex.: `py -m pip install --user pip-audit`), o instalador
+também confere se as versões fixadas têm vulnerabilidades conhecidas. É só um
+**aviso**: nunca bloqueia a instalação. Se o `requirements.lock` não estiver na
+pasta, o instalador **para** e pede o projeto completo; só instala pelo
+`requirements.txt` (sem verificação de hashes) se você passar `-PermitirSemHashes`.
 
 Opções de teste/automação: com `PROCLAMARE_NO_BROWSER=1` o lançador não abre o
 navegador nem mostra caixas de mensagem (escreve na saída padrão). O instalador
@@ -426,7 +440,155 @@ Proclamare.bat", faça a instalação antes.
 
 ---
 
-## 7. Solução de problemas
+## 7. Som da loja (saídas de som)
+
+O Proclamare **reconhece tudo o que está ligado ao PC da loja** (a saída de linha
+que vai para a mesa, placas USB, a saída HDMI do monitor, caixas Bluetooth já
+pareadas) e **garante que o anúncio saiu no lugar certo**: você escolhe uma vez
+qual saída é a das caixas da loja, testa com um bipe, e daí em diante ele avisa
+se alguma coisa mudar no caminho.
+
+> Em lojas que **não** configuram nada aqui, o Proclamare continua tocando no
+> som padrão do Windows, exatamente como antes. Esta seção é opcional.
+
+**O que ele não faz:** equipamentos ligados só por cabo (mesa de som,
+amplificadores) não conversam com o computador, então nenhum programa os
+"enxerga". Para eles o Proclamare entrega um passo a passo de conferência
+(canal aberto na mesa, chave do amplificador, cabo na saída certa) e o monitor
+de alertas descrito abaixo.
+
+### O tile "Som da loja"
+
+No painel principal, junto dos indicadores (servidor, anúncio, Spotify,
+YouTube), aparece o indicador **Som da loja**. Ele só aparece quando o
+computador é Windows e o recurso está disponível.
+
+- **Verde:** "*nome da saída* · tocando" (o anúncio/teste saiu com sinal).
+- **Cinza:** "*nome da saída* · em silêncio" (nada tocando no momento).
+- **Vermelho:** "Cabo desconectado", "Saída mutada no Windows", "Volume em 0% no
+  Windows", "Em uso exclusivo por outro app" ou "Proclamare precisa ser
+  reiniciado".
+- **Âmbar:** "Padrão do Windows" (nenhuma saída foi escolhida ainda; use o link
+  **Configurar**) ou um selo de aviso (por exemplo, o padrão do Windows mudou).
+
+Um clique no tile abre o assistente. Os alertas aparecem também como aviso
+discreto, uma vez cada.
+
+### O assistente "Minhas saídas de som"
+
+Em **Configurações → Minhas saídas de som**:
+
+1. **Procurar:** mostra o que o Proclamare já conhece. **Procurar de novo** lê o
+   computador outra vez (só leitura: não toca som e não muda nada). Para uma
+   caixa Bluetooth, **pareie nas Configurações do Windows** e ela aparece aqui
+   sozinha; o Proclamare não faz pareamento.
+2. **Lista:** agrupada em "Neste PC", "Bluetooth" e "Música do Spotify". Cada
+   linha mostra o seu apelido (ou um nome sugerido), o nome que o Windows dá,
+   e selos como **Sugerida**, **Padrão do Windows**, **Mutada**,
+   **Desconectada**. Nomes sugeridos: "Cabo para a mesa" para a saída de linha,
+   "Monitor (HDMI) - normalmente não vai para as caixas", "Placa USB 1".
+   O final do endereço de aparelhos Bluetooth aparece separado do nome para
+   diferenciar caixas iguais.
+3. **Testar:** toca um **bipe** e a frase "Teste do Proclamare" seguida do seu
+   apelido (nunca o nome técnico do Windows) e pergunta **"Ouviu na loja?"**.
+   - **Sim:** dê um apelido e toque em **Usar para anúncios**.
+   - **Não:** o painel mostra se o PC enviou sinal e uma lista de conferência
+     do equipamento (canal do PC aberto na mesa, amplificador em LINE, chave do
+     canal em AUX1/USB, cabo na saída verde/de linha, saída não mutada).
+
+   Há um interruptor **Abaixar a música durante o teste** (ligado por padrão
+   no celular, desligado no PC da loja).
+4. **Preferências** (recolhido): o que fazer se a saída sumir, alerta de
+   silêncio e se a música deve abaixar no Spotify e no YouTube.
+
+Zonas separadas (estacionamento, elevador etc.) **ainda não existem**: por
+enquanto há uma saída para a loja toda.
+
+### Limitações conhecidas da F1
+
+- **Caixa Bluetooth ociosa:** o 1º anúncio depois de um longo silêncio pode perder o
+  começo da fala (a caixa "acorda" devagar). O Proclamare ainda não toca um trecho de
+  silêncio antes do anúncio; isso será decidido depois de medir numa caixa real.
+- Um aviso de "saída alterada por aparelho remoto" some quando alguém escolhe o destino
+  no PC da loja ou quando o Proclamare reinicia.
+
+### Testar pelo celular
+
+Dá para fazer o teste de dentro da loja: vá até a área das caixas, abra o
+painel no celular, entre com o PIN e toque em **Testar**. Como o bipe sai nas
+caixas, o painel avisa antes de tocar (principalmente em horário de
+funcionamento). Limites: 3 testes por minuto por aparelho e 10 a cada 10
+minutos no total.
+
+Para **trocar a saída dos anúncios** pelo celular (cabo ou USB), é preciso ter
+testado e confirmado "Ouviu: sim" **no mesmo aparelho, nos 5 minutos
+anteriores**. Toda troca feita por um aparelho remoto fica registrada em log e
+deixa um aviso no tile até alguém olhar.
+
+### O que só dá para fazer no PC da loja
+
+Por segurança, estas ações **não funcionam pelo celular**, mesmo com PIN:
+
+- aprovar ou usar para anúncios uma saída **Bluetooth, HDMI ou fone**;
+- escolher "usar o som padrão do Windows" como plano B (`padrao_windows`);
+- esquecer a saída usada nos anúncios.
+
+No celular os botões dessas ações ficam escondidos, com a nota "aprovar no PC do
+Proclamare".
+
+### O que o Proclamare nunca faz
+
+- **Nunca troca a saída padrão do Windows**, nem muda o **volume** ou o **mudo**:
+  só lê. Quem decide o padrão, o volume e o mudo é você, no Windows.
+- Nunca pareia, reconecta ou desconecta aparelhos Bluetooth.
+- Nunca toca em saída que você não aprovou e nunca cai em HDMI ou fone por
+  conta própria.
+- Nunca toca um bipe sozinho: som de teste só com clique seu.
+- Nunca abre a saída em modo exclusivo (não "tranca" o dispositivo).
+- Nunca fala o nome técnico do Windows pela voz.
+
+Se a saída escolhida sumir, a preferência **"Se a saída sumir"** define o plano
+B: *usar outra saída aprovada, ou avisar que falhou* (padrão), *só falhar*, ou
+*usar o padrão do Windows* (só no PC da loja). Quando não há saída possível, o
+anúncio **não toca**, o painel mostra o motivo e a música não é abaixada à toa.
+
+### Alertas e como corrigir
+
+Os alertas aparecem no tile e em avisos. O Proclamare **só avisa**; a correção
+é sempre feita por você no Windows.
+
+| Alerta | O que significa | Como corrigir |
+|---|---|---|
+| **O padrão do Windows mudou** (ex.: para "Monitor (HDMI)") | Algo (muitas vezes o driver de vídeo ao ligar o monitor) trocou a saída padrão. A **música e as tarefas agendadas** foram para lá; os anúncios continuam na saída escolhida. | Windows: Configurações → Sistema → Som → em "Saída", escolha de novo a saída das caixas (ou botão direito no ícone de som da barra de tarefas → Configurações de som). |
+| **Saída mutada** | A saída dos anúncios está no mudo no Windows. | Clique no ícone de alto-falante na barra de tarefas e tire do mudo (ou use o Mixer de volume). |
+| **Volume em 0%** | O volume daquela saída no Windows está zerado. | Suba o volume no Windows. O volume do anúncio nas caixas é ajustado na mesa/amplificador. |
+| **Em uso exclusivo por outro app** | Outro programa "trancou" a saída em modo exclusivo e o Proclamare não consegue tocar. | Painel de Controle → Som → aba Reprodução → duplo clique na saída → aba **Avançado** → desmarque **"Permitir que aplicativos assumam o controle exclusivo deste dispositivo"**. Se persistir, feche o programa que está usando a saída (o Spotify também: confira as opções de áudio dele). |
+| **Cabo desconectado / saída ausente** | O Windows não vê mais a saída (cabo solto, USB retirada, Bluetooth desligado). | Reconecte. Uma saída aprovada que volta igual é reativada sozinha. |
+| **O anúncio não gerou sinal** | O PC tocou, mas o Windows não mostrou som saindo naquela saída. | Confira mudo, volume, cabo e se a saída certa está escolhida. |
+| **Silêncio** | Nada toca há mais tempo que o limite configurado (dentro do horário configurado). | Veja se a música/playlist parou. O limite e o horário ficam em Preferências. |
+| **Saída mudou / placa USB mudou, testar de novo** | Uma placa USB apareceu com outra identidade (outra porta, driver). As placas USB aprovadas ficam **suspensas** até você testar de novo. | Refaça o teste (bipe → "Ouviu?") e aceite a nova placa, ou esqueça a antiga. |
+| **Proclamare precisa ser reiniciado** | O áudio travou de um jeito que só reiniciando resolve. | Menu Iniciar → Desligar Proclamare e ligue de novo. |
+
+### `PROCLAMARE_CONFIAR_LOOPBACK=0` e o som
+
+Com `PROCLAMARE_CONFIAR_LOOPBACK=0` (necessário com proxy, túnel ou
+redirecionamento de porta no PC da loja) **ninguém é "o PC da loja"**: todos os
+aparelhos, inclusive o próprio PC, precisam de PIN, e tudo que é "só no PC da
+loja" desta seção fica **indisponível pela tela**. Na prática, aprovar
+Bluetooth/HDMI/fone, usar o padrão do Windows como plano B e esquecer a saída
+dos anúncios só podem ser feitos com o Proclamare desligado, editando a chave
+`som` do `config.json`. Saídas por cabo e USB continuam podendo ser testadas e
+escolhidas com PIN, pela regra do teste recente.
+
+### Privacidade
+
+O Proclamare não grava nem escuta áudio: o "sinal detectado" vem do medidor do
+próprio Windows para o processo do Proclamare. O `config.json` guarda só a sua
+escolha de saída (apelido e uma referência interna) e continua fora do Git.
+
+---
+
+## 8. Solução de problemas
 
 - **"Motor offline indisponível" / erro de eSpeak:** falta instalar o
   `espeak-ng` (só Linux, passo 1).
