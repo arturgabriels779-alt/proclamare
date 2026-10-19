@@ -2321,3 +2321,139 @@ html[data-gate] .skip-link { display: none; }
   .toast { transition: opacity 150ms linear !important; }
   html[data-announcing="true"] .lamp--air { opacity: 1; }
 }
+
+/* =====================================================================
+   11. MENSAGENS PRONTAS (editor) E DESLIGAR  (contrato v2.5)
+   ===================================================================== */
+
+/* ---- Botão "Editar" no cabeçalho do bloco ---- */
+.tile__action.btn::after { content: ""; position: absolute; inset: -4px; }   /* área de toque ≥ 44px */
+.tile--quick .hint { text-align: center; }
+
+/* ---- Botão ⏻ no topo (só no PC do Proclamare) ---- */
+.btn--power { color: var(--text-2); }
+@media (hover: hover) {
+  .btn--power:hover { background: var(--live-soft); color: var(--live); }
+}
+
+/* ---- Diálogos: o editor é mais largo; o de desligar é compacto ---- */
+dialog.dialog--wide { scroll-padding-bottom: 120px; }
+/* Larguras só em telas grandes: no celular o diálogo é um sheet de largura total (como as Configurações);
+   sem este @media, estas regras (mais específicas) deixavam o sheet 32 px mais estreito e colado à esquerda. */
+@media (min-width: 768px) {
+  dialog.dialog--wide { width: min(680px, calc(100% - 32px)); }
+  dialog.dialog--narrow { width: min(440px, calc(100% - 32px)); }
+}
+.callout__icon--danger { background: var(--live-soft); color: var(--live); }
+.sheet--power { align-items: flex-start; gap: 12px; }
+.sheet--power .callout__text { max-width: none; }
+.sheet--power .actions { align-self: stretch; margin-top: 4px; }
+.sheet--power .form-error { align-self: stretch; }
+
+/* ---- Tela "Proclamare desligado" ---- */
+.gate__view--down .callout__icon { background: var(--fill-1); color: var(--text-3); }
+.gate__view--down .hint { text-align: center; }
+
+/* ---- Editor: a lista rola junto com o diálogo; a barra de ações fica sempre à vista ---- */
+.sheet.msgs { gap: 0; padding: 0; }
+.msgs__body { display: flex; flex-direction: column; gap: 16px; padding: 28px 28px 20px; }
+.msgs__head { display: flex; flex-direction: column; gap: 8px; }
+.msgs__count { font: 600 13px/18px var(--font); letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+.msgs__list { display: flex; flex-direction: column; gap: 14px; margin: 0; padding: 0; list-style: none; }
+.msgs__tools { gap: 8px 12px; }
+.msgs__foot {
+  position: sticky; bottom: 0; z-index: 1;
+  padding: 14px 28px calc(14px + env(safe-area-inset-bottom));
+  background: var(--bg-elevated);
+  border-top: 1px solid var(--separator);
+}
+
+/* aviso de erro geral (com botão de recarregar quando outro aparelho salvou antes) */
+.msgs__alert {
+  display: flex; flex: 1 1 100%; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+  padding: 12px 14px; border-radius: 12px;
+  background: var(--live-soft); color: var(--live);
+  font-size: 14px; line-height: 20px;
+}
+.msgs__alert-text { flex: 1 1 100%; min-width: 0; }   /* o texto ocupa a linha; os botões (Recarregar / Manter) vêm juntos embaixo */
+.msgs__alert .btn { color: var(--text-1); }
+
+/* "Mensagem removida — Desfazer" */
+.msgs__undo {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 6px 6px 14px; border-radius: 12px;
+  background: var(--fill-1); color: var(--text-2);
+  font-size: 14px; line-height: 20px;
+  animation: rise-sm var(--dur-2) var(--ease) both;
+}
+.msgs__undo-text { min-width: 0; overflow-wrap: anywhere; }
+
+/* ---- Cartão de uma mensagem ---- */
+.msg-card {
+  display: flex; flex-direction: column; gap: 14px;
+  padding: 16px;
+  background: var(--tile-inset);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-inset);
+}
+.msg-card.is-new { animation: rise-sm var(--dur-2) var(--ease) backwards; }
+.msg-card__head { display: flex; align-items: center; gap: 10px; }
+.msg-card__title {
+  display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 auto;
+  font: 600 14px/20px var(--font); letter-spacing: -0.005em; color: var(--text-2);
+}
+.msg-card__tools { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+/* aqui os botões-ícone ficam com 44px (celular) sem depender da área invisível, que sairia do cartão */
+.msg-card__tools .btn--icon { width: 40px; height: 40px; background: var(--tile); }
+.msg-card__tools .btn--icon::after { inset: -2px; }
+.msg-card__tools .btn--icon:disabled { opacity: 0.35; }
+@media (hover: hover) {
+  .msg-card__tools .btn--icon:hover:not(:disabled) { background: var(--fill-2); }
+  .msg-card__tools .btn--remove:hover:not(:disabled) { background: var(--live-soft); color: var(--live); }
+}
+.msg-card .label--split { align-items: center; }
+.msg-card__counter { font-size: 12px; font-weight: 500; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.msg-card__counter.is-warn { color: var(--warn); font-weight: 600; }
+.msg-card__counter.is-full { color: var(--live); font-weight: 600; }
+.msg-card .input input { background: var(--tile); }
+.msg-card textarea {
+  display: block; width: 100%;
+  min-height: 96px; max-height: 240px;
+  padding: 12px 14px;
+  resize: none;
+  field-sizing: content;
+  background: var(--tile);
+  border: 1px solid var(--field-border);
+  border-radius: var(--r-control);
+  color: var(--text-1);
+  font: 400 15px/1.45 var(--font);
+  transition: border-color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+}
+.msg-card textarea:focus-visible {
+  outline: none;
+  border-color: var(--focus);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+.msg-card textarea[aria-invalid="true"] { border-color: var(--live); }
+.msg-card textarea[aria-invalid="true"]:focus-visible { border-color: var(--live); box-shadow: 0 0 0 4px var(--live-soft); }
+.msg-card__error { font-size: 13px; line-height: 18px; color: var(--live); }
+
+@media (max-width: 767.98px) {
+  .msgs__body { padding: 28px 16px 16px; }
+  .msgs__foot { padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); }
+  .msg-card { padding: 14px; }
+  .sheet.msgs { padding: 0; }
+  .msgs__tools .btn { flex: 1 1 100%; }
+  /* 16px evita o zoom do iOS ao focar; precisa vencer ".sheet .input input" (15px) */
+  .msg-card textarea, .msg-card .input input, .sheet .input input { font-size: 16px; }
+  .sheet--power { padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+}
+
+/* Janela estreita NO PC (o ⏻ só existe lá): sem espaço para o nome, fica só a marca (o <h1> segue para leitores de tela) */
+@media (max-width: 400px) {
+  .topbar:has(.btn--power:not([hidden])) .brand__name {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+}
+.msgs .net__confirm .hint { color: var(--text-2); }   /* contraste sobre o fundo rosado da confirmação */

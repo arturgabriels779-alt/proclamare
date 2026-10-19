@@ -73,7 +73,8 @@ Para quem não quer usar o terminal:
    em alguns segundos o painel abre no navegador. Se já estiver ligado, o duplo
    clique só abre o painel (nunca sobe dois servidores). Se aparecer "está
    demorando para ligar", espere alguns segundos e dê duplo clique de novo.
-4. **Desligar:** Menu Iniciar → **Desligar Proclamare**. Uma mensagem confirma
+4. **Desligar:** pelo botão **⏻** no topo do painel (só no computador da loja;
+   veja "Desligar pelo painel") ou pelo Menu Iniciar → **Desligar Proclamare**. Uma mensagem confirma
    "Proclamare desligado". O atalho só desliga o servidor iniciado pelo próprio
    Proclamare, nunca outros programas. Se ele foi ligado de outra forma (ex.:
    `python server.py` no terminal), feche a janela onde está rodando.
@@ -291,6 +292,67 @@ alternativa; se as duas existirem, vale a `PROCLAMARE_*`.
   `http` (sem criptografia), então o PIN protege contra curiosos, não contra
   quem consegue espionar o tráfego da rede — mais um motivo para manter o Wi-Fi
   de clientes separado.
+
+---
+
+## 2b. Mensagens prontas e desligar pelo painel
+
+### Mensagens prontas: editar
+Os botões do bloco **Mensagens prontas** (na aba Anúncio) são seus: dá para
+trocar, apagar e criar os que a sua loja usa de verdade.
+
+1. No bloco **Mensagens prontas**, toque em **Editar**. Funciona no computador da
+   loja e também no celular (entrando com o PIN).
+2. Cada mensagem tem dois campos: **Nome do botão** (até 40 letras, é o que
+   aparece no botão) e **Texto anunciado** (até 500 letras, é o que as caixas
+   falam). Os contadores mostram quanto falta.
+3. Use as setas para **subir** ou **descer** uma mensagem, a lixeira para
+   **remover** (aparece "Desfazer" logo em seguida) e **Adicionar mensagem** para
+   criar outra. O limite é de **24 mensagens**.
+4. Toque em **Salvar mensagens**. Os botões do painel mudam na hora e, nos outros
+   aparelhos, em até 1 minuto. **Cancelar** descarta o que foi digitado (o painel pergunta antes,
+   se você mudou alguma coisa).
+5. **Restaurar mensagens de fábrica** devolve as 6 mensagens originais do
+   Proclamare (pede confirmação e vale na hora, sem precisar salvar). O botão
+   só aparece depois que você mudou alguma coisa.
+
+Se aparecer **"Outro aparelho mudou as mensagens"**, alguém salvou uma alteração
+antes de você. Toque em **Recarregar** para ver a versão atual (isso descarta o
+que você digitou) ou em **Manter o que digitei** para guardar o seu texto: ao
+salvar, ele fica por cima do que o outro aparelho gravou. Se a janela de edição
+fechar sozinha com texto ainda não salvo (por exemplo, ao apertar Esc duas
+vezes), o painel oferece **Continuar de onde parei** na próxima vez que você
+tocar em Editar. Se faltar o nome ou o texto, o painel marca o campo e diz o que
+falta. Quebras de linha no texto são aceitas; caracteres invisíveis ou de
+controle (que às vezes vêm ao copiar de outros programas) são removidos ao salvar.
+
+As mensagens ficam no `config.json` (chave `mensagens`) do computador da loja.
+
+### Desligar pelo painel
+No computador da loja, o botão **⏻** (ao lado do tema e das configurações)
+desliga o Proclamare, como nos aplicativos de sempre.
+
+1. Toque em **⏻**. O painel pergunta: *Desligar o Proclamare? Os anúncios e o
+   Tocador da loja param até você ligar de novo pelo ícone Proclamare. Se o
+   Spotify estiver tocando, ele continua no aplicativo Spotify.*
+2. Toque em **Desligar**. O Tocador da loja (YouTube e Minhas músicas, em qualquer
+   aba ou aparelho) é pausado, o servidor encerra em instantes e a aba mostra
+   *Proclamare desligado*. A música do **Spotify** toca no aplicativo Spotify do
+   computador, e não pelo Proclamare: se ela estiver tocando, pause-a no próprio
+   aplicativo Spotify.
+3. Para ligar de novo, dê **duplo clique no ícone Proclamare** na Área de
+   Trabalho.
+
+Detalhes que valem saber:
+- O botão **só aparece no computador da loja**. No celular ou em outro
+  computador da rede ele não existe (e o servidor também recusa, mesmo com PIN).
+- Se **um anúncio estiver tocando**, o painel avisa *Espere o anúncio terminar* e
+  não desliga; tente de novo quando acabar. O mesmo vale se alguém estiver
+  **enviando músicas** (*Há músicas sendo enviadas. Espere terminar.*).
+- Os outros aparelhos que estavam com o painel aberto passam a mostrar "sem
+  conexão" até o Proclamare ser ligado de novo.
+- O atalho **Desligar Proclamare** do Menu Iniciar continua valendo; se o
+  Proclamare já foi desligado pelo painel, ele só avisa que não está ligado.
 
 ---
 

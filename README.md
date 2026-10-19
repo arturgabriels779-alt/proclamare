@@ -32,7 +32,7 @@ de fundo **abaixa sozinha** durante o anúncio e volta ao volume normal no final
 - **Texto vira fala nas caixas da loja** com vozes neurais em português (Francisca ou Antonio, via Microsoft Edge TTS).
 - **Funciona sem internet:** se a conexão cair, usa a voz do próprio sistema operacional (modo *Auto*), ou você escolhe *Online* / *Offline* manualmente.
 - **Velocidade ajustável** da fala (−50% a +50%).
-- **Mensagens prontas** com um clique (farol aceso, caixa rápido, chamado a colaborador, loja fechando, criança no balcão, teste de som).
+- **Mensagens prontas** com um clique — e **editáveis**: troque, apague, reordene e crie as da sua loja (até 24; vêm 6 de exemplo, como farol aceso, caixa rápido e loja fechando, e dá para restaurá-las).
 - **Histórico** dos anúncios do dia, com um toque para repetir.
 - Atalho **Ctrl + Enter** para anunciar e **botão de teste** para conferir as caixas.
 - Proteção contra atropelo: um segundo anúncio não toca por cima do que já está no ar.
@@ -79,7 +79,7 @@ flowchart LR
 
 ## 🚀 Começando
 
-**Caminho fácil (Windows):** baixe ou clone o projeto → dê duplo clique em **Instalar Proclamare.bat** → depois é só dar duplo clique no ícone **Proclamare** na Área de Trabalho. Para desligar: Menu Iniciar → *Desligar Proclamare*. Detalhes na seção "Instalar e ligar com duplo clique" do [guia](docs/GUIA.md).
+**Caminho fácil (Windows):** baixe ou clone o projeto → dê duplo clique em **Instalar Proclamare.bat** → depois é só dar duplo clique no ícone **Proclamare** na Área de Trabalho. Para desligar: botão **⏻** no topo do painel (só no computador da loja) ou Menu Iniciar → *Desligar Proclamare*. Detalhes na seção "Instalar e ligar com duplo clique" do [guia](docs/GUIA.md).
 
 **Não precisa instalar o Python antes.** O instalador usa o Python 3.10 a 3.13 que já estiver no computador; se não houver, baixa sozinho uma cópia oficial do Python 3.12 só para o Proclamare (sem administrador, sem mexer no PATH nem no registro, com impressão digital e assinatura conferidas). Detalhes em "Python: o instalador resolve sozinho" no [guia](docs/GUIA.md).
 

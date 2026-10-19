@@ -63,6 +63,8 @@
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></symbol>
     <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 2.5v9"/><path d="M6.6 6.1a8 8 0 1 0 10.8 0"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19.5 8.5a2.1 2.1 0 0 0-3-3L5 17l-1 3z"/><path d="M14.5 7.5l3 3"/></symbol>
   </defs>
 </svg>
 
@@ -94,6 +96,14 @@
           <span>Entrar</span>
         </button>
       </form>
+    </section>
+
+    <!-- Proclamare desligado pelo botão ⏻ (v2.5): tela calma, sem tentar reconectar -->
+    <section class="gate__view gate__view--off gate__view--down" id="gate-down" aria-labelledby="gate-down-title" hidden>
+      <span class="callout__icon" aria-hidden="true"><svg class="icon"><use href="#i-power"/></svg></span>
+      <h2 class="callout__title" id="gate-down-title" tabindex="-1">Proclamare desligado</h2>
+      <p class="callout__text" role="status">Para ligar de novo, dê duplo clique no ícone Proclamare na Área de Trabalho.</p>
+      <p class="hint">Você já pode fechar esta aba.</p>
     </section>
 
     <!-- Acesso desativado / servidor inacessível -->
@@ -130,6 +140,10 @@
       </div>
       <button type="button" class="btn btn--icon" id="btn-settings" aria-label="Configurações" title="Configurações">
         <svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>
+      </button>
+      <!-- Desligar (v2.5): só aparece no PC do Proclamare (/api/auth/status -> pode_desligar) -->
+      <button type="button" class="btn btn--icon btn--power" id="btn-power" aria-label="Desligar o Proclamare" title="Desligar o Proclamare" aria-haspopup="dialog" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>
       </button>
     </div>
   </header>
@@ -232,6 +246,10 @@
         <div class="tile__head">
           <svg class="icon tile__icon" aria-hidden="true"><use href="#i-chat"/></svg>
           <h2 class="tile__title" id="title-quick">Mensagens prontas</h2>
+          <button type="button" class="btn btn--ghost btn--sm tile__action" id="btn-msgs-edit" aria-haspopup="dialog" hidden>
+            <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>
+            <span>Editar</span>
+          </button>
         </div>
         <div class="chips" id="quick-messages" role="group" aria-labelledby="title-quick">
           <button type="button" class="chip" data-msg="Atenção, o proprietário de um veículo deixou os faróis acesos no estacionamento. Por favor, verifique o seu carro."><span class="chip__text">Farol aceso</span></button>
@@ -241,6 +259,7 @@
           <button type="button" class="chip" data-msg="Atenção, temos uma criança aguardando no balcão de atendimento. Por favor, dirija-se até lá."><span class="chip__text">Criança no balcão</span></button>
           <button type="button" class="chip" data-msg="Teste, um, dois, três. Este é um teste do sistema de som da loja."><span class="chip__text">Teste de som</span></button>
         </div>
+        <p class="hint" id="quick-empty" hidden>Nenhuma mensagem pronta. Toque em “Editar” para criar as suas.</p>
       </div>
 
       <!-- Voz -->
@@ -982,6 +1001,79 @@
       </div>
     </div>
   </section>
+</dialog>
+
+<!-- ====================== EDITAR MENSAGENS PRONTAS (v2.5) ======================
+     Os cartões são montados pelo app.js (createElement/textContent). -->
+<dialog id="msgs-dialog" class="dialog--wide" aria-labelledby="msgs-title">
+  <div class="sheet msgs">
+    <div class="msgs__body">
+      <div class="msgs__head">
+        <h2 class="sheet__title" id="msgs-title">Editar mensagens prontas</h2>
+        <p class="hint">Cada mensagem vira um botão no painel. Ao tocar nele, o texto vai para a caixa de anúncio, pronto para ser falado.</p>
+      </div>
+
+      <div class="msgs__undo" id="msgs-undo" role="status" hidden>
+        <span class="msgs__undo-text" id="msgs-undo-text"></span>
+        <button type="button" class="btn btn--text btn--sm" id="btn-msgs-undo">Desfazer</button>
+      </div>
+
+      <p class="msgs__count" id="msgs-count"></p>
+      <p class="hint" id="msgs-loading">Carregando as mensagens…</p>
+      <ol class="msgs__list" id="msgs-list"></ol>
+      <p class="hint msgs__empty" id="msgs-empty" hidden>Nenhuma mensagem. Toque em “Adicionar mensagem” para criar a primeira.</p>
+
+      <div class="actions msgs__tools">
+        <button type="button" class="btn btn--ghost" id="btn-msgs-add">
+          <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+          <span>Adicionar mensagem</span>
+        </button>
+        <button type="button" class="btn btn--text btn--danger" id="btn-msgs-factory" hidden>Restaurar mensagens de fábrica</button>
+      </div>
+      <p class="hint" id="msgs-limit" hidden>Você chegou ao limite de 24 mensagens. Remova uma para adicionar outra.</p>
+
+      <div class="net__confirm" id="msgs-confirm" role="group" aria-labelledby="msgs-confirm-title" hidden>
+        <p class="net__confirm-title" id="msgs-confirm-title"></p>
+        <p class="hint" id="msgs-confirm-text"></p>
+        <div class="actions">
+          <button type="button" class="btn btn--danger-solid" id="btn-msgs-confirm-yes"></button>
+          <button type="button" class="btn btn--ghost" id="btn-msgs-confirm-no"></button>
+        </div>
+      </div>
+      <p class="sr-only" id="msgs-live" role="status" aria-live="polite"></p>
+    </div>
+
+    <div class="msgs__foot actions actions--end">
+      <div class="msgs__alert" id="msgs-error" role="alert" hidden>
+        <span class="msgs__alert-text" id="msgs-error-text"></span>
+        <button type="button" class="btn btn--ghost btn--sm" id="btn-msgs-reload" hidden>Recarregar (perde o que digitei)</button>
+        <button type="button" class="btn btn--ghost btn--sm" id="btn-msgs-keep" hidden>Manter o que digitei</button>
+      </div>
+      <button type="button" class="btn btn--ghost" id="btn-msgs-cancel">Cancelar</button>
+      <button type="button" class="btn btn--primary" id="btn-msgs-save">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Salvar mensagens</span>
+      </button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ============================ DESLIGAR (v2.5) ============================
+     Confirmação própria (nunca window.confirm). O foco começa em "Cancelar". -->
+<dialog id="power-dialog" class="dialog--narrow" aria-labelledby="power-title" aria-describedby="power-text">
+  <div class="sheet sheet--power">
+    <span class="callout__icon callout__icon--danger" aria-hidden="true"><svg class="icon"><use href="#i-power"/></svg></span>
+    <h2 class="sheet__title" id="power-title">Desligar o Proclamare?</h2>
+    <p class="callout__text" id="power-text">Os anúncios e o Tocador da loja param até você ligar de novo pelo ícone Proclamare. Se o Spotify estiver tocando, ele continua no aplicativo Spotify.</p>
+    <p class="form-error" id="power-error" role="alert" hidden></p>
+    <div class="actions actions--end">
+      <button type="button" class="btn btn--ghost" id="btn-power-cancel">Cancelar</button>
+      <button type="button" class="btn btn--danger-solid" id="btn-power-confirm">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Desligar</span>
+      </button>
+    </div>
+  </div>
 </dialog>
 
 <!-- A API do YouTube só é carregada pelo app.js quando o modo "Tocador da loja" é usado -->

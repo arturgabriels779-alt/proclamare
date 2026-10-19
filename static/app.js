@@ -1,4 +1,4 @@
-/* Proclamare — interface do painel de controle (contrato v2.4.2 "Spotify"; base v2.4.1: tempo da música)
+/* Proclamare — interface do painel de controle (contrato v2.5 "Mensagens e Desligar"; base v2.4.2: Spotify; v2.4.1: tempo da música)
    -----------------------------------------------------------------------
    Sem frameworks e sem build: um único IIFE.
 
@@ -29,6 +29,22 @@
    volta para "Conecte o Spotify". A volta do login (/?spotify=connected|nocfg|local|rate|error
    &motivo=...) aceita só valores de uma lista fixa. Client ID/Secret: 32 hexadecimais, com
    limpeza de espaços/aspas antes de enviar. O anúncio pode trazer musica_aviso.
+
+   Mensagens prontas (v2.5): os botões vêm de GET /api/mensagens ({versao, de_fabrica, mensagens:[{id,titulo,texto}]});
+   se a API falhar ficam os botões de fábrica do HTML. O botão "Editar" abre um diálogo com um RASCUNHO (nome até 40,
+   texto até 500, no máximo 24; subir/descer, remover com "Desfazer", adicionar, restaurar de fábrica) e envia tudo de
+   uma vez em POST /api/mensagens {versao, mensagens}. Erros 400 trazem "campo"/"indice" (aviso embaixo do campo);
+   409 "versao_mudou" = outro aparelho salvou antes (oferece "Recarregar" ou "Manter o que digitei", que grava
+   por cima ao salvar); 429 = muitas gravações. Se o diálogo fechar sujo sem perguntar (Esc duas vezes no
+   Chrome/Edge), o rascunho fica só na memória da aba e é oferecido na próxima abertura. Qualquer aparelho
+   com acesso (PC local ou celular com PIN) pode editar.
+
+   Desligar (v2.5): /api/auth/status traz "pode_desligar" (true só no PC local) e só então aparece o botão ⏻.
+   POST /api/sistema/desligar {} -> 202 (o servidor encerra em ~0,5 s) | 409 (anúncio tocando ou envio de músicas em
+   andamento: não desliga) | 403 (remoto). O servidor manda "pause" ao Tocador de outras abas; o Spotify continua
+   no aplicativo Spotify.
+   No 202 esta aba para o <audio>, o player do YouTube, o long-poll e todos os polls (stopAll) e mostra a tela
+   "Proclamare desligado"; não tenta reconectar.
 
    Regras de segurança deste arquivo (CSP do servidor):
    - nada de innerHTML/eval com dados de API ou do usuário (só textContent
@@ -212,7 +228,7 @@
   // ---- Estado de acesso (PIN) — preenchido por boot() ----
   // authLocked = true enquanto a porta (PIN / acesso desativado) está fechada.
   let authLocked = false;
-  const auth = { supported: true, local: true, pinConfigured: false, authenticated: true, falhas: 0, bloqueioS: 0 };
+  const auth = { supported: true, local: true, pinConfigured: false, authenticated: true, falhas: 0, bloqueioS: 0, podeDesligar: false };
   const REMOTE_SPOTIFY_MSG = "As credenciais do Spotify são configuradas no computador da loja.";
   const isRemote = () => auth.supported && !auth.local;
 
@@ -700,6 +716,14 @@
   const gateOffTitle = $("gate-off-title");
   const gateOffText = $("gate-off-text");
   const btnGateRetry = $("btn-gate-retry");
+  const gateDownView = $("gate-down");
+  const gateDownTitle = $("gate-down-title");
+  // desligar pelo painel (v2.5)
+  const btnPower = $("btn-power");
+  const powerDialog = $("power-dialog");
+  const powerError = $("power-error");
+  const btnPowerCancel = $("btn-power-cancel");
+  const btnPowerConfirm = $("btn-power-confirm");
   // acesso por PIN: configurações
   const netSection = $("net-section");
   const netLocal = $("net-local");
@@ -889,6 +913,673 @@
     messageText.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
     if (focus) messageText.focus({ preventScroll: true });
   }
+
+  // ======================================================================
+  // 11b. Mensagens prontas (v2.5): botões vindos do servidor + editor
+  // ======================================================================
+  // GET /api/mensagens -> {ok, versao, de_fabrica, mensagens:[{id,titulo,texto}]}.
+  // Sem resposta válida, ficam os botões que já estão no HTML (os de fábrica).
+  // O editor trabalha num RASCUNHO em memória e só envia tudo junto no "Salvar"
+  // (POST /api/mensagens com a versão lida). Todo texto vai ao DOM só por
+  // textContent/value; o servidor devolve as strings já limpas e o painel usa a resposta.
+  const MSG_MAX = 24; // igual ao servidor
+  const MSG_TITLE_MAX = 40;
+  const MSG_TEXT_MAX = MAX_CHARS; // mesmo limite do anúncio digitado
+  const MSG_POLL_MS = 60000; // outro aparelho pode ter editado: relê com calma
+  const quickEmpty = $("quick-empty");
+  const btnMsgsEdit = $("btn-msgs-edit");
+  const msgsDialog = $("msgs-dialog");
+  const msgsList = $("msgs-list");
+  const msgsCount = $("msgs-count");
+  const msgsLoading = $("msgs-loading");
+  const msgsEmpty = $("msgs-empty");
+  const msgsLimit = $("msgs-limit");
+  const msgsError = $("msgs-error");
+  const msgsErrorText = $("msgs-error-text");
+  const btnMsgsReload = $("btn-msgs-reload");
+  const btnMsgsKeep = $("btn-msgs-keep");
+  const msgsUndo = $("msgs-undo");
+  const msgsUndoText = $("msgs-undo-text");
+  const btnMsgsUndo = $("btn-msgs-undo");
+  const btnMsgsAdd = $("btn-msgs-add");
+  const btnMsgsFactory = $("btn-msgs-factory");
+  const msgsConfirm = $("msgs-confirm");
+  const msgsConfirmTitle = $("msgs-confirm-title");
+  const msgsConfirmText = $("msgs-confirm-text");
+  const btnMsgsConfirmYes = $("btn-msgs-confirm-yes");
+  const btnMsgsConfirmNo = $("btn-msgs-confirm-no");
+  const msgsLive = $("msgs-live");
+  const btnMsgsCancel = $("btn-msgs-cancel");
+  const btnMsgsSave = $("btn-msgs-save");
+
+  // Última lista conhecida do servidor
+  const msgs = { loaded: false, versao: 0, deFabrica: true, items: [], sig: "" };
+
+  /** Valida a resposta do servidor; devolve null se vier fora do formato. */
+  function parseMessages(data) {
+    if (!data || data.ok !== true || !Number.isInteger(data.versao) || !Array.isArray(data.mensagens)) return null;
+    const items = [];
+    for (const m of data.mensagens.slice(0, MSG_MAX)) {
+      if (!m || typeof m.id !== "string" || typeof m.titulo !== "string" || typeof m.texto !== "string") return null;
+      items.push({ id: m.id.slice(0, 40), titulo: m.titulo.slice(0, MSG_TITLE_MAX), texto: m.texto.slice(0, MSG_TEXT_MAX) });
+    }
+    return { versao: data.versao, deFabrica: data.de_fabrica === true, items };
+  }
+
+  async function fetchMessages() {
+    const r = await getJSON("/api/mensagens", { timeout: 8000 });
+    const parsed = r.ok ? parseMessages(r.data) : null;
+    if (!parsed) throw new Error("Resposta inesperada de /api/mensagens");
+    return parsed;
+  }
+
+  function buildChip(m) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip";
+    b.dataset.msg = m.texto;
+    b.title = truncate(m.texto, 160);
+    const t = document.createElement("span");
+    t.className = "chip__text";
+    t.textContent = m.titulo;
+    b.appendChild(t);
+    return b;
+  }
+
+  /** Guarda a lista do servidor e repinta os botões — só se algo mudou. */
+  function applyMessages(m) {
+    // Resposta mais antiga que a já conhecida (um GET que estava em voo quando se salvou): ignora.
+    if (msgs.loaded && m.versao < msgs.versao) return;
+    msgs.loaded = true;
+    msgs.versao = m.versao;
+    msgs.deFabrica = m.deFabrica;
+    msgs.items = m.items;
+    btnMsgsEdit.hidden = false;
+    const sig = m.versao + "|" + JSON.stringify(m.items);
+    if (sig === msgs.sig) return;
+    msgs.sig = sig;
+    quickMessages.replaceChildren(...m.items.map(buildChip));
+    quickMessages.hidden = m.items.length === 0;
+    quickEmpty.hidden = m.items.length > 0;
+  }
+
+  /** Relê em silêncio (início e a cada minuto): falhar mantém o que já está na tela. */
+  async function refreshMessages() {
+    if (msgsDialog.open || authLocked) return;
+    try {
+      const m = await fetchMessages();
+      if (msgsDialog.open || authLocked) return; // o editor abriu enquanto a resposta vinha
+      applyMessages(m);
+    } catch (e) { /* mantém os botões atuais */ }
+  }
+
+  // ---- Limpeza e validação (espelham as regras do servidor; ele continua mandando) ----
+  /** Tira caracteres de controle/invisíveis (menos ZWJ/ZWNJ dos emojis); `multiline` mantém a quebra de linha. */
+  function cleanMsgText(raw, multiline) {
+    let s = String(raw).replace(/\r\n?/g, "\n").replace(/\t/g, " ");
+    if (!multiline) s = s.replace(/\n/g, " ");
+    // Recusa controle (Cc), formato (Cf), substituto (Cs) e uso privado (Co), como o servidor; "Cn"
+    // (ainda não atribuído) passa. ZWNJ (U+200C), ZWJ (U+200D) e a quebra de linha ficam.
+    return s.replace(/(?![\u200C\u200D\n])[\p{Cc}\p{Cf}\p{Cs}\p{Co}]/gu, "").trim();
+  }
+
+  // ---- Rascunho do editor ----
+  let draft = []; // [{key, id, titulo, texto, errTitulo, errTexto, isNew}]
+  let draftKey = 0;
+  let draftBase = ""; // assinatura do rascunho recém-carregado (para saber se mudou)
+  let draftVersao = 0; // versão do servidor sobre a qual o rascunho foi feito
+  let draftRemoved = null; // último cartão removido (para "Desfazer")
+  let msgsReady = false;
+  let msgsBusy = false;
+  let msgsSession = 0;
+  let confirmYes = null;
+  let confirmNo = null;
+  // Rascunho sujo que o navegador fechou sem perguntar (Esc duas vezes no Chrome/Edge não deixa
+  // cancelar o "cancel"): fica só na memória desta aba e é oferecido na próxima abertura.
+  let pendingDraft = null; // {items: [{id, titulo, texto}], versao}
+  let msgsLeaveClean = false; // true = o editor foi fechado de propósito (salvou, restaurou ou descartou)
+
+  const draftSig = () => JSON.stringify(draft.map((d) => [d.id, d.titulo, d.texto]));
+  const msgsDirty = () => msgsReady && draftSig() !== draftBase;
+
+  function msgsAnnounce(text) {
+    msgsLive.textContent = "";
+    setTimeout(() => { msgsLive.textContent = text; }, 30);
+  }
+
+  function showMsgsError(text, withReload) {
+    msgsError.hidden = !text;
+    setText(msgsErrorText, text || "");
+    btnMsgsReload.hidden = !(text && withReload);
+    btnMsgsKeep.hidden = !(text && withReload);
+  }
+
+  function hideMsgsConfirm() {
+    msgsConfirm.hidden = true;
+    confirmYes = null;
+    confirmNo = null;
+  }
+
+  function showMsgsConfirm(o) {
+    setText(msgsConfirmTitle, o.title);
+    setText(msgsConfirmText, o.text);
+    setText(btnMsgsConfirmYes, o.yes);
+    setText(btnMsgsConfirmNo, o.no);
+    confirmYes = o.onYes;
+    confirmNo = o.onNo || null;
+    msgsConfirm.hidden = false;
+    playEnter(msgsConfirm);
+    (o.focusYes ? btnMsgsConfirmYes : btnMsgsConfirmNo).focus();
+  }
+
+  function setMsgsReady(on) {
+    msgsReady = on;
+    for (const b of [btnMsgsSave, btnMsgsAdd, btnMsgsFactory]) {
+      if (on) b.removeAttribute("aria-disabled");
+      else b.setAttribute("aria-disabled", "true");
+    }
+  }
+
+  /** Contador "12/40": âmbar perto do limite, vermelho no limite. */
+  function paintCounter(el, len, max) {
+    setText(el, len + "/" + max);
+    el.classList.toggle("is-warn", len >= max * 0.9 && len < max);
+    el.classList.toggle("is-full", len >= max);
+  }
+
+  /** Um campo (rótulo + contador + controle + erro). */
+  function buildMsgField(it, field) {
+    const isText = field === "texto";
+    const max = isText ? MSG_TEXT_MAX : MSG_TITLE_MAX;
+    const id = "msg-" + field + "-" + it.key;
+    const errId = id + "-erro";
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+    const head = document.createElement("div");
+    head.className = "label label--split";
+    const label = document.createElement("label");
+    label.setAttribute("for", id);
+    label.textContent = isText ? "Texto anunciado" : "Nome do botão";
+    const counter = document.createElement("span");
+    counter.className = "msg-card__counter";
+    counter.dataset.counter = field;
+    counter.setAttribute("aria-hidden", "true");
+    paintCounter(counter, it[field].length, max);
+    head.append(label, counter);
+
+    let control;
+    if (isText) {
+      control = document.createElement("textarea");
+      control.rows = 3;
+      control.placeholder = "O que será falado nas caixas de som";
+      control.spellcheck = true;
+    } else {
+      control = document.createElement("input");
+      control.type = "text";
+      control.autocomplete = "off";
+      control.placeholder = "ex.: Promoção do dia";
+    }
+    control.id = id;
+    control.value = it[field];
+    control.maxLength = max;
+    control.dataset.field = field;
+    control.dataset.key = String(it.key);
+    const err = document.createElement("p");
+    err.className = "msg-card__error";
+    err.id = errId;
+    const msg = field === "texto" ? it.errTexto : it.errTitulo;
+    err.hidden = !msg;
+    err.textContent = msg || "";
+    if (msg) {
+      control.setAttribute("aria-invalid", "true");
+      control.setAttribute("aria-describedby", errId);
+    }
+    wrap.append(head, isText ? control : wrapInput(control), err);
+    return wrap;
+  }
+
+  function wrapInput(input) {
+    const box = document.createElement("div");
+    box.className = "input";
+    box.appendChild(input);
+    return box;
+  }
+
+  function buildToolButton(act, icon, label, disabled) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn btn--icon" + (act === "remove" ? " btn--remove" : "");
+    b.dataset.act = act;
+    b.setAttribute("aria-label", label);
+    b.title = label.split(" ")[0];
+    b.disabled = !!disabled;
+    b.appendChild(makeIcon(icon));
+    return b;
+  }
+
+  function buildMsgCard(it, i, n) {
+    const li = document.createElement("li");
+    li.className = "msg-card" + (it.isNew ? " is-new" : "");
+    li.dataset.key = String(it.key);
+    const head = document.createElement("div");
+    head.className = "msg-card__head";
+    const h = document.createElement("h3");
+    h.className = "msg-card__title";
+    h.id = "msg-h-" + it.key;
+    h.textContent = "Mensagem " + (i + 1);
+    const tools = document.createElement("div");
+    tools.className = "msg-card__tools";
+    const num = String(i + 1);
+    tools.append(
+      buildToolButton("up", "up", "Subir a mensagem " + num, i === 0),
+      buildToolButton("down", "down", "Descer a mensagem " + num, i === n - 1),
+      buildToolButton("remove", "trash", "Remover a mensagem " + num, false),
+    );
+    head.append(h, tools);
+    li.append(head, buildMsgField(it, "titulo"), buildMsgField(it, "texto"));
+    it.isNew = false;
+    return li;
+  }
+
+  /** Foca um controle de um cartão; se estiver desabilitado, tenta o vizinho lógico. */
+  function focusMsgControl(key, what) {
+    const li = msgsList.querySelector('.msg-card[data-key="' + key + '"]');
+    if (!li) return;
+    const pick = (sel) => li.querySelector(sel);
+    let el = null;
+    if (what === "titulo" || what === "texto") el = pick('[data-field="' + what + '"]');
+    else el = pick('[data-act="' + what + '"]');
+    if (el && el.disabled) el = pick('[data-act="' + (what === "up" ? "down" : "up") + '"]');
+    if (el && !el.disabled) el.focus();
+  }
+
+  /** Reconstrói a lista a partir do rascunho (mudanças estruturais: mover, remover, adicionar). */
+  function renderDraft(focus) {
+    const n = draft.length;
+    msgsList.replaceChildren(...draft.map((it, i) => buildMsgCard(it, i, n)));
+    msgsLoading.hidden = true;
+    msgsEmpty.hidden = n > 0;
+    setText(msgsCount, n === 1 ? "1 mensagem de " + MSG_MAX : n + " mensagens de " + MSG_MAX);
+    const full = n >= MSG_MAX;
+    btnMsgsAdd.disabled = full;
+    msgsLimit.hidden = !full;
+    btnMsgsFactory.hidden = msgs.deFabrica;
+    if (focus) focusMsgControl(focus.key, focus.what);
+  }
+
+  function startDraft(m) {
+    draft = m.items.map((x) => ({ key: ++draftKey, id: x.id, titulo: x.titulo, texto: x.texto, errTitulo: "", errTexto: "", isNew: false }));
+    draftVersao = m.versao;
+    draftBase = draftSig();
+    draftRemoved = null;
+    msgsUndo.hidden = true;
+    showMsgsError("", false);
+    hideMsgsConfirm();
+    renderDraft(null);
+    setMsgsReady(true);
+  }
+
+  async function openMessagesEditor() {
+    if (msgsDialog.open || authLocked || shuttingDown) return;
+    const session = ++msgsSession;
+    msgsLeaveClean = false;
+    draft = [];
+    draftRemoved = null;
+    msgsUndo.hidden = true;
+    showMsgsError("", false);
+    hideMsgsConfirm();
+    msgsList.replaceChildren();
+    msgsEmpty.hidden = true;
+    msgsLimit.hidden = true;
+    msgsLoading.hidden = false;
+    setText(msgsCount, "");
+    btnMsgsFactory.hidden = true;
+    setMsgsReady(false);
+    msgsDialog.showModal();
+    btnMsgsCancel.focus();
+    try {
+      const m = await fetchMessages();
+      if (session !== msgsSession || !msgsDialog.open) return;
+      applyMessages(m);
+      startDraft(m);
+      msgsAnnounce("Mensagens carregadas.");
+      offerPendingDraft(m);
+    } catch (err) {
+      if (session !== msgsSession || !msgsDialog.open) return;
+      msgsLoading.hidden = true;
+      showMsgsError("Não foi possível carregar as mensagens agora. Feche e tente de novo.", false);
+    }
+  }
+
+  /**
+   * Clique no fundo (::backdrop) de um <dialog>. Exige que o botão do mouse TAMBÉM tenha sido
+   * apertado no fundo: arrastar para selecionar texto e soltar fora não conta como clique no fundo.
+   */
+  function onBackdropClick(dlg, fn) {
+    let downOnBackdrop = false;
+    dlg.addEventListener("pointerdown", (e) => { downOnBackdrop = e.target === dlg; });
+    dlg.addEventListener("click", (e) => {
+      const ok = e.target === dlg && downOnBackdrop;
+      downOnBackdrop = false;
+      if (ok) fn();
+    });
+  }
+
+  /** Fecha um <dialog> com a animação de saída (como as Configurações). */
+  function closeDialogAnimated(dlg) {
+    if (!dlg.open) return;
+    if (prefersReducedMotion()) { dlg.close(); return; }
+    dlg.classList.add("is-closing");
+    setTimeout(() => {
+      dlg.classList.remove("is-closing");
+      if (dlg.open) dlg.close();
+    }, 200);
+  }
+
+  /** Cancelar / Esc / clique no fundo: pergunta antes de jogar fora o que foi digitado. */
+  function requestCloseEditor() {
+    if (!msgsDialog.open || msgsBusy) return;
+    if (!msgsDirty()) { closeDialogAnimated(msgsDialog); return; }
+    showMsgsConfirm({
+      title: "Descartar as alterações?",
+      text: "O que você mudou ainda não foi salvo.",
+      yes: "Descartar",
+      no: "Continuar editando",
+      onYes: () => { msgsLeaveClean = true; closeDialogAnimated(msgsDialog); },
+    });
+  }
+
+  /** Põe no editor os cartões de `items` sobre a versão atual `m` do servidor (id que sumiu vira mensagem nova). */
+  function adoptDraft(items, m) {
+    const existing = new Set(m.items.map((x) => x.id));
+    draft = items.map((x) => ({
+      key: ++draftKey, id: x.id && existing.has(x.id) ? x.id : null, titulo: x.titulo, texto: x.texto,
+      errTitulo: "", errTexto: "", isNew: false,
+    }));
+    draftVersao = m.versao; // draftBase continua sendo a lista do servidor: o editor segue "sujo"
+    draftRemoved = null;
+    msgsUndo.hidden = true;
+    showMsgsError("", false);
+    renderDraft(null);
+  }
+
+  /** Se o editor anterior fechou sujo sem perguntar, oferece continuar de onde parou. */
+  function offerPendingDraft(m) {
+    if (!pendingDraft) return;
+    const p = pendingDraft;
+    showMsgsConfirm({
+      title: "Continuar a edição de antes?",
+      text: p.versao === m.versao
+        ? "A janela fechou antes de você salvar. Dá para voltar ao que você estava escrevendo."
+        : "A janela fechou antes de você salvar, e outro aparelho mudou as mensagens nesse meio tempo. Se continuar e salvar, a sua versão fica por cima.",
+      yes: "Continuar de onde parei",
+      no: "Começar de novo",
+      focusYes: true,
+      onYes: () => {
+        pendingDraft = null;
+        adoptDraft(p.items, m);
+        msgsAnnounce("Edição anterior recuperada.");
+      },
+      onNo: () => { pendingDraft = null; },
+    });
+  }
+
+  // ---- Edição nos cartões (delegação de eventos) ----
+  const draftByKey = (key) => draft.find((d) => String(d.key) === String(key));
+
+  msgsList.addEventListener("input", (e) => {
+    const el = e.target;
+    if (!(el instanceof HTMLElement) || !el.dataset.field) return;
+    const it = draftByKey(el.dataset.key);
+    if (!it) return;
+    const field = el.dataset.field;
+    it[field] = el.value;
+    const li = el.closest(".msg-card");
+    const counter = li.querySelector('[data-counter="' + field + '"]');
+    paintCounter(counter, el.value.length, field === "texto" ? MSG_TEXT_MAX : MSG_TITLE_MAX);
+    // escrever corrige o aviso daquele campo
+    const errKey = field === "texto" ? "errTexto" : "errTitulo";
+    if (it[errKey]) {
+      it[errKey] = "";
+      el.removeAttribute("aria-invalid");
+      el.removeAttribute("aria-describedby");
+      const err = el.id ? document.getElementById(el.id + "-erro") : null;
+      if (err) { err.hidden = true; err.textContent = ""; }
+      if (!draft.some((d) => d.errTitulo || d.errTexto)) showMsgsError("", false);
+    }
+    hideMsgsConfirm();
+  });
+
+  function moveDraft(key, delta) {
+    const i = draft.findIndex((d) => String(d.key) === String(key));
+    const j = i + delta;
+    if (i < 0 || j < 0 || j >= draft.length) return;
+    const it = draft[i];
+    draft[i] = draft[j];
+    draft[j] = it;
+    renderDraft({ key: it.key, what: delta < 0 ? "up" : "down" });
+    msgsAnnounce("Mensagem " + (i + 1) + " movida para a posição " + (j + 1) + " de " + draft.length + ".");
+  }
+
+  function removeDraft(key) {
+    const i = draft.findIndex((d) => String(d.key) === String(key));
+    if (i < 0) return;
+    const [gone] = draft.splice(i, 1);
+    draftRemoved = { item: gone, index: i };
+    const name = gone.titulo.trim() || "sem nome";
+    setText(msgsUndoText, "Mensagem " + (i + 1) + " (" + name + ") removida.");
+    msgsUndo.hidden = false;
+    const next = draft[Math.min(i, draft.length - 1)];
+    renderDraft(next ? { key: next.key, what: "titulo" } : null);
+    if (!next) btnMsgsAdd.focus();
+  }
+
+  msgsList.addEventListener("click", (e) => {
+    const btn = e.target instanceof Element ? e.target.closest("button[data-act]") : null;
+    if (!btn || btn.disabled || !msgsList.contains(btn) || msgsBusy) return;
+    const key = btn.closest(".msg-card").dataset.key;
+    hideMsgsConfirm();
+    if (btn.dataset.act === "up") moveDraft(key, -1);
+    else if (btn.dataset.act === "down") moveDraft(key, 1);
+    else if (btn.dataset.act === "remove") removeDraft(key);
+  });
+
+  btnMsgsUndo.addEventListener("click", () => {
+    if (!draftRemoved || draft.length >= MSG_MAX) return;
+    const { item, index } = draftRemoved;
+    draftRemoved = null;
+    msgsUndo.hidden = true;
+    const at = Math.min(index, draft.length);
+    draft.splice(at, 0, item);
+    renderDraft({ key: item.key, what: "titulo" });
+    msgsAnnounce("Mensagem restaurada na posição " + (at + 1) + ".");
+  });
+
+  btnMsgsAdd.addEventListener("click", () => {
+    if (!msgsReady || msgsBusy) return;
+    hideMsgsConfirm();
+    if (draft.length >= MSG_MAX) { msgsLimit.hidden = false; return; }
+    const it = { key: ++draftKey, id: null, titulo: "", texto: "", errTitulo: "", errTexto: "", isNew: true };
+    draft.push(it);
+    renderDraft({ key: it.key, what: "titulo" });
+    msgsAnnounce("Mensagem " + draft.length + " adicionada.");
+  });
+
+  // ---- Restaurar de fábrica (grava na hora, depois de confirmar) ----
+  btnMsgsFactory.addEventListener("click", () => {
+    if (!msgsReady || msgsBusy) return;
+    showMsgsConfirm({
+      title: "Restaurar as mensagens de fábrica?",
+      text: "As suas mensagens serão apagadas e voltam as originais do Proclamare. Vale na hora, sem precisar salvar.",
+      yes: "Sim, restaurar",
+      no: "Manter as minhas",
+      onYes: restoreFactoryMessages,
+    });
+  });
+
+  /** Texto do erro conforme o status HTTP (e o 409 de versão antiga). */
+  function msgsHttpError(r) {
+    if (r.status === 409 && r.data.codigo === "versao_mudou") {
+      return {
+        text: "Outro aparelho mudou as mensagens. Recarregue para ver a versão atual. Recarregar descarta o que você digitou; “Manter o que digitei” guarda o seu texto e, ao salvar, ele fica por cima.",
+        reload: true,
+      };
+    }
+    if (r.status === 429) return { text: "Muitas alterações seguidas. Espere um minuto e tente de novo.", reload: false };
+    if (r.status === 413) return { text: "As mensagens ficaram grandes demais. Encurte alguns textos.", reload: false };
+    const t = typeof r.data.error === "string" && r.data.error ? r.data.error : "Não foi possível salvar. Tente de novo.";
+    return { text: t, reload: false };
+  }
+
+  function setMsgsBusy(on) {
+    msgsBusy = on;
+    btnMsgsSave.classList.toggle("is-loading", on);
+    for (const b of [btnMsgsSave, btnMsgsAdd, btnMsgsFactory, btnMsgsCancel]) {
+      if (on) b.setAttribute("aria-disabled", "true");
+      else if (msgsReady || b === btnMsgsCancel) b.removeAttribute("aria-disabled");
+    }
+  }
+
+  async function restoreFactoryMessages() {
+    hideMsgsConfirm();
+    if (msgsBusy) return;
+    setMsgsBusy(true);
+    try {
+      const r = await postJSON("/api/mensagens/restaurar", { versao: draftVersao }, { timeout: 10000 });
+      const parsed = r.ok ? parseMessages(r.data) : null;
+      if (parsed) {
+        applyMessages(parsed);
+        msgsLeaveClean = true;
+        closeDialogAnimated(msgsDialog);
+        toast("Mensagens de fábrica restauradas.", "success");
+      } else {
+        const er = msgsHttpError(r);
+        showMsgsError(er.text, er.reload);
+        if (er.reload) btnMsgsReload.focus();
+      }
+    } catch (err) {
+      if (err.name !== "AuthLockedError") showMsgsError("Sem conexão com o servidor. Tente de novo.", false);
+    } finally {
+      setMsgsBusy(false);
+    }
+  }
+
+  btnMsgsReload.addEventListener("click", async () => {
+    if (msgsBusy) return;
+    setMsgsBusy(true);
+    try {
+      const m = await fetchMessages();
+      applyMessages(m);
+      startDraft(m);
+      msgsAnnounce("Mensagens recarregadas com a versão atual.");
+      btnMsgsAdd.focus();
+    } catch (err) {
+      if (err.name !== "AuthLockedError") showMsgsError("Não foi possível recarregar agora. Tente de novo.", true);
+    } finally {
+      setMsgsBusy(false);
+    }
+  });
+
+  // 409: busca a versão atual mas MANTÉM o que foi digitado; salvar depois grava por cima (decisão do dono do texto).
+  btnMsgsKeep.addEventListener("click", async () => {
+    if (msgsBusy) return;
+    setMsgsBusy(true);
+    try {
+      const m = await fetchMessages();
+      applyMessages(m);
+      adoptDraft(draft, m);
+      msgsAnnounce("Seu texto foi mantido. Ao salvar, ele fica por cima do que o outro aparelho gravou.");
+      btnMsgsSave.focus();
+    } catch (err) {
+      if (err.name !== "AuthLockedError") showMsgsError("Não foi possível recarregar agora. Tente de novo.", true);
+    } finally {
+      setMsgsBusy(false);
+    }
+  });
+
+  // ---- Salvar ----
+  async function saveMessages() {
+    if (!msgsReady || msgsBusy) return;
+    hideMsgsConfirm();
+    // limpa e confere cada campo; os avisos aparecem embaixo do campo com problema
+    let firstBad = null;
+    for (const it of draft) {
+      it.titulo = cleanMsgText(it.titulo, false);
+      it.texto = cleanMsgText(it.texto, true);
+      it.errTitulo = it.titulo ? (it.titulo.length > MSG_TITLE_MAX ? "O nome pode ter até " + MSG_TITLE_MAX + " letras." : "") : "Dê um nome ao botão.";
+      it.errTexto = it.texto ? (it.texto.length > MSG_TEXT_MAX ? "O texto pode ter até " + MSG_TEXT_MAX + " letras." : "") : "Escreva o texto que será anunciado.";
+      if (!firstBad && it.errTitulo) firstBad = { key: it.key, what: "titulo" };
+      if (!firstBad && it.errTexto) firstBad = { key: it.key, what: "texto" };
+    }
+    if (firstBad) {
+      renderDraft(firstBad);
+      showMsgsError("Corrija os campos destacados antes de salvar.", false);
+      return;
+    }
+    showMsgsError("", false);
+    setMsgsBusy(true);
+    try {
+      const body = { versao: draftVersao, mensagens: draft.map((d) => (d.id ? { id: d.id, titulo: d.titulo, texto: d.texto } : { titulo: d.titulo, texto: d.texto })) };
+      const r = await postJSON("/api/mensagens", body, { timeout: 12000 });
+      const parsed = r.ok ? parseMessages(r.data) : null;
+      if (parsed) {
+        applyMessages(parsed);
+        msgsLeaveClean = true;
+        closeDialogAnimated(msgsDialog);
+        toast(parsed.items.length === 1 ? "Mensagem salva." : "Mensagens salvas.", "success");
+        return;
+      }
+      // erro de um campo específico: mostra embaixo dele
+      const idx = r.data.indice;
+      const target = r.status === 400 && Number.isInteger(idx) ? draft[idx] : null;
+      if (target && (r.data.campo === "titulo" || r.data.campo === "texto") && typeof r.data.error === "string") {
+        if (r.data.campo === "titulo") target.errTitulo = r.data.error;
+        else target.errTexto = r.data.error;
+        renderDraft({ key: target.key, what: r.data.campo });
+        showMsgsError("Corrija os campos destacados antes de salvar.", false);
+        return;
+      }
+      const er = msgsHttpError(r);
+      showMsgsError(er.text, er.reload);
+      if (er.reload) btnMsgsReload.focus();
+    } catch (err) {
+      if (err.name !== "AuthLockedError") showMsgsError("Sem conexão com o servidor. Tente de novo.", false);
+    } finally {
+      setMsgsBusy(false);
+    }
+  }
+
+  btnMsgsSave.addEventListener("click", saveMessages);
+  btnMsgsCancel.addEventListener("click", requestCloseEditor);
+  btnMsgsConfirmNo.addEventListener("click", () => {
+    const fn = confirmNo;
+    hideMsgsConfirm();
+    if (fn) fn();
+  });
+  btnMsgsConfirmYes.addEventListener("click", () => {
+    const fn = confirmYes;
+    hideMsgsConfirm();
+    if (fn) fn();
+  });
+  btnMsgsEdit.addEventListener("click", openMessagesEditor);
+  msgsDialog.addEventListener("cancel", (e) => { e.preventDefault(); requestCloseEditor(); });
+  onBackdropClick(msgsDialog, requestCloseEditor);
+  msgsDialog.addEventListener("close", () => {
+    // Fechou sujo sem passar pela pergunta (ex.: Esc duas vezes no Chrome/Edge): guarda o rascunho.
+    if (msgsDirty() && !msgsLeaveClean && !authLocked && !shuttingDown) {
+      pendingDraft = { items: draft.map((d) => ({ id: d.id, titulo: d.titulo, texto: d.texto })), versao: draftVersao };
+    } else if (msgsLeaveClean || authLocked || shuttingDown) {
+      pendingDraft = null; // saiu de propósito ou a sessão acabou: nada de texto guardado na memória
+    }
+    msgsSession++;
+    msgsReady = false;
+    draft = [];
+    draftRemoved = null;
+    msgsList.replaceChildren(); // não deixa texto digitado parado no DOM
+    hideMsgsConfirm();
+    setMsgsBusy(false);
+    if (!shuttingDown && !authLocked) btnMsgsEdit.focus();
+  });
 
   // ======================================================================
   // 12. Anunciar / Testar (o abaixamento da música acontece no servidor)
@@ -5232,6 +5923,7 @@
   let loginBusy = false;
   let blockTimer = 0;
   let netBusy = false;
+  let shuttingDown = false; // v2.5: o Proclamare foi desligado por este painel — nada mais fala com o servidor
 
   /** Para tudo que fala com o servidor (polls, long-poll, player, buscas). */
   function stopAll() {
@@ -5247,6 +5939,8 @@
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
     toastHost.replaceChildren();
     if (settingsDialog.open) settingsDialog.close();
+    if (msgsDialog.open) msgsDialog.close();
+    if (powerDialog.open) powerDialog.close();
   }
 
   /** Mostra a porta: "pin" (digitar), "off" (desativado/sem conexão) ou "boot" (verificando). */
@@ -5258,6 +5952,7 @@
     gate.hidden = mode === "boot";
     gatePinView.hidden = mode !== "pin";
     gateOffView.hidden = mode !== "off";
+    gateDownView.hidden = mode !== "down";
     if (mode === "pin") {
       endBlock(true);
       gatePinInput.value = "";
@@ -5272,6 +5967,8 @@
         setText(gateOffText, "Para controlar as caixas por este aparelho, defina um PIN no computador da loja, em Configurações → Acesso pela rede.");
       }
       btnGateRetry.focus();
+    } else if (mode === "down") {
+      gateDownTitle.focus();
     }
   }
 
@@ -5287,6 +5984,74 @@
       showGate("pin", { notice: "Sua sessão terminou. Digite o PIN de novo." });
     }
   }
+
+  // ---- Desligar o Proclamare (v2.5): botão ⏻ só no PC local ----
+  // POST /api/sistema/desligar {} -> 202 {ok:true}; o servidor encerra uns 0,5 s depois.
+  // 409 = há anúncio tocando (não desliga). Remoto = 403 mesmo com PIN (o botão nem aparece).
+  let powerBusy = false;
+
+  function showPowerError(text) {
+    powerError.hidden = !text;
+    setText(powerError, text || "");
+  }
+
+  function openPowerDialog() {
+    if (!auth.podeDesligar || shuttingDown || powerDialog.open || authLocked) return;
+    showPowerError("");
+    powerDialog.showModal();
+    btnPowerCancel.focus(); // o padrão seguro é NÃO desligar
+  }
+
+  function closePowerDialog() {
+    if (powerBusy) return;
+    closeDialogAnimated(powerDialog);
+  }
+
+  /** Servidor aceitou o desligamento: para tudo desta aba e mostra a tela calma. */
+  function showShutdown() {
+    shuttingDown = true;
+    powerBusy = false;
+    stopAll(); // para o <audio>, o player do YouTube, o long-poll e todos os polls; fecha diálogos
+    btnPower.hidden = true;
+    document.title = "Proclamare desligado";
+    showGate("down");
+  }
+
+  async function confirmPower() {
+    if (powerBusy || shuttingDown) return;
+    powerBusy = true;
+    showPowerError("");
+    btnPowerConfirm.classList.add("is-loading");
+    btnPowerConfirm.setAttribute("aria-disabled", "true");
+    btnPowerCancel.setAttribute("aria-disabled", "true");
+    let done = false;
+    try {
+      const r = await postJSON("/api/sistema/desligar", {}, { timeout: 8000 });
+      if (r.status === 202 && r.data.ok === true) {
+        done = true;
+        showShutdown();
+        return;
+      }
+      if (r.status === 409) showPowerError(typeof r.data.error === "string" && r.data.error ? r.data.error : "Espere o anúncio terminar.");
+      else if (r.status === 403) showPowerError("Só dá para desligar pelo computador do Proclamare.");
+      else showPowerError(typeof r.data.error === "string" && r.data.error ? r.data.error : "Não foi possível desligar agora. Tente de novo.");
+    } catch (err) {
+      if (err.name !== "AuthLockedError") showPowerError("Não foi possível falar com o servidor. Tente de novo.");
+    } finally {
+      if (!done) {
+        powerBusy = false;
+        btnPowerConfirm.classList.remove("is-loading");
+        btnPowerConfirm.removeAttribute("aria-disabled");
+        btnPowerCancel.removeAttribute("aria-disabled");
+      }
+    }
+  }
+
+  btnPower.addEventListener("click", openPowerDialog);
+  btnPowerCancel.addEventListener("click", closePowerDialog);
+  btnPowerConfirm.addEventListener("click", confirmPower);
+  powerDialog.addEventListener("cancel", (e) => { e.preventDefault(); closePowerDialog(); });
+  onBackdropClick(powerDialog, closePowerDialog);
 
   // ---- Tela de PIN ----
   function setPinFeedback(text, isError) {
@@ -5598,7 +6363,7 @@
   /** Descobre quem somos (local/remoto, PIN) e abre a porta certa. */
   let booting = false;
   async function boot() {
-    if (booting) return; // evita boot/startApp duplicados (duplo clique, retry + logout)
+    if (booting || shuttingDown) return; // evita boot/startApp duplicados (duplo clique, retry + logout)
     booting = true;
     btnGateRetry.setAttribute("aria-disabled", "true");
     btnLogout.setAttribute("aria-disabled", "true");
@@ -5632,6 +6397,9 @@
     auth.local = st.legacy ? true : st.local === true;
     auth.pinConfigured = !st.legacy && st.pin_configurado === true;
     auth.authenticated = st.legacy ? true : st.autenticado === true;
+    // v2.5: só o PC do Proclamare recebe pode_desligar=true (o servidor recusa o resto de qualquer jeito)
+    auth.podeDesligar = !st.legacy && st.local === true && st.pode_desligar === true;
+    btnPower.hidden = !auth.podeDesligar;
     if (auth.local) readLocalAuthInfo(st);
     if (auth.local || auth.authenticated) enterApp();
     else if (!auth.pinConfigured) showGate("off");
@@ -6624,6 +7392,8 @@
     scheduler.add("yt-heartbeat", pushYoutubeState, 3000, { always: true, immediate: true, enabled: () => ytMode === "player" });
     // Minhas músicas: só confere a pasta enquanto a lista está à vista (a versão muda -> recarrega)
     scheduler.add("lib", libPoll, 15000, { enabled: libActive, immediate: true });
+    // Mensagens prontas (v2.5): lê agora e relê a cada minuto, pausado com a aba oculta e com o editor aberto
+    scheduler.add("mensagens", refreshMessages, MSG_POLL_MS, { immediate: true, enabled: () => !msgsDialog.open });
 
     refreshSpotifyStatus();
     finishSpotifyRedirectBack();

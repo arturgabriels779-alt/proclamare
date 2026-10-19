@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.4.2 "Spotify"; base v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -31,6 +31,52 @@ da loja. Serve a interface (static/) e cuida de três coisas:
                                computadores também consigam controlá-la.
                                A aba tocadora recebe os comandos por
                                long-poll (latência quase instantânea).
+
+Contrato v2.5 (Mensagens prontas editáveis + Desligar pelo painel)
+-----------------------------------------------------------------
+  Só ACRESCENTA rotas e um campo; nada do que já existia muda. Todas as rotas abaixo ficam atrás do
+  PIN (PC local é livre), com 415 (não JSON) e 403 (Origin de outro host) como as demais.
+  * Mensagens prontas (os botões de atalho do painel). Ficam no config.json (chave "mensagens", lista
+    de {id, titulo, texto}) com um contador "mensagens_versao"; sem a chave vale a lista de FÁBRICA
+    (6 mensagens, constante MENSAGENS_DE_FABRICA, ids "fab-1".."fab-6"). Gravação atômica sob o lock
+    do config (as outras chaves ficam intactas).
+  * GET  /api/mensagens -> {ok, versao:int, de_fabrica:bool, mensagens:[{id, titulo, texto}]}.
+  * POST /api/mensagens {"versao":int, "mensagens":[{"id"?, "titulo", "texto"}]} substitui a lista
+    INTEIRA: 0..24 itens; titulo 1..40 e texto 1..500 caracteres (500 = o mesmo teto do /api/announce)
+    depois do strip; título em uma linha; texto pode ter quebra de linha (CRLF vira LF);
+    controle (Cc), formato (Cf, menos ZWJ/ZWNJ), substituto (Cs) e uso privado (Co) são recusados
+    ("Cn", ainda não atribuído, passa: o Unicode do Python 3.10-3.13 varia). Esquema estrito: chave desconhecida em qualquer
+    nível = 400. "id" opcional: se vier, tem de ser de uma mensagem que existe agora (senão 400) e
+    não pode repetir; sem "id" o servidor gera um (8 hex) e ele não muda enquanto a mensagem existir.
+    Ordem das respostas: 400, 429 (20 gravações por minuto por IP), 409. 409 {"ok":false,"error",
+    "codigo":"versao_mudou"} quando "versao" não é a atual (outro aparelho salvou antes). Todo 400
+    traz "campo" ("versao"|"mensagens"|"titulo"|"texto"|"id"|"chave") e, quando é de um item, "indice"
+    (0-based). Resposta de sucesso: o mesmo formato do GET (com a versão nova). Corpo máx. 60 KB.
+  * POST /api/mensagens/restaurar {"versao":int} volta à lista de fábrica (remove a chave "mensagens";
+    a versão sobe). Mesmo formato de resposta, mesmos 400/409/429. Já estando na fábrica não grava.
+  * Auditoria (logger "proclamare.som.auditoria"): acao, IP, local/remoto e QUANTAS mensagens; nunca o
+    conteúdo.
+  * POST /api/sistema/desligar {}   SÓ LOCAL (403 para qualquer aparelho remoto, mesmo com PIN).
+    Responde 202 {"ok":true} e, ~0,5 s depois (thread "desligar-painel"), encerra o servidor de forma
+    graciosa: o laço do waitress sai, a porta é fechada, SomService/vigia, varredura de músicas e as
+    threads do Spotify/YouTube param, o arquivo de PID é removido e o processo termina (um vigia
+    força a saída se algo prender por mais de 10 s). O PID só some DEPOIS de a porta fechar (um desligar
+    seguido de ligar não encontra a porta ocupada). Loga "Desligado pelo painel (PC local)". Antes de
+    responder, enfileira uma "pause" para o Tocador da loja de qualquer aba/aparelho (o Spotify NÃO é
+    pausado: ele toca no aplicativo Spotify do PC e continua lá). Com um anúncio (ou teste de saída)
+    tocando: 409 "Espere o anúncio terminar"; com envio de músicas em processamento: 409 "Há músicas
+    sendo enviadas. Espere terminar." (um envio cujo corpo ainda está chegando pela rede não é visto
+    e é cortado); nada é desligado. Depois de aceito, novos anúncios dão 409 e novos envios 503 (o lock
+    de anúncio fica preso até o fim do processo). Um 2º pedido
+    enquanto desliga repete o 202. Para ligar de novo: duplo clique em Proclamare.pyw (o pid file já
+    sumiu, então o lançador sobe um servidor novo; "Desligar Proclamare" do Menu Iniciar responde
+    "não está ligado", sem erro). Corpo: só {} (chave extra = 400).
+  * GET /api/auth/status ganha "pode_desligar": true só para o PC local (o painel mostra o botão ⏻).
+  * "Local" (PC da loja) agora exige também a AUSÊNCIA de qualquer cabeçalho de proxy (Via, Forwarded,
+    X-Forwarded-For, X-Forwarded-Host, X-Real-IP; CABECALHOS_DE_PROXY), no Flask e no filtro de corpo do
+    waitress: um proxy reverso no PC (ex.: Apache) que reescreve o Host não faz mais a rede inteira
+    parecer local. O navegador nunca manda esses cabeçalhos.
+  * Corpo JSON aninhado demais (RecursionError) = 400, sem traceback no log.
 
 Contrato v2.4.2 (Spotify: erros com causa, reconexão e volume do anúncio)
 ------------------------------------------------------------------------
@@ -302,7 +348,9 @@ import shutil
 import socket
 import tempfile
 import threading
+import _thread
 import time
+import unicodedata
 import uuid
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -416,7 +464,12 @@ def _tratar_excecao(e: Exception) -> tuple[Response, int]:
 
 def corpo_json() -> dict:
     """Devolve o corpo JSON da requisição, que obrigatoriamente é um objeto."""
-    dados = request.get_json(silent=True)
+    try:
+        dados = request.get_json(silent=True)
+    except RecursionError:
+        # JSON aninhado demais ("[[[[..."): o get_json(silent=True) só captura ValueError. Sem isto
+        # viraria 500 com traceback no log a cada requisição (CWE-674/779).
+        raise ErroApi("Corpo JSON inválido.") from None
     if not isinstance(dados, dict):
         raise ErroApi("Corpo JSON inválido.")
     return dados
@@ -582,11 +635,18 @@ def _confiar_loopback() -> bool:
     return _env("CONFIAR_LOOPBACK", "1").strip() != "0"
 
 
+# Cabeçalhos que só um proxy/túnel acrescenta (o navegador nunca manda). Qualquer um deles faz a
+# requisição deixar de ser "local": um proxy reverso no PC (ex.: Apache mod_proxy) pode reescrever o
+# Host para loopback sem acrescentar Via, e todo aparelho da rede passaria por "o próprio PC".
+CABECALHOS_DE_PROXY = ("Via", "Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP")
+
+
 def _local_por(remote_addr: str, host: str, tem_via: bool) -> bool:
     """
     A regra "é o próprio computador" sobre os três dados que a definem (usada pelo Flask e pelo
     filtro de corpo do waitress, que ainda não tem um `request`): endereço de origem em
-    loopback E cabeçalho Host de loopback E sem cabeçalho Via.
+    loopback E cabeçalho Host de loopback E sem cabeçalho de proxy (`tem_via`: qualquer um de
+    CABECALHOS_DE_PROXY, não só o Via).
     """
     if not _confiar_loopback() or tem_via:
         return False
@@ -606,7 +666,8 @@ def _requisicao_local() -> bool:
     ou "netsh portproxy" no PC da loja faz todo mundo chegar por loopback, mas
     normalmente com Host de rede/nome ou Via; sem isso o PIN seria contornado.
     """
-    return _local_por(request.remote_addr or "", request.host, "Via" in request.headers)
+    return _local_por(request.remote_addr or "", request.host,
+                      any(h in request.headers for h in CABECALHOS_DE_PROXY))
 
 
 @app.before_request
@@ -1253,6 +1314,8 @@ def auth_status() -> Response:
         "local": local,
         "pin_configurado": pin_configurado(cfg),
         "autenticado": local or _token_valido_sessao(request.cookies.get(COOKIE_SESSAO), cfg),
+        # v2.5: o botão "Desligar o Proclamare" só existe no PC da loja (a rota é somente local).
+        "pode_desligar": local,
     }
     if local:  # só o PC da loja vê sinais de ataque
         agora = time.monotonic()
@@ -2999,6 +3062,8 @@ def _loop_reaplicacao() -> None:
     while True:
         _reaplic_acordar.wait(SPOTIFY_PENDENTE_INTERVALO_S)
         _reaplic_acordar.clear()
+        if _desligando.is_set():   # v2.5: desligando pelo painel; a pendência fica no config.json
+            return
         try:
             with _pendente_lock:
                 with _reaplic_lock:
@@ -3147,6 +3212,7 @@ _RE_LIST_ID = re.compile(r"[A-Za-z0-9_-]{2,64}")
 _RE_TEMPO = re.compile(r"(?:(\d{1,5})h)?(?:(\d{1,5})m)?(?:(\d{1,6})s?)?")
 
 _yt_cond = threading.Condition()
+_desligando = threading.Event()   # v2.5: "Desligar" aceito; long-polls e laços de fundo saem logo
 YOUTUBE_POLLS_MAX = 4  # long-polls simultâneos (uso normal: 1 aba tocadora)
 _yt_poll_sem = threading.BoundedSemaphore(YOUTUBE_POLLS_MAX)
 _yt_comandos: deque[dict] = deque(maxlen=50)
@@ -3687,7 +3753,7 @@ def youtube_commands_poll() -> Response:
             while True:
                 pendentes = [c for c in _yt_comandos if c["id"] > since]
                 restante = limite - time.monotonic()
-                if pendentes or restante <= 0:
+                if pendentes or restante <= 0 or _desligando.is_set():
                     break
                 _yt_cond.wait(timeout=restante)
             ultimo = _yt_ultimo_id
@@ -3874,6 +3940,7 @@ def voices() -> Response:
 
 
 _anuncio_lock = threading.Lock()  # um anúncio por vez (não bloqueante -> 409)
+ANUNCIO_TEXTO_MAX = 500           # teto do texto digitado (v2.5: as Mensagens prontas usam o MESMO)
 
 
 @contextmanager
@@ -3930,7 +3997,7 @@ def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
 @app.post("/api/announce")
 def announce() -> Response | tuple[Response, int]:
     data = corpo_json()
-    texto = validar_str(data.get("text"), "text", 500, min_len=1)
+    texto = validar_str(data.get("text"), "text", ANUNCIO_TEXTO_MAX, min_len=1)
     modo = data.get("engine", "auto")
     if not isinstance(modo, str) or modo not in MOTORES:
         raise ErroApi("Campo 'engine' inválido.")
@@ -4512,6 +4579,24 @@ ACERVO = musicas.Acervo(musicas.pasta_padrao(_env("MUSICAS_DIR", "")))
 _envio_sem = threading.BoundedSemaphore(2)   # no máximo 2 envios simultâneos (cada um grava em disco)
 
 
+_envios_ativos = 0   # envios de músicas sendo processados agora (o "Desligar" espera terminarem)
+
+
+def _envio_iniciar() -> None:
+    """Conta um envio ativo; recusa (503) se o Proclamare já está desligando (contrato v2.5)."""
+    global _envios_ativos
+    with _desligar_lock:
+        if _desligamento_agendado:
+            raise ErroApi("O Proclamare está sendo desligado. Ligue de novo e tente enviar.", 503)
+        _envios_ativos += 1
+
+
+def _envio_terminar() -> None:
+    global _envios_ativos
+    with _desligar_lock:
+        _envios_ativos = max(0, _envios_ativos - 1)
+
+
 def _corpo_grande_permitido(metodo: str, caminho: str, cabecalhos: Any, origem: str) -> bool:
     """
     Filtro de corpo GRANDE, chamado pelo waitress logo depois de ler os cabeçalhos (ANTES de
@@ -4524,7 +4609,9 @@ def _corpo_grande_permitido(metodo: str, caminho: str, cabecalhos: Any, origem: 
     if metodo != "POST" or caminho != ROTA_ENVIO_MUSICAS or not MUSICAS_ENVIO_HABILITADO:
         return False
     try:
-        if _local_por(origem, cabecalhos.get("HOST", ""), "VIA" in cabecalhos):
+        # chaves do waitress: maiúsculas, "-" vira "_" (CABECALHOS_DE_PROXY no mesmo formato)
+        if _local_por(origem, cabecalhos.get("HOST", ""),
+                      any(h.upper().replace("-", "_") in cabecalhos for h in CABECALHOS_DE_PROXY)):
             return True
         bruto = cabecalhos.get("COOKIE", "")
         if not bruto or len(bruto) > 4096:
@@ -4670,6 +4757,11 @@ def musicas_enviar() -> Response | tuple[Response, int]:
     if not _envio_sem.acquire(blocking=False):
         raise ErroApi("Já há um envio em andamento. Espere terminar e tente de novo.", 429)
     try:
+        _envio_iniciar()
+    except BaseException:
+        _envio_sem.release()
+        raise
+    try:
         try:
             partes = list(request.files.items(multi=True))
         except RequestEntityTooLarge:
@@ -4701,6 +4793,7 @@ def musicas_enviar() -> Response | tuple[Response, int]:
         mensagem = parada.motivo if parada is not None else "Nenhuma música foi aceita."
         return jsonify({"ok": False, "error": mensagem, "enviados": [], "recusados": recusados}), status
     finally:
+        _envio_terminar()
         _envio_sem.release()
 
 
@@ -4750,6 +4843,323 @@ def musicas_atualizar() -> tuple[Response, int]:
     if not aguardar:
         return jsonify({"ok": True}), 202
     return jsonify({"ok": True, "concluida": concluida, "versao": ACERVO.instantaneo()[0]}), 200
+
+
+# ---------------------------------------------------------------------------
+# Mensagens prontas (contrato v2.5)
+# Os atalhos de anúncio do painel. Ficam no config.json (chave "mensagens" + contador
+# "mensagens_versao"); sem a chave vale a lista de fábrica. A lista é trocada INTEIRA, de forma
+# atômica sob o _config_lock, e o contador de versão evita que dois aparelhos se atropelem (409).
+# Nada daqui vai para o log além da QUANTIDADE de mensagens (o texto é da loja).
+# ---------------------------------------------------------------------------
+MENSAGENS_MAX = 24                  # itens na lista
+MENSAGEM_TITULO_MAX = 40            # caracteres do nome do botão
+MENSAGEM_TEXTO_MAX = ANUNCIO_TEXTO_MAX   # o mesmo teto do anúncio digitado
+MENSAGENS_ESCRITA_MAX_POR_MIN = 20  # POST /api/mensagens e /restaurar, por IP
+MENSAGENS_CORPO_MAX = 60 * 1024     # 24 x (500 + 40) caracteres acentuados passam dos 16 KB globais
+RE_MENSAGEM_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
+_MENSAGEM_CHAVES = frozenset({"id", "titulo", "texto"})
+_CATEGORIAS_RECUSADAS = frozenset({"Cc", "Cf", "Cs", "Co"})
+_FORMATO_OK = frozenset({chr(0x200C), chr(0x200D)})   # ZWNJ/ZWJ (emojis compostos): únicos "Cf" aceitos
+MSG_VERSAO_MUDOU = "Outro aparelho mudou as mensagens. Recarregue para ver a versão atual."
+
+# Lista de fábrica (os atalhos que o painel sempre teve). Ids fixos, para o cliente reconhecê-los.
+MENSAGENS_DE_FABRICA: tuple[dict[str, str], ...] = (
+    {"id": "fab-1", "titulo": "Farol aceso",
+     "texto": "Atenção, o proprietário de um veículo deixou os faróis acesos no estacionamento. "
+              "Por favor, verifique o seu carro."},
+    {"id": "fab-2", "titulo": "Caixa rápido",
+     "texto": "Atenção clientes, o caixa rápido está disponível para compras de até dez itens."},
+    {"id": "fab-3", "titulo": "Chamado a colaborador",
+     "texto": "Solicitamos a presença de um colaborador no setor de frios, por favor."},
+    {"id": "fab-4", "titulo": "Loja fecha em 15 min",
+     "texto": "Prezados clientes, informamos que a loja encerra suas atividades em quinze minutos."},
+    {"id": "fab-5", "titulo": "Criança no balcão",
+     "texto": "Atenção, temos uma criança aguardando no balcão de atendimento. "
+              "Por favor, dirija-se até lá."},
+    {"id": "fab-6", "titulo": "Teste de som",
+     "texto": "Teste, um, dois, três. Este é um teste do sistema de som da loja."},
+)
+
+
+class ErroMensagem(ErroApi):
+    """Erro de /api/mensagens: além de "error" leva "campo", "indice" (do item) e "codigo", se houver."""
+
+    def __init__(self, mensagem: str, status: int = 400, *, campo: str | None = None,
+                 indice: int | None = None, codigo: str | None = None) -> None:
+        super().__init__(mensagem, status)
+        self.campo = campo
+        self.indice = indice
+        self.codigo = codigo
+
+
+@app.errorhandler(ErroMensagem)
+def _tratar_erro_mensagem(e: ErroMensagem) -> tuple[Response, int]:
+    corpo: dict[str, Any] = {"ok": False, "error": e.mensagem}
+    for chave, valor in (("codigo", e.codigo), ("campo", e.campo), ("indice", e.indice)):
+        if valor is not None:
+            corpo[chave] = valor
+    return jsonify(corpo), e.status
+
+
+def _lista_de_fabrica() -> list[dict[str, str]]:
+    """Cópia nova da lista de fábrica (quem recebe pode alterar à vontade)."""
+    return [dict(m) for m in MENSAGENS_DE_FABRICA]
+
+
+def _versao_mensagens(cfg: dict) -> int:
+    """Contador do config.json; ausente ou estranho = 0."""
+    v = cfg.get("mensagens_versao")
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0
+
+
+def _mensagens_do_config(cfg: dict) -> tuple[list[dict[str, str]], bool]:
+    """
+    (lista, de_fabrica). Sem a chave "mensagens" (ou com algo que não é lista) vale a fábrica.
+    O que está gravado é revalidado de leve: um config.json editado à mão com um item torto
+    perde só esse item, nunca derruba a rota.
+    """
+    bruto = cfg.get("mensagens")
+    if not isinstance(bruto, list):
+        return _lista_de_fabrica(), True
+    lista: list[dict[str, str]] = []
+    vistos: set[str] = set()
+    for m in bruto[:MENSAGENS_MAX]:
+        if not isinstance(m, dict) or not all(isinstance(m.get(k), str) for k in _MENSAGEM_CHAVES):
+            continue
+        if (not RE_MENSAGEM_ID.fullmatch(m["id"]) or m["id"] in vistos
+                or not m["titulo"].strip() or not m["texto"].strip()):
+            continue
+        vistos.add(m["id"])
+        lista.append({"id": m["id"], "titulo": m["titulo"], "texto": m["texto"]})
+    return lista, False
+
+
+def _resposta_mensagens(cfg: dict) -> Response:
+    """Formato único do GET e dos POSTs: {ok, versao, de_fabrica, mensagens}."""
+    lista, de_fabrica = _mensagens_do_config(cfg)
+    return jsonify({"ok": True, "versao": _versao_mensagens(cfg),
+                    "de_fabrica": de_fabrica, "mensagens": lista})
+
+
+def _texto_da_mensagem(valor: Any, *, campo: str, rotulo: str, maximo: int,
+                       multilinha: bool, indice: int) -> str:
+    """
+    Strip + 1..maximo caracteres + sem caracteres de controle. Quebra de linha (LF) só no texto;
+    CRLF vira LF. Rejeita só o que é de fato perigoso: controle (Cc), formato (Cf), substituto (Cs)
+    e uso privado (Co), menos ZWJ/ZWNJ: texto invisível ou que inverte a direção não deve ir para a
+    fala nem para a tela. "Cn" (ainda não atribuído) PASSA: o Python 3.10-3.13 conhece versões
+    diferentes do Unicode e um emoji novo não pode dar 400 conforme a máquina.
+    """
+    quem = f"Mensagem {indice + 1}: "
+    if not isinstance(valor, str):
+        raise ErroMensagem(f"{quem}{rotulo} inválido.", campo=campo, indice=indice)
+    texto = valor.replace("\r\n", "\n").strip()
+    if not 1 <= len(texto) <= maximo:
+        raise ErroMensagem(f"{quem}{rotulo} precisa ter de 1 a {maximo} caracteres.",
+                           campo=campo, indice=indice)
+    for ch in texto:
+        if (ch == "\n" and multilinha) or ch in _FORMATO_OK:
+            continue
+        if unicodedata.category(ch) in _CATEGORIAS_RECUSADAS:
+            raise ErroMensagem(f"{quem}{rotulo} tem um caractere que não é permitido.",
+                               campo=campo, indice=indice)
+    return texto
+
+
+def _validar_corpo_mensagens(corpo: dict, *, com_lista: bool) -> tuple[int, list[dict[str, Any]]]:
+    """
+    Esquema ESTRITO do POST. Devolve (versao, itens) com titulo/texto já limpos e "id" só quando o
+    cliente mandou um. O id ainda precisa existir na lista atual (conferido sob o lock).
+    """
+    if set(corpo) - ({"versao", "mensagens"} if com_lista else {"versao"}):
+        raise ErroMensagem("Campo desconhecido.", campo="chave")
+    versao = corpo.get("versao")
+    if isinstance(versao, bool) or not isinstance(versao, int) or not 0 <= versao <= 2**31:
+        raise ErroMensagem("Campo 'versao' inválido.", campo="versao")
+    if not com_lista:
+        return versao, []
+    lista = corpo.get("mensagens")
+    if not isinstance(lista, list):
+        raise ErroMensagem("Campo 'mensagens' inválido.", campo="mensagens")
+    if len(lista) > MENSAGENS_MAX:
+        raise ErroMensagem(f"No máximo {MENSAGENS_MAX} mensagens.", campo="mensagens")
+    itens: list[dict[str, Any]] = []
+    ids_vistos: set[str] = set()
+    for i, bruto in enumerate(lista):
+        if not isinstance(bruto, dict):
+            raise ErroMensagem(f"Mensagem {i + 1} inválida.", campo="mensagens", indice=i)
+        if set(bruto) - _MENSAGEM_CHAVES:
+            raise ErroMensagem(f"Mensagem {i + 1}: campo desconhecido.", campo="chave", indice=i)
+        item: dict[str, Any] = {
+            "titulo": _texto_da_mensagem(bruto.get("titulo"), campo="titulo", rotulo="o nome do botão",
+                                         maximo=MENSAGEM_TITULO_MAX, multilinha=False, indice=i),
+            "texto": _texto_da_mensagem(bruto.get("texto"), campo="texto", rotulo="o texto anunciado",
+                                        maximo=MENSAGEM_TEXTO_MAX, multilinha=True, indice=i),
+        }
+        ident = bruto.get("id")
+        if ident is not None:   # null = mensagem nova, igual a não mandar o campo
+            if not isinstance(ident, str) or not RE_MENSAGEM_ID.fullmatch(ident) or ident in ids_vistos:
+                raise ErroMensagem(f"Mensagem {i + 1}: identificador inválido.", campo="id", indice=i)
+            ids_vistos.add(ident)
+            item["id"] = ident
+        itens.append(item)
+    return versao, itens
+
+
+def _limitar_escrita_mensagens() -> None:
+    """429 depois de MENSAGENS_ESCRITA_MAX_POR_MIN gravações por minuto vindas do mesmo IP."""
+    if excedeu_limite("mensagens:" + (request.remote_addr or "?"), MENSAGENS_ESCRITA_MAX_POR_MIN, 60.0):
+        raise ErroMensagem("Muitas alterações seguidas. Aguarde um minuto.", 429)
+
+
+def _exigir_versao_mensagens(cfg: dict, enviada: int) -> None:
+    """409 se outro aparelho já salvou depois que este carregou a lista."""
+    if enviada != _versao_mensagens(cfg):
+        raise ErroMensagem(MSG_VERSAO_MUDOU, 409, codigo="versao_mudou")
+
+
+def _auditar_mensagens(acao: str, total: int) -> None:
+    """Quem (local/IP) e QUANTAS mensagens. O conteúdo nunca vai para o log."""
+    auditoria.info("acao=%s ip=%s origem=%s total=%d", acao, request.remote_addr or "?",
+                   "local" if _requisicao_local() else "remoto", total)
+
+
+@app.get("/api/mensagens")
+def mensagens_listar() -> Response:
+    """A lista atual (ou a de fábrica) com a versão para o próximo POST."""
+    return _resposta_mensagens(load_config())
+
+
+@app.post("/api/mensagens")
+def mensagens_salvar() -> Response:
+    """Substitui a lista INTEIRA. Ordem: 400, 429, 409; depois grava sob o lock do config."""
+    request.max_content_length = MENSAGENS_CORPO_MAX   # só nesta rota; antes de ler o corpo
+    versao, itens = _validar_corpo_mensagens(corpo_json(), com_lista=True)
+    _limitar_escrita_mensagens()
+    with _config_lock:
+        cfg = load_config()
+        _exigir_versao_mensagens(cfg, versao)
+        existentes = {m["id"] for m in _mensagens_do_config(cfg)[0]}
+        usados = {m["id"] for m in itens if "id" in m}
+        final: list[dict[str, str]] = []
+        for i, m in enumerate(itens):
+            ident = m.get("id")
+            if ident is None:   # mensagem nova: o servidor gera o id (estável a partir de agora)
+                while True:
+                    ident = secrets.token_hex(4)
+                    if ident not in existentes and ident not in usados:
+                        break
+                usados.add(ident)
+            elif ident not in existentes:
+                raise ErroMensagem(f"Mensagem {i + 1}: esta mensagem não existe mais. Recarregue a lista.",
+                                   campo="id", indice=i)
+            final.append({"id": ident, "titulo": m["titulo"], "texto": m["texto"]})
+        cfg["mensagens"] = final
+        cfg["mensagens_versao"] = _versao_mensagens(cfg) + 1
+        _gravar_config_atomico(cfg)
+    _auditar_mensagens("mensagens", len(final))
+    return _resposta_mensagens(cfg)
+
+
+@app.post("/api/mensagens/restaurar")
+def mensagens_restaurar() -> Response:
+    """Volta à lista de fábrica (remove a chave). Já estando nela, não grava nem muda a versão."""
+    versao, _ = _validar_corpo_mensagens(corpo_json(), com_lista=False)
+    _limitar_escrita_mensagens()
+    with _config_lock:
+        cfg = load_config()
+        _exigir_versao_mensagens(cfg, versao)
+        if "mensagens" in cfg:
+            cfg.pop("mensagens")
+            cfg["mensagens_versao"] = _versao_mensagens(cfg) + 1
+            _gravar_config_atomico(cfg)
+    _auditar_mensagens("mensagens_restaurar", len(MENSAGENS_DE_FABRICA))
+    return _resposta_mensagens(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Desligar pelo painel (contrato v2.5) — SÓ no PC da loja
+# A rota responde 202 e, numa thread, ~0,5 s depois, pede ao laço do servidor (thread principal)
+# que saia pelo MESMO caminho do Ctrl+C/SIGTERM (main() fecha a porta, para os serviços e
+# remove o arquivo de PID). Um vigia força a saída se algo prender o encerramento.
+# ---------------------------------------------------------------------------
+DESLIGAR_ATRASO_S = 0.5        # deixa a resposta 202 chegar ao navegador antes de fechar a porta
+DESLIGAR_PRAZO_MAX_S = 10.0    # depois disto o vigia encerra o processo à força
+_desligar_lock = threading.Lock()
+_desligamento_agendado = False   # True = já aceito; o _anuncio_lock fica preso até o processo acabar
+_servidor_ativo: Any = None      # o servidor do main(); None = módulo importado (testes), sem o que desligar
+
+
+def _vigia_de_saida() -> None:
+    """Último recurso: se o processo ainda existir depois do prazo, remove o PID e sai."""
+    time.sleep(DESLIGAR_PRAZO_MAX_S)
+    log.error("O Proclamare não encerrou a tempo; forçando a saída.")
+    _remover_pid_file()
+    logging.shutdown()
+    os._exit(0)
+
+
+def _desligar_apos_resposta() -> None:
+    """Corpo da thread "desligar-painel": acorda quem espera e interrompe o laço do servidor."""
+    global _desligamento_agendado
+    time.sleep(DESLIGAR_ATRASO_S)
+    servidor = _servidor_ativo
+    if servidor is None:   # não está rodando pelo main(): não há o que desligar (e nada é morto)
+        log.warning("Pedido de desligar sem servidor em execução; ignorado.")
+        with _desligar_lock:
+            _desligamento_agendado = False
+            _anuncio_lock.release()
+        return
+    _desligando.set()                      # long-polls e a reaplicação do Spotify saem logo
+    with _yt_cond:
+        _yt_cond.notify_all()
+    _reaplic_acordar.set()
+    threading.Thread(target=_vigia_de_saida, name="desligar-vigia", daemon=True).start()
+    _thread.interrupt_main()               # KeyboardInterrupt na thread principal (via _ao_sinal)
+    with contextlib.suppress(Exception):   # acorda o select() do waitress: sai já, não em até 1 s
+        servidor.pull_trigger()
+
+
+def _agendar_desligamento() -> None:
+    """Dispara a thread do desligamento (os testes trocam esta função por um espião)."""
+    threading.Thread(target=_desligar_apos_resposta, name="desligar-painel", daemon=True).start()
+
+
+@app.post("/api/sistema/desligar")
+@somente_local
+def sistema_desligar() -> tuple[Response, int]:
+    """
+    Desliga o Proclamare. Ordem: 403 (remoto, mesmo com PIN), 400 (corpo diferente de {}),
+    409 (envio de músicas em andamento; anúncio ou teste de saída tocando), 202. Um 2º pedido
+    durante o desligamento repete o 202.
+    """
+    global _desligamento_agendado
+    if corpo_json():
+        raise ErroApi("Campo desconhecido.")
+    with _desligar_lock:
+        if _desligamento_agendado:
+            return jsonify({"ok": True}), 202
+        # Só conta o envio já em processamento (o waitress recebe o corpo antes de a rota rodar).
+        if _envios_ativos > 0:
+            raise ErroApi("Há músicas sendo enviadas. Espere terminar.", 409)
+        # Segura o lock dos anúncios: nenhum anúncio novo começa e nenhum tocando é cortado.
+        if not _anuncio_lock.acquire(blocking=False):
+            raise ErroApi("Espere o anúncio terminar.", 409)
+        _desligamento_agendado = True
+    log.info("Desligado pelo painel (PC local).")
+    # A aba "Tocador da loja" pode estar em OUTRA aba ou aparelho: manda uma pausa agora, para ela
+    # chegar no long-poll antes de a porta fechar (a thread do desligamento ainda espera 0,5 s).
+    with contextlib.suppress(Exception):
+        youtube_enqueue("pause")
+    try:
+        _agendar_desligamento()
+    except Exception:   # noqa: BLE001  (não conseguiu criar a thread: volta ao normal)
+        with _desligar_lock:
+            _desligamento_agendado = False
+            _anuncio_lock.release()
+        raise
+    return jsonify({"ok": True}), 202
 
 
 # ---------------------------------------------------------------------------
@@ -4859,7 +5269,11 @@ def _instalar_encerramento() -> None:
     atexit.register(_remover_pid_file)
 
     def _ao_sinal(_numero: int, _frame: Any) -> None:
-        _remover_pid_file()
+        # Desligar pelo painel: o PID só some depois que a porta fechar (_encerrar_servicos); senão o
+        # lançador veria "desligado", subiria outro servidor e o bind exclusivo falharia. O vigia de
+        # saída e o atexit cobrem o caso de o encerramento travar.
+        if not _desligamento_agendado:
+            _remover_pid_file()
         raise KeyboardInterrupt  # waitress/werkzeug encerram o laço normalmente
 
     for nome in ("SIGINT", "SIGTERM", "SIGBREAK"):
@@ -4983,6 +5397,8 @@ def main() -> None:
                   host, PORT, exc.strerror or type(exc).__name__)
         sys.exit(1)
 
+    global _servidor_ativo
+    _servidor_ativo = servidor   # v2.5: a rota "Desligar" acorda e interrompe este servidor
     _instalar_encerramento()
     if _volume_pendente() is not None:   # o servidor caiu/fechou com o volume da música baixo
         _iniciar_reaplicacao()
@@ -4999,8 +5415,32 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        SOM.parar()  # desregistra o callback do Windows (também registrado no atexit)
-        _remover_pid_file()
+        _encerrar_servicos(servidor)
+
+
+def _encerrar_servicos(servidor: Any) -> None:
+    """
+    Fim do main() (Ctrl+C, SIGTERM ou "Desligar" do painel). Ordem: fecha a porta (o lançador
+    pode subir outro servidor assim que o PID sumir), para os serviços e, por último, remove o
+    arquivo de PID. Tudo idempotente (o atexit repete SOM.parar/ACERVO.parar) e à prova de erro:
+    uma falha aqui nunca pode impedir o processo de terminar.
+    """
+    close = getattr(servidor, "close", None) or getattr(servidor, "server_close", None)
+    pool = _yt_titulos_pool
+    passos: list[Callable[[], Any]] = [
+        close if callable(close) else (lambda: None),
+        SOM.parar,   # desregistra o callback do Windows (também registrado no atexit)
+        ACERVO.parar,
+        (lambda: pool.shutdown(wait=False, cancel_futures=True)) if pool is not None else (lambda: None),
+    ]
+    for passo in passos:
+        try:
+            passo()
+        except Exception:  # noqa: BLE001
+            log.warning("Falha ao encerrar um serviço.", exc_info=True)
+    _remover_pid_file()
+    if _desligamento_agendado:
+        log.info("Proclamare encerrado.")
 
 
 def _processo_vivo(pid: int) -> bool:
