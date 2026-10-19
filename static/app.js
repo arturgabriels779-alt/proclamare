@@ -2183,6 +2183,7 @@
     if (connected) {
       loadSpotifyDevices();
       scheduler.kick("spotify-now");
+      scheduler.kick("sp-atalhos");
     }
     scheduler.refresh();
     ensureProgressLoop();
@@ -2771,6 +2772,7 @@
       toast("Tocando: " + (btn.dataset.name || "seleção"), "success", { duration: 2800 });
       setSpotifyPlayingLocal(true);
       setTimeout(() => scheduler.kick("spotify-now"), 700);
+      setTimeout(() => scheduler.kick("sp-atalhos"), 2500); // v2.7: pode ter começado uma playlist que dá para salvar
     }
   });
 
@@ -5759,6 +5761,7 @@
     audio: { label: "Áudio", icon: "bell" },
     lista: { label: "Lista", icon: "music" },
     anuncio: { label: "Anúncio", icon: "megaphone" },
+    spotify: { label: "Spotify", icon: "music" }, // v2.7: playlist/álbum salvo em "Playlists salvas" (alvo = atalho_id)
   };
   // motivo do histórico -> [frase curta (cabe depois de "não tocou:"), o que fazer]
   const PROG_MOTIVO = {
@@ -5769,7 +5772,7 @@
     sem_musica: ["a música não está mais na pasta", "Coloque o arquivo de volta na pasta de músicas ou escolha outra música neste horário."],
     formato: ["formato de áudio que não toca em horário", "Use mp3, ogg, wav ou flac."],
     audio_longo: ["áudio longo demais", "Em horário marcado o áudio pode ter até 10 minutos."],
-    lista_sem_musicas: ["a lista não tem músicas disponíveis", "Abra a lista e acrescente músicas que estejam na pasta."],
+    lista_sem_musicas: ["nada da lista podia tocar", "Confira se as músicas estão na pasta e se o Tocador da loja está aberto."],
     lista_inexistente: ["a lista foi apagada", "Escolha outra lista neste horário."],
     lendo_pasta: ["o Proclamare ainda lia a pasta de músicas", "Isso acontece logo depois de ligar. No próximo horário deve funcionar."],
     sem_internet: ["sem internet para a voz online", "Na voz do anúncio, escolha o motor Auto ou Offline."],
@@ -5782,6 +5785,14 @@
     falha: ["erro inesperado", "Veja o registro do Proclamare no computador da loja."],
     servidor_desligado: ["o Proclamare estava desligado", "O Proclamare ou o computador estava desligado nesse horário."],
     relogio: ["o relógio do computador foi ajustado", "O horário foi pulado quando a hora do PC mudou."],
+    // v2.7 (Spotify)
+    spotify_desconectado: ["o Spotify não estava conectado", "Abra o painel no computador da loja, em Música > Spotify, e conecte a conta de novo."],
+    spotify_sem_aparelho: ["o Spotify não estava aberto no computador da loja", "Abra o aplicativo do Spotify no computador da loja e dê play uma vez, para ele aparecer como aparelho."],
+    atalho_inexistente: ["a playlist salva foi apagada", "Escolha outra playlist neste horário."],
+    spotify_premium: ["a conta do Spotify não tem acesso", "A conta precisa ser Premium e ser a dona do app ou estar em User Management no painel do Spotify."],
+    spotify_limite: ["o Spotify pediu uma pausa", "Foram muitos pedidos seguidos. No próximo horário deve funcionar."],
+    spotify_indisponivel: ["o Spotify não respondeu", "Confira a internet do computador da loja. No próximo horário deve funcionar."],
+    youtube_indisponivel: ["o player do YouTube não estava pronto", "Abra o Tocador da loja e confira a internet do computador."],
   };
   const PROG_STATUS = {
     ok: ["Tocou", "badge--ok"],
@@ -5904,9 +5915,48 @@
 
   /** Música (da biblioteca ou de uma lista) pronta para a linha do editor. */
   const songFrom = (t, disp) => ({
+    tipo: "musica",
     id: t.id, title: t.title || null, artista: t.artista || null, duracao_s: isNum(t.duracao_s) ? t.duracao_s : null,
     tem_capa: t.tem_capa === true, disp,
   });
+
+  /**
+   * Item do YouTube (v2.7) pronto para a linha do editor. `yt` = {video_id, list_id, index, start}
+   * já validados; `url` só existe em link recém-colado (ainda não salvo): o servidor o interpreta ao gravar.
+   * O `id` é uma chave estável só para este painel (repetição e "Desfazer"); nunca vai ao servidor.
+   */
+  function ytKey(y) {
+    // mesma chave do servidor (video_id + list_id + index + start): o mesmo vídeo com outro início é outro item
+    // zero em index/start é o mesmo que ausente (o servidor guarda null): sem isto "t=0" ou "index=1" não seriam vistos como repetidos
+    return "yt:" + (y.video_id || "") + "|" + (y.list_id || "") + "|" + (Number.isInteger(y.index) && y.index > 0 ? y.index : "") + "|" + (Number.isInteger(y.start) && y.start > 0 ? y.start : "");
+  }
+  const ytSongFrom = (y, title, url) => ({
+    tipo: "youtube", id: ytKey(y), title: title || null, artista: null, duracao_s: null, tem_capa: false, disp: true,
+    yt: { video_id: y.video_id || null, list_id: y.list_id || null, index: Number.isInteger(y.index) && y.index > 0 ? y.index : null, start: Number.isInteger(y.start) && y.start > 0 ? y.start : null },
+    url: url || "",
+  });
+  const ytIsPlaylist = (y) => !!y.list_id; // o servidor chama de "playlist" todo item com list_id (kind)
+
+  /** Um item do editor no formato que o servidor aceita em "itens" (v2.7). */
+  function songToItem(s) {
+    if (s.tipo !== "youtube") return { music_id: s.id };
+    if (s.url) return { url: s.url }; // link novo: o servidor interpreta
+    const y = {};
+    if (s.yt.video_id) y.video_id = s.yt.video_id;
+    if (s.yt.list_id) y.list_id = s.yt.list_id;
+    if (s.yt.index !== null) y.index = s.yt.index;
+    if (s.yt.start !== null) y.start = s.yt.start;
+    return { youtube: y };
+  }
+
+  /**
+   * Corpo de gravação de uma lista. Sem itens do YouTube segue o formato antigo ("musicas": só ids), que
+   * qualquer versão do servidor entende; com YouTube usa "itens" (nunca os dois juntos).
+   */
+  function listBody(songs) {
+    if (songs.some((s) => s.tipo === "youtube")) return { itens: songs.map(songToItem) };
+    return { musicas: songs.map((s) => s.id) };
+  }
 
   // ======================================================================
   // 16d-1. Listas: seção em "Minhas músicas"
@@ -5929,6 +5979,7 @@
         nome: l.nome.slice(0, LISTA_NOME_MAX),
         versao: Number.isInteger(l.versao) ? l.versao : 1,
         total: Number.isInteger(l.total) && l.total >= 0 ? l.total : 0,
+        youtube: Number.isInteger(l.youtube) && l.youtube >= 0 ? l.youtube : 0, // v2.7: quantos itens são do YouTube (o total conta tudo)
         disponiveis: Number.isInteger(l.disponiveis) && l.disponiveis >= 0 ? l.disponiveis : null, // null: pasta ainda sendo lida
       });
     }
@@ -5940,37 +5991,50 @@
     const l = data && data.ok === true && data.lista && typeof data.lista === "object" ? data.lista : null;
     if (!l || typeof l.id !== "string" || !LISTA_ID_RE.test(l.id) || typeof l.nome !== "string") return null;
     const songs = [];
-    for (const m of Array.isArray(l.musicas) ? l.musicas.slice(0, LISTA_MUSICAS_MAX) : []) {
+    const raw = Array.isArray(l.itens) ? l.itens : Array.isArray(l.musicas) ? l.musicas : [];
+    for (const m of raw.slice(0, LISTA_MUSICAS_MAX)) {
+      if (m && m.tipo === "youtube") { // v2.7: vídeo ou playlist do YouTube (sempre disponível)
+        const y = sanitizeYtLoad(m);
+        if (!y) continue;
+        songs.push(ytSongFrom(y, typeof m.titulo === "string" ? m.titulo.slice(0, 200) : null, ""));
+        continue;
+      }
       if (!m || typeof m.id !== "string" || !MUSIC_ID_RE.test(m.id)) continue;
       if (m.disponivel === true) {
         const t = trackFromLib(m);
         songs.push(songFrom(t || { id: m.id }, true));
       } else {
-        songs.push({ id: m.id, title: typeof m.titulo === "string" && m.titulo ? m.titulo.slice(0, 200) : null, artista: null, duracao_s: null, tem_capa: false, disp: m.disponivel === false ? false : null });
+        songs.push({ tipo: "musica", id: m.id, title: typeof m.titulo === "string" && m.titulo ? m.titulo.slice(0, 200) : null, artista: null, duracao_s: null, tem_capa: false, disp: m.disponivel === false ? false : null });
       }
     }
     return { id: l.id, nome: l.nome.slice(0, LISTA_NOME_MAX), versao: Number.isInteger(l.versao) ? l.versao : 1, songs };
   }
 
-  async function listsPoll() {
-    if (lists.loading) return;
+  let listsInflight = null; // a carga em andamento: quem chama de novo espera a MESMA (não devolve "pronto" antes da hora)
+  function listsPoll() {
+    if (lists.loading && listsInflight) return listsInflight;
     lists.loading = true;
-    try {
-      const r = await getJSON("/api/listas", { timeout: 8000 });
-      const p = r.ok ? listsParse(r.data) : null;
-      if (!p) throw new Error("resposta inválida");
-      lists.items = p.items;
-      lists.versao = p.versao;
-      lists.acervoPronto = p.acervoPronto;
-      lists.loaded = true;
-      lists.failed = false;
-    } catch (e) {
-      if (e && e.name === "AuthLockedError") return;
-      lists.failed = true;
-    } finally {
-      lists.loading = false;
-      listsRender();
-    }
+    const run = (async () => {
+      try {
+        const r = await getJSON("/api/listas", { timeout: 8000 });
+        const p = r.ok ? listsParse(r.data) : null;
+        if (!p) throw new Error("resposta inválida");
+        lists.items = p.items;
+        lists.versao = p.versao;
+        lists.acervoPronto = p.acervoPronto;
+        lists.loaded = true;
+        lists.failed = false;
+      } catch (e) {
+        if (e && e.name === "AuthLockedError") return;
+        lists.failed = true;
+      } finally {
+        lists.loading = false;
+        if (listsInflight === run) listsInflight = null;
+        listsRender();
+      }
+    })();
+    listsInflight = run;
+    return run;
   }
 
   function makeListCard(l) {
@@ -6003,14 +6067,15 @@
   function updateListCard(li, l) {
     const r = li._l;
     setText(r.name, l.nome);
-    const falt = l.disponiveis === null ? 0 : l.total - l.disponiveis;
-    let sub = plural(l.total, "música", "músicas");
+    const falt = l.disponiveis === null ? 0 : Math.max(0, l.total - l.disponiveis);
+    // com YouTube misturado, "música" não descreve mais tudo: conta "itens" e diz quantos são do YouTube
+    let sub = l.youtube > 0 ? plural(l.total, "item", "itens") + " · " + l.youtube + " do YouTube" : plural(l.total, "música", "músicas");
     if (falt > 0) sub += " · " + plural(falt, "indisponível", "indisponíveis");
     setText(r.sub, sub);
     r.sub.classList.toggle("is-warn", falt > 0);
-    const vazia = l.total === 0 || l.disponiveis === 0;
+    const vazia = l.total === 0 || (l.disponiveis === 0 && l.youtube === 0);
     r.warn.hidden = !vazia;
-    setText(r.warn, l.total === 0 ? "A lista está vazia. Toque em editar para acrescentar músicas." : vazia ? "Nenhuma música desta lista está na pasta agora." : "");
+    setText(r.warn, l.total === 0 ? "A lista está vazia. Toque em editar para acrescentar músicas ou links do YouTube." : vazia ? "Nenhuma música desta lista está na pasta agora." : "");
     const busy = !!lists.busyId;
     for (const b of [r.play, r.shuf]) b.setAttribute("aria-disabled", String(vazia || busy));
     r.play.setAttribute("aria-label", "Tocar a lista " + l.nome);
@@ -6037,7 +6102,7 @@
     const cheio = n >= LISTAS_MAX;
     btnListNew.setAttribute("aria-disabled", String(cheio));
     btnListNew.title = cheio ? "Você já tem " + LISTAS_MAX + " listas. Apague uma para criar outra." : "";
-    const sig = lists.busyId + "|" + lists.acervoPronto + "|" + lists.items.map((l) => [l.id, l.nome, l.total, l.disponiveis].join(",")).join(";");
+    const sig = lists.busyId + "|" + lists.acervoPronto + "|" + lists.items.map((l) => [l.id, l.nome, l.total, l.youtube, l.disponiveis].join(",")).join(";");
     if (sig !== lists.sig) {
       lists.sig = sig;
       reconcileList(listsGrid, lists.items, (l) => l.id, makeListCard, updateListCard);
@@ -6071,11 +6136,15 @@
         let msg = "Tocando a lista “" + truncate(l.nome, 30) + "”" + (shuffle ? " em ordem aleatória" : "") + ".";
         if (Number.isInteger(r.data.cortados) && r.data.cortados > 0) msg += " A fila encheu: " + r.data.cortados + " ficaram de fora.";
         if (Number.isInteger(r.data.indisponiveis) && r.data.indisponiveis > 0) msg += " " + plural(r.data.indisponiveis, "música não estava", "músicas não estavam") + " na pasta e foi pulada.";
-        toast(msg, "success", { duration: 4800, action: { label: "Ver fila", onClick: scrollToQueue } });
+        const pulados = Number.isInteger(r.data.pulados_youtube) && r.data.pulados_youtube > 0 ? r.data.pulados_youtube : 0;
+        if (pulados) msg += " " + plural(pulados, "vídeo do YouTube ficou", "vídeos do YouTube ficaram") + " de fora: o player ainda não carregou.";
+        toast(msg, pulados ? "warn" : "success", { duration: pulados ? 7500 : 4800, action: { label: "Ver fila", onClick: scrollToQueue } });
         setTimeout(() => scheduler.kick("yt-state"), 1200);
         scheduler.kick("lib-lists");
       } else if (r && r.status === 409 && r.data.codigo === "sem_tocador") {
         noTocadorToast(null);
+      } else if (r && r.status === 409 && r.data.codigo === "youtube_indisponivel") {
+        toast("Os vídeos do YouTube desta lista não puderam tocar: o player do Tocador da loja ainda não carregou. Espere alguns segundos e toque de novo.", "info", { duration: 8000 });
       } else if (r && r.status === 404) {
         toast(libErr(r, "Essa lista não existe mais."), "warn");
         scheduler.kick("lib-lists");
@@ -6158,6 +6227,9 @@
   const listPickResults = $("list-pick-results");
   const btnListPickMore = $("btn-list-pick-more");
   const btnListPickAll = $("btn-list-pick-all");
+  const listYtLink = $("list-yt-link");
+  const listYtErro = $("list-yt-erro");
+  const btnListYtAdd = $("btn-list-yt-add");
   const listLive = $("list-live");
   const listError = $("list-error");
   const btnListCancel = $("btn-list-cancel");
@@ -6176,6 +6248,14 @@
   function ledShowError(text) {
     listError.hidden = !text;
     setText(listError, text || "");
+  }
+
+  /** Erro do campo "Colar link do YouTube" (validação leve; a final é do servidor). */
+  function ledYtError(text) {
+    listYtErro.hidden = !text;
+    setText(listYtErro, text || "");
+    if (text) listYtLink.setAttribute("aria-invalid", "true");
+    else listYtLink.removeAttribute("aria-invalid");
   }
 
   function ledNameError(text) {
@@ -6200,23 +6280,39 @@
   }
 
   function makeSongRow(s, i, n) {
-    const li = mk("li", "lrow" + (s.isNew ? " is-new" : "") + (s.disp === false ? " is-missing" : "") + (s.bad ? " is-bad" : ""));
+    const yt = s.tipo === "youtube";
+    const li = mk("li", "lrow" + (yt ? " lrow--yt" : "") + (s.isNew ? " is-new" : "") + (s.disp === false ? " is-missing" : "") + (s.bad ? " is-bad" : ""));
     li.dataset.key = String(s.key);
     s.isNew = false;
-    const title = s.title || (s.disp === false ? "Música que saiu da pasta" : "Música");
+    const title = yt ? ytSongTitle(s) : s.title || (s.disp === false ? "Música que saiu da pasta" : "Música");
     const text = mk("span", "lrow__text");
     text.append(mk("span", "lrow__title", title));
-    const sub = s.disp === false ? "Indisponível: o arquivo saiu da pasta (é pulada ao tocar)" : libSub(s);
-    if (sub) text.appendChild(mk("span", "lrow__sub", sub));
+    if (yt) {
+      // selo distinto: ícone de vídeo + "YouTube · vídeo/playlist"
+      const sub = mk("span", "lrow__sub lrow__sub--yt");
+      sub.append(makeIcon("video"), mk("span", "", "YouTube · " + (ytIsPlaylist(s.yt) ? "playlist" : "vídeo") + (s.yt.start ? " · começa em " + formatTime(s.yt.start * 1000) : "")));
+      text.appendChild(sub);
+    } else {
+      const sub = s.disp === false ? "Indisponível: o arquivo saiu da pasta (é pulada ao tocar)" : libSub(s);
+      if (sub) text.appendChild(mk("span", "lrow__sub", sub));
+    }
+    if (s.err) text.appendChild(mk("span", "lrow__err", s.err)); // erro do servidor para ESTE item
     const tools = mk("div", "lrow__tools");
     const num = String(i + 1);
+    const what = yt ? "o item do YouTube" : "a música";
     tools.append(
-      buildToolButton("up", "up", "Subir a música " + num + ": " + truncate(title, 40), i === 0),
-      buildToolButton("down", "down", "Descer a música " + num + ": " + truncate(title, 40), i === n - 1),
-      buildToolButton("remove", "trash", "Remover da lista a música " + num + ": " + truncate(title, 40), false),
+      buildToolButton("up", "up", "Subir " + what + " " + num + ": " + truncate(title, 40), i === 0),
+      buildToolButton("down", "down", "Descer " + what + " " + num + ": " + truncate(title, 40), i === n - 1),
+      buildToolButton("remove", "trash", "Remover da lista " + what + " " + num + ": " + truncate(title, 40), false),
     );
     li.append(mk("span", "lrow__n", num), text, tools);
     return li;
+  }
+
+  /** Título de um item do YouTube na lista (o servidor manda o título quando conhece; senão um nome simples). */
+  function ytSongTitle(s) {
+    if (s.title) return s.title;
+    return ytIsPlaylist(s.yt) ? "Playlist do YouTube" : "Vídeo do YouTube";
   }
 
   function ledFocus(key, what) {
@@ -6231,7 +6327,7 @@
     const n = led.songs.length;
     listSongs.replaceChildren(...led.songs.map((s, i) => makeSongRow(s, i, n)));
     listSongsEmpty.hidden = n > 0 || led.loading;
-    setText(listSongsEmpty, led.loading ? "" : "Nenhuma música ainda. Toque em “Adicionar músicas”.");
+    setText(listSongsEmpty, led.loading ? "" : "Nada na lista ainda. Toque em “Adicionar músicas” ou cole um link do YouTube.");
     paintCounter(listSongsCount, n, LISTA_MUSICAS_MAX);
     if (focus) ledFocus(focus.key, focus.what);
     lpickRender();
@@ -6253,16 +6349,16 @@
       led.songs[i] = led.songs[j];
       led.songs[j] = s;
       ledRenderSongs({ key: s.key, what: act });
-      ledAnnounce("Música movida para a posição " + (j + 1) + " de " + led.songs.length + ".");
+      ledAnnounce("Item movido para a posição " + (j + 1) + " de " + led.songs.length + ".");
     } else if (act === "remove") {
       const [gone] = led.songs.splice(i, 1);
       led.removed = { song: gone, index: i };
-      setText(listUndoText, "“" + truncate(gone.title || "Música", 40) + "” saiu da lista.");
+      setText(listUndoText, "“" + truncate(gone.tipo === "youtube" ? ytSongTitle(gone) : gone.title || "Música", 40) + "” saiu da lista.");
       listUndo.hidden = false;
       const next = led.songs[Math.min(i, led.songs.length - 1)];
       ledRenderSongs(next ? { key: next.key, what: "remove" } : null);
       if (!next) btnListAddSongs.focus();
-      ledAnnounce("Música removida da lista. Restam " + led.songs.length + ".");
+      ledAnnounce("Item removido da lista. Restam " + led.songs.length + ".");
     }
   });
 
@@ -6274,7 +6370,7 @@
     const at = Math.min(index, led.songs.length);
     led.songs.splice(at, 0, song);
     ledRenderSongs({ key: song.key, what: "remove" });
-    ledAnnounce("Música de volta na posição " + (at + 1) + ".");
+    ledAnnounce("Item de volta na posição " + (at + 1) + ".");
   });
 
   /** Acrescenta músicas da biblioteca ao fim da lista (sem repetir). */
@@ -6293,17 +6389,73 @@
       led.removed = null;
       listUndo.hidden = true;
       ledRenderSongs(null);
-      ledAnnounce(plural(added, "música adicionada", "músicas adicionadas") + ". A lista tem " + plural(led.songs.length, "música", "músicas") + ".");
+      ledAnnounce(plural(added, "música adicionada", "músicas adicionadas") + ". A lista tem " + plural(led.songs.length, "item", "itens") + ".");
     }
-    if (full) ledShowError("Cada lista pode ter no máximo " + LISTA_MUSICAS_MAX + " músicas.");
+    if (full) ledShowError("Cada lista pode ter no máximo " + LISTA_MUSICAS_MAX + " itens.");
     return added;
   }
+
+  /** "Colar link do YouTube" -> Adicionar: acrescenta um vídeo ou playlist ao fim da lista. */
+  function ledAddYoutube() {
+    if (led.busy || led.loading) return false;
+    ledShowError("");
+    const raw = listYtLink.value.trim();
+    const p = parseYouTubeUrl(raw);
+    if (p.error) { ledYtError(p.error); listYtLink.focus(); return false; }
+    if (led.songs.length >= LISTA_MUSICAS_MAX) { ledYtError("Cada lista pode ter no máximo " + LISTA_MUSICAS_MAX + " itens."); return false; }
+    const song = ytSongFrom({ video_id: p.video_id, list_id: p.list_id, index: p.index, start: p.start }, null, raw);
+    if (led.songs.some((x) => x.id === song.id)) { ledYtError("Esse link do YouTube já está na lista."); listYtLink.focus(); return false; }
+    ledYtError("");
+    led.songs.push(Object.assign(song, { key: ++led.keySeq, isNew: true }));
+    led.removed = null;
+    listUndo.hidden = true;
+    listYtLink.value = "";
+    ledRenderSongs(null);
+    ledAnnounce((ytIsPlaylist(song.yt) ? "Playlist do YouTube adicionada" : "Vídeo do YouTube adicionado") + (p.mix ? " (link de Mix: só o vídeo do link)" : "") + ". A lista tem " + plural(led.songs.length, "item", "itens") + ".");
+    const row = listSongs.querySelector('.lrow[data-key="' + song.key + '"]');
+    if (row) row.scrollIntoView({ block: "nearest" });
+    listYtLink.focus({ preventScroll: true });
+    return true;
+  }
+  btnListYtAdd.addEventListener("click", ledAddYoutube);
+  listYtLink.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault(); // Enter no link adiciona o item; não salva a lista
+    ledAddYoutube();
+  });
+  listYtLink.addEventListener("input", () => { if (!listYtErro.hidden) ledYtError(""); });
 
   listNome.addEventListener("input", () => {
     paintCounter(listNomeCount, listNome.value.length, LISTA_NOME_MAX);
     if (!listNomeErro.hidden) ledNameError("");
     if (!listError.hidden) ledShowError("");
   });
+
+  /** Uma releitura, ~3,5 s depois de abrir: preenche só os títulos que faltam (a edição em andamento não é tocada). */
+  function ledRefreshTitles(session) {
+    setTimeout(async () => {
+      if (session !== led.session || !listDialog.open || led.mode !== "edit" || authLocked) return;
+      try {
+        const r = await getJSON("/api/listas/" + led.id, { timeout: 10000 });
+        if (session !== led.session || !listDialog.open) return;
+        const d = r.ok ? listDetailParse(r.data) : null;
+        if (!d) return;
+        const titles = new Map(d.songs.filter((x) => x.tipo === "youtube" && x.title).map((x) => [x.id, x.title]));
+        let changed = false;
+        for (const x of led.songs) {
+          if (x.tipo === "youtube" && !x.title && !x.url && titles.has(x.id)) { x.title = titles.get(x.id); changed = true; }
+        }
+        if (!changed) return;
+        // redesenha as linhas guardando o foco e a rolagem
+        const a = document.activeElement;
+        const row = a && listSongs.contains(a) && a.dataset && a.dataset.act ? a.closest(".lrow") : null;
+        const focus = row ? { key: row.dataset.key, what: a.dataset.act } : null;
+        const top = listSongs.scrollTop;
+        ledRenderSongs(focus);
+        listSongs.scrollTop = top;
+      } catch (e) { /* os títulos são só um enfeite: sem eles segue "Vídeo do YouTube" */ }
+    }, 3500);
+  }
 
   async function openListEditor(id, preset, opener) {
     if (listDialog.open || authLocked || shuttingDown) return;
@@ -6319,6 +6471,8 @@
     paintCounter(listNomeCount, 0, LISTA_NOME_MAX);
     ledNameError("");
     ledShowError("");
+    ledYtError("");
+    listYtLink.value = "";
     ledGuard.hide();
     listUndo.hidden = true;
     lpickReset();
@@ -6354,6 +6508,8 @@
       btnListSave.removeAttribute("aria-disabled");
       ledRenderSongs(null);
       listNome.focus();
+      // o servidor busca os títulos do YouTube em segundo plano: se faltam, relê UMA vez e só completa os títulos
+      if (led.songs.some((x) => x.tipo === "youtube" && !x.title)) ledRefreshTitles(session);
     } catch (err) {
       if (session !== led.session || !listDialog.open) return;
       led.loading = false;
@@ -6535,12 +6691,14 @@
     if (!nome) { ledNameError("Dê um nome à lista."); listNome.focus(); return; }
     if (nome.length > LISTA_NOME_MAX) { ledNameError("O nome pode ter até " + LISTA_NOME_MAX + " letras."); listNome.focus(); return; }
     ledNameError("");
-    for (const s of led.songs) s.bad = false;
-    const musicas = led.songs.map((s) => s.id);
+    for (const s of led.songs) { s.bad = false; s.err = ""; }
+    // link colado e ainda não adicionado: entra agora (se estiver errado, o aviso aparece no campo e nada é salvo)
+    if (listYtLink.value.trim() && !ledAddYoutube()) return;
+    const itens = listBody(led.songs);
     ledSetBusy(true);
     try {
       const novo = led.mode === "new";
-      const body = novo ? { nome, musicas } : { versao: led.versao, nome, musicas };
+      const body = Object.assign(novo ? { nome } : { versao: led.versao, nome }, itens);
       const r = await postJSON(novo ? "/api/listas" : "/api/listas/" + led.id, body, { timeout: 15000 });
       if (r.ok && r.data.ok) {
         closeDialogAnimated(listDialog);
@@ -6564,20 +6722,23 @@
       } else if (r.status === 400 && d.campo === "nome") {
         ledNameError(typeof d.error === "string" ? d.error : "O nome da lista é inválido.");
         listNome.focus();
-      } else if (r.status === 400 && d.campo === "musicas" && Number.isInteger(d.indice) && led.songs[d.indice]) {
+      } else if (r.status === 400 && (d.campo === "musicas" || d.campo === "itens") && Number.isInteger(d.indice) && led.songs[d.indice]) {
+        // o servidor aponta o item (posição na ordem enviada): marca a linha e escreve o motivo ali
         const s = led.songs[d.indice];
+        const msg = typeof d.error === "string" && d.error ? d.error : s.tipo === "youtube" ? "Esse link do YouTube não pode ser usado." : "Essa música não pode ser usada.";
         s.bad = true;
+        s.err = msg;
         ledRenderSongs(null);
         const li = listSongs.querySelector('.lrow[data-key="' + s.key + '"]');
         if (li) li.scrollIntoView({ block: "nearest" });
-        ledShowError(typeof d.error === "string" ? d.error : "Uma música da lista não pode ser usada.");
+        ledShowError("Um item da lista precisa de ajuste (marcado em vermelho). Corrija ou remova e salve de novo.");
       } else if (r.status === 404) {
         ledShowError("Essa lista não existe mais. Feche e crie de novo, se quiser.");
         scheduler.kick("lib-lists");
       } else if (r.status === 429) {
         ledShowError("Muitas alterações seguidas. Espere um minuto e tente de novo.");
       } else if (r.status === 413) {
-        ledShowError("A lista ficou grande demais para enviar. Tire algumas músicas.");
+        ledShowError("A lista ficou grande demais para enviar. Tire alguns itens.");
       } else {
         ledShowError(typeof d.error === "string" && d.error ? d.error : "Não foi possível salvar a lista agora.");
       }
@@ -6595,6 +6756,8 @@
     led.songs = [];
     led.removed = null;
     led.loading = false;
+    listYtLink.value = "";
+    ledYtError("");
     listSongs.replaceChildren(); // não deixa nomes de músicas parados no DOM
     lpickReset();
     ledGuard.hide();
@@ -6627,8 +6790,9 @@
       const b = mk("button", "addlist__btn");
       b.type = "button";
       b.dataset.id = l.id;
-      b.append(mk("span", "addlist__name", l.nome), mk("span", "addlist__n", plural(l.total, "música", "músicas")));
-      b.setAttribute("aria-label", "Adicionar à lista " + l.nome + " (" + plural(l.total, "música", "músicas") + ")");
+      const qtd = l.youtube > 0 ? plural(l.total, "item", "itens") : plural(l.total, "música", "músicas");
+      b.append(mk("span", "addlist__name", l.nome), mk("span", "addlist__n", qtd));
+      b.setAttribute("aria-label", "Adicionar à lista " + l.nome + " (" + qtd + ")");
       li.appendChild(b);
       frag.appendChild(li);
     }
@@ -6671,10 +6835,11 @@
           return;
         }
         if (d.songs.length >= LISTA_MUSICAS_MAX) {
-          atlShowError("A lista “" + truncate(d.nome, 30) + "” está cheia (" + LISTA_MUSICAS_MAX + " músicas).");
+          atlShowError("A lista “" + truncate(d.nome, 30) + "” está cheia (" + LISTA_MUSICAS_MAX + " itens).");
           return;
         }
-        const r = await postJSON("/api/listas/" + l.id, { versao: d.versao, musicas: d.songs.map((s) => s.id).concat(track.id) }, { timeout: 12000 });
+        // reenvia tudo o que já estava (inclusive itens do YouTube) e acrescenta a música no fim
+        const r = await postJSON("/api/listas/" + l.id, Object.assign({ versao: d.versao }, listBody(d.songs.concat(songFrom(track, true)))), { timeout: 12000 });
         if (r.ok && r.data.ok) {
           toast("Adicionada à lista “" + truncate(d.nome, 30) + "”.", "success", { duration: 3200 });
           closeDialogAnimated(addlistDialog);
@@ -6715,6 +6880,161 @@
     atl.busy = false;
     addlistList.replaceChildren();
     if (!shuttingDown && !authLocked && atl.opener && atl.opener.isConnected) atl.opener.focus({ preventScroll: true });
+  });
+
+  // ======================================================================
+  // 16d-4. "Salvar fila como lista" (v2.7): POST /api/listas/da-fila {nome, incluir_atual?}
+  // ======================================================================
+  const btnQueueSave = $("btn-yt-queue-save");
+  const sqDialog = $("savequeue-dialog");
+  const sqForm = $("savequeue-form");
+  const sqInfo = $("savequeue-info");
+  const sqNome = $("savequeue-nome");
+  const sqCount = $("savequeue-count");
+  const sqNomeErro = $("savequeue-nome-erro");
+  const sqAtualBox = $("savequeue-atual-box");
+  const sqAtual = $("savequeue-atual");
+  const sqError = $("savequeue-error");
+  const btnSqCancel = $("btn-savequeue-cancel");
+  const btnSqSave = $("btn-savequeue-save");
+  const sq = { busy: false, opener: null, session: 0, askAtual: false, soAtual: false };
+
+  /** Há algo tocando agora (YouTube ou arquivo)? Lê o cartão "Tocando agora", que todos os caminhos já mantêm. */
+  const queueNowActive = () => !youtubeNpCard.classList.contains("is-idle") && !["Nada tocando", IDLE_YT].includes(youtubeNowPlaying.textContent.trim());
+
+  /** O botão fica "apagado" (e explica por quê) enquanto não há nada tocando nem na fila. */
+  function queueSaveSync() {
+    const nada = ytqItems.length === 0 && !queueNowActive();
+    btnQueueSave.setAttribute("aria-disabled", String(nada));
+    btnQueueSave.title = nada ? "Toque uma música ou coloque itens na fila para poder salvar." : "";
+  }
+  // o cartão "Tocando agora" e a fila mudam por vários caminhos; observar o resultado evita espalhar chamadas
+  const queueSaveObs = new MutationObserver(queueSaveSync);
+  queueSaveObs.observe(youtubeNpCard, { attributes: true, attributeFilter: ["class"] });
+  queueSaveObs.observe(youtubeNowPlaying, { childList: true, characterData: true, subtree: true });
+  queueSaveObs.observe(ytqList, { childList: true });
+  queueSaveSync();
+
+  function sqShowError(text) {
+    sqError.hidden = !text;
+    setText(sqError, text || "");
+  }
+  function sqNameError(text) {
+    sqNomeErro.hidden = !text;
+    setText(sqNomeErro, text || "");
+    if (text) sqNome.setAttribute("aria-invalid", "true");
+    else sqNome.removeAttribute("aria-invalid");
+  }
+  function sqSetBusy(on) {
+    sq.busy = on;
+    btnSqSave.classList.toggle("is-loading", on);
+    for (const b of [btnSqSave, btnSqCancel]) {
+      if (on) b.setAttribute("aria-disabled", "true");
+      else b.removeAttribute("aria-disabled");
+    }
+  }
+
+  /** Vai para "Minhas músicas" e mostra as Listas (depois de salvar uma lista nova). */
+  function goToLists() {
+    if (sourceGroup.value !== "musicas") sourceGroup.set("musicas");
+    setTimeout(() => $("lists").scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" }), 160);
+  }
+
+  function openSaveQueue(opener) {
+    if (sqDialog.open || authLocked || shuttingDown) return;
+    if (btnQueueSave.getAttribute("aria-disabled") === "true") {
+      toast("Não há nada tocando nem na fila para salvar. Toque uma música ou coloque itens na fila.", "info");
+      return;
+    }
+    sq.opener = opener || btnQueueSave;
+    sq.session++;
+    const n = ytqItems.length;
+    const tocando = queueNowActive();
+    // com fila vazia e algo tocando, a lista terá só a música atual (sempre incluída); com fila e música, o usuário decide
+    sq.soAtual = n === 0 && tocando;
+    sq.askAtual = n > 0 && tocando;
+    sqAtualBox.hidden = !sq.askAtual;
+    sqAtual.checked = true;
+    sqInfo.textContent = sq.soAtual
+      ? "A fila está vazia: a lista terá só a música que está tocando agora."
+      : "Guarda " + plural(n, "item da fila", "itens da fila") + (tocando ? " e, se você deixar marcado, a música que está tocando agora." : ".") + " Vale para músicas da sua pasta e vídeos do YouTube.";
+    sqNome.value = "";
+    paintCounter(sqCount, 0, LISTA_NOME_MAX);
+    sqNameError("");
+    sqShowError("");
+    sqSetBusy(false);
+    sqDialog.showModal();
+    sqNome.focus();
+  }
+
+  async function sqSave() {
+    if (sq.busy) return;
+    sqShowError("");
+    const nome = cleanMsgText(sqNome.value, false);
+    if (!nome) { sqNameError("Dê um nome à lista."); sqNome.focus(); return; }
+    if (nome.length > LISTA_NOME_MAX) { sqNameError("O nome pode ter até " + LISTA_NOME_MAX + " letras."); sqNome.focus(); return; }
+    sqNameError("");
+    const body = { nome };
+    if (sq.soAtual) body.incluir_atual = true;
+    else if (sq.askAtual) body.incluir_atual = sqAtual.checked;
+    sqSetBusy(true);
+    try {
+      const r = await postJSON("/api/listas/da-fila", body, { timeout: 15000 });
+      const d = r.data;
+      if (r.ok && d.ok) {
+        closeDialogAnimated(sqDialog);
+        const total = d.lista && Number.isInteger(d.lista.total) ? d.lista.total : null;
+        let msg = "Lista “" + truncate(nome, 30) + "” salva" + (total !== null ? " com " + plural(total, "item", "itens") : "") + ".";
+        const cortados = Number.isInteger(d.cortados) && d.cortados > 0 ? d.cortados : 0;
+        if (cortados) msg += " " + plural(cortados, "item ficou", "itens ficaram") + " de fora: o limite é " + LISTA_MUSICAS_MAX + " por lista.";
+        const ignorados = Number.isInteger(d.ignorados) && d.ignorados > 0 ? d.ignorados : 0;
+        if (ignorados) msg += " " + plural(ignorados, "item repetido ou indisponível foi ignorado", "itens repetidos ou indisponíveis foram ignorados") + ".";
+        toast(msg, cortados || ignorados ? "warn" : "success", { duration: 6500, action: { label: "Ver listas", onClick: goToLists } });
+        listsPoll();
+        return;
+      }
+      if (r.status === 409 && d.codigo === "fila_vazia") {
+        sqShowError("A fila ficou vazia e nada está tocando. Coloque itens na fila e tente de novo.");
+      } else if (r.status === 409 && d.codigo === "nome_repetido") {
+        sqNameError("Já existe uma lista com esse nome.");
+        sqNome.focus();
+      } else if (r.status === 409 && d.codigo === "limite_listas") {
+        sqShowError("Você já tem " + LISTAS_MAX + " listas. Apague uma para criar outra.");
+      } else if (r.status === 409 && d.codigo === "lendo_pasta") {
+        sqShowError("O Proclamare ainda está lendo a pasta de músicas. Tente de novo em instantes.");
+      } else if (r.status === 400 && d.campo === "nome") {
+        sqNameError(typeof d.error === "string" && d.error ? d.error : "O nome da lista é inválido.");
+        sqNome.focus();
+      } else if (r.status === 404) {
+        sqShowError("Este recurso não existe nesta versão do Proclamare. Atualize o programa no computador da loja.");
+      } else if (r.status === 429) {
+        sqShowError("Muitas alterações seguidas. Espere um minuto e tente de novo.");
+      } else {
+        sqShowError(typeof d.error === "string" && d.error ? d.error : "Não foi possível salvar a lista agora.");
+      }
+    } catch (err) {
+      if (!err || err.name !== "AuthLockedError") sqShowError("Sem conexão com o servidor. Tente de novo.");
+    } finally {
+      sqSetBusy(false);
+    }
+  }
+
+  btnQueueSave.addEventListener("click", () => openSaveQueue(btnQueueSave));
+  sqForm.addEventListener("submit", (e) => { e.preventDefault(); sqSave(); });
+  sqNome.addEventListener("input", () => {
+    paintCounter(sqCount, sqNome.value.length, LISTA_NOME_MAX);
+    if (!sqNomeErro.hidden) sqNameError("");
+    if (!sqError.hidden) sqShowError("");
+  });
+  btnSqCancel.addEventListener("click", () => { if (!sq.busy) closeDialogAnimated(sqDialog); });
+  sqDialog.addEventListener("cancel", (e) => { e.preventDefault(); if (!sq.busy) closeDialogAnimated(sqDialog); });
+  onBackdropClick(sqDialog, () => { if (!sq.busy) closeDialogAnimated(sqDialog); });
+  sqDialog.addEventListener("close", () => {
+    sq.session++;
+    sqSetBusy(false);
+    sqNome.value = "";
+    if (!shuttingDown && !authLocked && sq.opener && sq.opener.isConnected) sq.opener.focus({ preventScroll: true });
+    sq.opener = null;
   });
 
   // ======================================================================
@@ -6770,7 +7090,7 @@
       id: it.id,
       ativo: it.ativo !== false,
       tipo: it.tipo,
-      alvo: str(it.alvo, 500),
+      alvo: str(it.alvo, 500), // lista: id da lista; spotify: id do atalho; áudio: id da música; anúncio: o texto
       nome: str(it.nome, PROG_NOME_MAX) || null,
       hora: it.hora,
       dias,
@@ -7068,6 +7388,7 @@
     if (!it.ativo) out.push(["Desativado", "badge--warn"]);
     if (it.alvoOk === false) {
       if (it.tipo === "lista") out.push(["Lista apagada", "badge--bad"]);
+      else if (it.tipo === "spotify") out.push([it.alvoMotivo === "atalho_inexistente" || !it.alvoMotivo ? "Playlist apagada" : "Playlist indisponível", "badge--bad"]);
       else if (it.alvoMotivo === "audio_longo") out.push(["Áudio passa de 10 min", "badge--bad"]);
       else if (it.alvoNome) out.push(["Formato não toca em horário", "badge--bad"]);
       else out.push(["Música não está na pasta", "badge--bad"]);
@@ -7088,7 +7409,7 @@
     r.chips.forEach((c, i) => c.classList.toggle("is-on", !!it.dias && it.dias.includes(i)));
     let sub = "";
     if (it.tipo === "anuncio") sub = "“" + truncate(it.alvo, 110) + "”";
-    else if (it.alvoNome && it.alvoNome !== it.rotulo) sub = (it.tipo === "lista" ? "Lista: " : "Áudio: ") + it.alvoNome;
+    else if (it.alvoNome && it.alvoNome !== it.rotulo) sub = (it.tipo === "lista" ? "Lista: " : it.tipo === "spotify" ? "Playlist: " : "Áudio: ") + it.alvoNome;
     setText(r.sub, sub);
     r.sub.hidden = !sub;
     const bsig = JSON.stringify(progBadges(it));
@@ -7410,6 +7731,9 @@
   const progListaSel = $("prog-lista-sel");
   const progListaHint = $("prog-lista-hint");
   const progEmbaralhar = $("prog-embaralhar");
+  const progAlvoSpotify = $("prog-alvo-spotify");
+  const progSpotifySel = $("prog-spotify-sel");
+  const progSpotifyHint = $("prog-spotify-hint");
   const progAlvoAnuncio = $("prog-alvo-anuncio");
   const progTexto = $("prog-texto");
   const progTextoCount = $("prog-texto-count");
@@ -7434,10 +7758,11 @@
     audio: "Toca uma música ou áudio da sua biblioteca (mp3, ogg, wav ou flac, até 10 minutos). A música de fundo pausa e continua de onde parou.",
     lista: "Troca a música que está tocando pela lista escolhida.",
     anuncio: "Fala o texto nas caixas da loja. A música de fundo pausa e continua de onde parou.",
+    spotify: "Toca uma playlist ou álbum que você salvou na área do Spotify, em Música.",
   };
   const REP_DIAS = { todos: [0, 1, 2, 3, 4, 5, 6], uteis: [1, 2, 3, 4, 5], fds: [0, 6] };
 
-  const pf = { mode: "new", id: "", current: null, baseSig: "", busy: false, session: 0, audio: null, opener: null, ctrl: null, seq: 0, timer: 0, results: [], loading: false, failed: false, empty: false, preset: REP_DIAS.todos };
+  const pf = { listaAlvo: "", spotifyAlvo: "", mode: "new", id: "", current: null, baseSig: "", busy: false, session: 0, audio: null, opener: null, ctrl: null, seq: 0, timer: 0, results: [], loading: false, failed: false, empty: false, preset: REP_DIAS.todos };
   const pfTipo = initGroup($("prog-tipo"), { role: "radio", onSelect: (t) => pfOnTipo(t) });
   const pfRep = bindChipRadio(progRep, (v) => pfOnRep(v));
   const pfGuard = bindDiscardGuard(progDialog, $("prog-confirm"), $("btn-prog-confirm-yes"), $("btn-prog-confirm-no"), () => progDialog.open && pfSig() !== pf.baseSig, () => pf.busy);
@@ -7450,7 +7775,7 @@
   /** Tudo o que o formulário contém agora (também serve de "assinatura" para saber se foi alterado). */
   function pfRead() {
     return {
-      tipo: pfTipo.value, audio: pf.audio ? pf.audio.id : "", lista: progListaSel.value, embaralhar: progEmbaralhar.checked,
+      tipo: pfTipo.value, audio: pf.audio ? pf.audio.id : "", lista: progListaSel.value, spotify: progSpotifySel.value, embaralhar: progEmbaralhar.checked,
       texto: progTexto.value, voz: progVoz.value, motor: progMotor.value, vel: Number(progVel.value),
       nome: progNome.value, hora: progHora.value, rep: pfRep.value, dias: pfDaysChecked(), data: progData.value,
     };
@@ -7460,15 +7785,15 @@
   function pfShowError(text, field) {
     progError.hidden = !text;
     setText(progError, text || "");
-    for (const el of [progTexto, progNome, progHora, progData, progListaSel, progAudioQ]) el.removeAttribute("aria-invalid");
+    for (const el of [progTexto, progNome, progHora, progData, progListaSel, progSpotifySel, progAudioQ]) el.removeAttribute("aria-invalid");
     if (text && field) {
-      const el = { texto: progTexto, nome: progNome, hora: progHora, data: progData, lista: progListaSel, audio: progAudioQ }[field];
+      const el = { texto: progTexto, nome: progNome, hora: progHora, data: progData, lista: progListaSel, spotify: progSpotifySel, audio: progAudioQ }[field];
       if (el) el.setAttribute("aria-invalid", "true");
     }
   }
 
   function pfFocusField(field) {
-    const el = { texto: progTexto, nome: progNome, hora: progHora, data: progData, lista: progListaSel }[field];
+    const el = { texto: progTexto, nome: progNome, hora: progHora, data: progData, lista: progListaSel, spotify: progSpotifySel }[field];
     if (field === "audio") (pf.audio ? btnProgAudioChange : progAudioQ).focus();
     else if (field === "dias") (progDias.querySelector("[data-dia]") || progRep).focus();
     else if (el) el.focus();
@@ -7487,11 +7812,13 @@
   function pfOnTipo(tipo) {
     progAlvoAudio.hidden = tipo !== "audio";
     progAlvoLista.hidden = tipo !== "lista";
+    progAlvoSpotify.hidden = tipo !== "spotify";
     progAlvoAnuncio.hidden = tipo !== "anuncio";
     setText(progTipoHint, TIPO_DICA[tipo] || "");
     pfShowError("", "");
     if (tipo === "audio") { pfRenderAudio(); if (!pf.audio && !pf.results.length && !pf.loading) pfSearchAudio(); }
-    else if (tipo === "lista") pfFillListas(progListaSel.value);
+    else if (tipo === "lista") pfFillListas();
+    else if (tipo === "spotify") { pfFillSpotify(); if (!sa.loaded) saPoll().then(() => { if (progDialog.open && pfTipo.value === "spotify") pfFillSpotify(); }); }
     else pfFillMsgs();
   }
 
@@ -7582,7 +7909,8 @@
   });
 
   // ---- Lista ----
-  function pfFillListas(selected) {
+  function pfFillListas() {
+    const selected = pf.listaAlvo; // o alvo guardado (o <select> pode ainda não ter a opção enquanto as listas carregam)
     const frag = document.createDocumentFragment();
     const ph = mk("option", "", lists.items.length ? "Escolha uma lista…" : "Nenhuma lista criada");
     ph.value = "";
@@ -7592,8 +7920,9 @@
       o.value = l.id;
       frag.appendChild(o);
     }
-    if (selected && LISTA_ID_RE.test(selected) && !lists.items.some((l) => l.id === selected) && lists.loaded) {
-      const o = mk("option", "", "Lista apagada (escolha outra)");
+    if (selected && LISTA_ID_RE.test(selected) && !lists.items.some((l) => l.id === selected)) {
+      // ainda carregando: opção provisória com o mesmo valor (não perde a lista do horário); carregado e ausente = apagada
+      const o = mk("option", "", lists.loaded ? "Lista apagada (escolha outra)" : "Carregando…");
       o.value = selected;
       frag.appendChild(o);
     }
@@ -7604,6 +7933,34 @@
       ? "Você ainda não tem listas. Crie uma em Música → Minhas músicas → Nova lista."
       : "");
     progListaHint.hidden = !progListaHint.textContent;
+  }
+
+  // ---- Playlist do Spotify (v2.7) ----
+  function pfFillSpotify() {
+    const selected = pf.spotifyAlvo;
+    const frag = document.createDocumentFragment();
+    const ph = mk("option", "", sa.items.length ? "Escolha uma playlist…" : "Nenhuma playlist salva");
+    ph.value = "";
+    frag.appendChild(ph);
+    for (const a of sa.items) {
+      const o = mk("option", "", a.nome + " (" + (a.tipo === "album" ? "álbum" : "playlist") + ")");
+      o.value = a.id;
+      frag.appendChild(o);
+    }
+    if (selected && SA_ID_RE.test(selected) && !sa.items.some((a) => a.id === selected)) {
+      const o = mk("option", "", sa.loaded ? "Playlist apagada (escolha outra)" : "Carregando…");
+      o.value = selected;
+      frag.appendChild(o);
+    }
+    progSpotifySel.replaceChildren(frag);
+    if (selected) progSpotifySel.value = selected;
+    progSpotifySel.disabled = !sa.items.length && !selected;
+    let hint = "";
+    if (sa.missing) hint = "Este Proclamare ainda não guarda playlists do Spotify. Atualize o programa no computador da loja.";
+    else if (sa.loaded && !sa.items.length) hint = "Você ainda não salvou nenhuma playlist. Salve uma em Música → Spotify → Playlists salvas.";
+    else if (sa.failed && !sa.loaded) hint = "Não consegui carregar as playlists salvas agora.";
+    setText(progSpotifyHint, hint);
+    progSpotifyHint.hidden = !hint;
   }
 
   // ---- Anúncio ----
@@ -7669,7 +8026,8 @@
   progHora.addEventListener("input", () => { pfRepHint(); if (progHora.getAttribute("aria-invalid")) pfShowError("", ""); });
   progData.addEventListener("input", () => { pfRepHint(); if (progData.getAttribute("aria-invalid")) pfShowError("", ""); });
   progNome.addEventListener("input", () => { if (progNome.getAttribute("aria-invalid")) pfShowError("", ""); });
-  progListaSel.addEventListener("change", () => { if (progListaSel.getAttribute("aria-invalid")) pfShowError("", ""); });
+  progListaSel.addEventListener("change", () => { pf.listaAlvo = progListaSel.value; if (progListaSel.getAttribute("aria-invalid")) pfShowError("", ""); });
+  progSpotifySel.addEventListener("change", () => { pf.spotifyAlvo = progSpotifySel.value; if (progSpotifySel.getAttribute("aria-invalid")) pfShowError("", ""); });
 
   // ---- Abrir ----
   function nextFullHour() {
@@ -7691,6 +8049,8 @@
     pf.empty = false;
     pf.preset = REP_DIAS.todos;
     setText(progDlgTitle, item ? "Editar horário" : "Novo horário");
+    pf.listaAlvo = item && item.tipo === "lista" ? item.alvo : "";
+    pf.spotifyAlvo = item && item.tipo === "spotify" ? item.alvo : "";
     pfShowError("", "");
     pfGuard.hide();
     pfSetBusy(false);
@@ -7740,8 +8100,9 @@
 
     pfTipo.set(tipo, true);
     pfOnTipo(tipo);
-    if (!lists.loaded || tipo === "lista") listsPoll().then(() => { if (progDialog.open && pfTipo.value === "lista") pfFillListas(progListaSel.value); });
-    if (item && tipo === "lista") pfFillListas(item.alvo);
+    if (!lists.loaded || tipo === "lista") listsPoll().then(() => { if (progDialog.open && pfTipo.value === "lista") pfFillListas(); });
+    if (item && tipo === "lista") pfFillListas();
+    if (item && tipo === "spotify") pfFillSpotify();
     pf.baseSig = pfSig();
     progDialog.showModal();
     if (!item) (pf.audio ? btnProgAudioChange : progAudioQ).focus({ preventScroll: true });
@@ -7759,6 +8120,9 @@
     } else if (v.tipo === "lista") {
       if (!v.lista || !LISTA_ID_RE.test(v.lista)) return fail("Escolha a lista que vai tocar.", "lista");
       alvo = v.lista;
+    } else if (v.tipo === "spotify") {
+      if (!v.spotify || !SA_ID_RE.test(v.spotify)) return fail("Escolha a playlist do Spotify que vai tocar.", "spotify");
+      alvo = v.spotify;
     } else {
       alvo = cleanMsgText(v.texto, true);
       if (!alvo) return fail("Escreva o texto que será falado.", "texto");
@@ -7814,7 +8178,7 @@
       if (res.gone) { pfShowError("Este horário foi removido em outro aparelho. Feche e crie de novo, se quiser.", ""); scheduler.kick("prog"); return; }
       const d = res.data || {};
       if (res.status === 400 && typeof d.error === "string") {
-        const campo = d.campo === "alvo" ? (novo.tipo === "audio" ? "audio" : novo.tipo === "lista" ? "lista" : "texto") : d.campo;
+        const campo = d.campo === "alvo" ? (novo.tipo === "audio" ? "audio" : novo.tipo === "lista" ? "lista" : novo.tipo === "spotify" ? "spotify" : "texto") : d.campo;
         pfShowError(pfClean(d.error), campo);
         pfFocusField(campo);
       } else if (res.status === 409 && d.codigo === "lendo_pasta") {
@@ -7835,6 +8199,7 @@
     clearTimeout(pf.timer);
     pf.results = [];
     pf.audio = null;
+    progSpotifySel.replaceChildren();
     progTexto.value = ""; // não deixa texto de anúncio parado no DOM
     progAudioResults.replaceChildren();
     progMsgs.replaceChildren();
@@ -7847,14 +8212,475 @@
   /** A porta de PIN fechou ou o Proclamare foi desligado: nada continua falando com o servidor. */
   function listsProgStopAll() {
     disarm();
-    for (const d of [listDialog, progDialog, addlistDialog]) if (d.open) d.close();
+    for (const d of [listDialog, progDialog, addlistDialog, sqDialog, atalhoDialog]) if (d.open) d.close();
     if (lpick.ctrl) { lpick.ctrl.abort(); lpick.ctrl = null; }
     if (pf.ctrl) { pf.ctrl.abort(); pf.ctrl = null; }
     clearTimeout(lpick.timer);
     clearTimeout(pf.timer);
     listsReset();
     progReset();
+    saReset();
   }
+
+  // ======================================================================
+  // 16g. Playlists salvas do Spotify (contrato v2.7): "atalhos" de playlist/álbum
+  // ======================================================================
+  // GET/POST /api/spotify/atalhos, POST /api/spotify/atalhos/<id> (e /apagar, /tocar) e
+  // GET /api/spotify/atual-contexto. Nomes e links são dados externos: só entram no DOM por textContent.
+  // O link é validado de leve aqui (só para explicar cedo); quem decide é o servidor.
+  const SA_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+  const SA_NOME_MAX = 40;
+  const SA_MAX_PADRAO = 30;
+  const SA_POLL_MS = 20000;
+  // como o servidor: host open.spotify.com, intl-xx ou intl-xxx, tipo sem diferenciar maiúsculas, id de 22 caracteres COM maiúsculas/minúsculas
+  const SA_LINK_HTTPS_RE = /^https:\/\/open\.spotify\.com\/(?:intl-[a-z]{2,3}(?:-[a-z]{2,4})?\/)?([A-Za-z]{3,10})\/([A-Za-z0-9]{22})(?:[/?#].*)?$/;
+  const SA_LINK_URI_RE = /^spotify:([A-Za-z]{3,10}):([A-Za-z0-9]{22})$/;
+
+  /** Interpreta o que o usuário colou: {tipo:"playlist"|"album", sid} ou {error}. */
+  function saLinkInfo(raw) {
+    const text = typeof raw === "string" ? raw.trim() : "";
+    if (!text) return { error: "Cole o link da playlist ou do álbum do Spotify." };
+    if (text.length > 300 || /[\u0000- \u007f]/.test(text)) return { error: "Link inválido. Cole só o endereço da playlist, sem espaços." };
+    if (/^https?:\/\/spotify\.link\//i.test(text) || /^https?:\/\/spotify\.app\.link\//i.test(text)) {
+      return { error: "Esse é um link curto. Abra-o no navegador e copie o endereço da página (começa com https://open.spotify.com)." };
+    }
+    const m = SA_LINK_HTTPS_RE.exec(text) || SA_LINK_URI_RE.exec(text);
+    if (!m) return { error: "Não reconheci o link. Ele deve começar com https://open.spotify.com/playlist/ ou /album/." };
+    const kind = m[1].toLowerCase();
+    if (kind !== "playlist" && kind !== "album") {
+      return { error: kind === "track" ? "Esse link é de uma música. Cole o link de uma playlist ou de um álbum." : "Esse link não é de playlist nem de álbum. Cole o link de uma playlist ou de um álbum." };
+    }
+    return { tipo: kind, sid: m[2] };
+  }
+
+  const tileAtalhos = $("tile-atalhos");
+  const atalhosCount = $("atalhos-count");
+  const btnAtalhoNew = $("btn-atalho-new");
+  const atalhosCtx = $("atalhos-ctx");
+  const atalhosCtxText = $("atalhos-ctx-text");
+  const btnAtalhoCtx = $("btn-atalho-ctx");
+  const atalhosEmpty = $("atalhos-empty");
+  const atalhosNote = $("atalhos-note");
+  const atalhosGrid = $("atalhos-grid");
+
+  const sa = {
+    loaded: false, failed: false, missing: false, loading: false,
+    versao: -1, limites: { atalhos: SA_MAX_PADRAO, nome: SA_NOME_MAX },
+    items: [], busyId: "", sig: "", ctx: null, ctxSig: "",
+  };
+
+  function saParse(d) {
+    if (!d || d.ok !== true || !Array.isArray(d.atalhos)) return null;
+    const lim = d.limites && typeof d.limites === "object" ? d.limites : {};
+    const limites = { atalhos: posInt(lim.atalhos, SA_MAX_PADRAO), nome: Math.min(posInt(lim.nome, SA_NOME_MAX), 80) };
+    const items = [];
+    for (const a of d.atalhos.slice(0, 100)) {
+      if (!a || typeof a.id !== "string" || !SA_ID_RE.test(a.id) || typeof a.nome !== "string") continue;
+      const info = typeof a.url === "string" ? saLinkInfo(a.url) : { error: "x" };
+      items.push({
+        id: a.id,
+        nome: a.nome.slice(0, 80),
+        tipo: a.tipo === "album" ? "album" : "playlist",
+        versao: Number.isInteger(a.versao) ? a.versao : 1,
+        url: info.error ? "" : a.url,
+        sid: info.error ? "" : info.sid,
+      });
+    }
+    return { versao: Number.isInteger(d.versao) ? d.versao : 0, limites, items };
+  }
+
+  /** GET /api/spotify/atalhos e aplica. Devolve true se leu. */
+  async function saFetch() {
+    try {
+      const r = await getJSON("/api/spotify/atalhos", { timeout: 8000 });
+      if (r.status === 404 && !r.data.codigo) { // servidor sem a função (versão antiga): some o bloco, sem alarde
+        Object.assign(sa, { missing: true, loaded: true, failed: false, items: [], versao: -1 });
+        return false;
+      }
+      const p = r.ok ? saParse(r.data) : null;
+      if (!p) throw new Error("resposta inválida");
+      Object.assign(sa, { missing: false, loaded: true, failed: false, versao: p.versao, limites: p.limites, items: p.items });
+      return true;
+    } catch (e) {
+      if (e && e.name === "AuthLockedError") return false;
+      sa.failed = true;
+      return false;
+    }
+  }
+
+  let saInflight = null; // a carga em andamento (quem chama de novo espera a mesma)
+  function saPoll() {
+    if (sa.loading && saInflight) return saInflight;
+    sa.loading = true;
+    const run = (async () => {
+      try { await saFetch(); } finally {
+        sa.loading = false;
+        if (saInflight === run) saInflight = null;
+        saRender();
+      }
+    })();
+    saInflight = run;
+    return run;
+  }
+
+  /** GET /api/spotify/atual-contexto: o Spotify está tocando uma playlist/álbum? (erro e 404 = sem aviso) */
+  async function saCtxPoll() {
+    let ctx = null;
+    try {
+      const r = await getJSON("/api/spotify/atual-contexto", { timeout: 8000 });
+      const d = r.ok ? r.data : null;
+      if (d && d.ok === true && (d.uri_tipo === "playlist" || d.uri_tipo === "album") && typeof d.url === "string") {
+        const info = saLinkInfo(d.url);
+        if (!info.error && info.tipo === d.uri_tipo) ctx = { tipo: info.tipo, sid: info.sid, url: d.url, nome: typeof d.nome === "string" && d.nome.trim() ? d.nome.trim().slice(0, 120) : null };
+      }
+    } catch (e) {
+      if (e && e.name === "AuthLockedError") return;
+    }
+    sa.ctx = ctx;
+    saRender();
+  }
+
+  const saTask = async () => { await saPoll(); if (!sa.missing) await saCtxPoll(); };
+
+  function makeAtalhoCard() {
+    const li = mk("li", "lcard is-new");
+    li.addEventListener("animationend", () => li.classList.remove("is-new"), { once: true });
+    const ico = mk("span", "lcard__ico");
+    ico.setAttribute("aria-hidden", "true");
+    ico.appendChild(makeIcon("music"));
+    const name = mk("span", "lcard__name");
+    const sub = mk("span", "lcard__sub");
+    const text = mk("span", "lcard__text");
+    text.append(name, sub);
+    const edit = mkBtn("btn btn--icon", "edit", "edit");
+    const rm = mkBtn("btn btn--icon lcard__rm", "remove", "trash");
+    rm.appendChild(mk("span", "lcard__rm-t", "Apagar?"));
+    const tools = mk("div", "lcard__tools");
+    tools.append(edit, rm);
+    const top = mk("div", "lcard__top");
+    top.append(ico, text, tools);
+    const play = mkBtn("btn btn--primary btn--sm", "play", "play", "", "Tocar");
+    const acts = mk("div", "lcard__acts");
+    acts.append(play);
+    li.append(top, acts);
+    li._a = { name, sub, play, edit, rm };
+    return li;
+  }
+
+  function updateAtalhoCard(li, a) {
+    const r = li._a;
+    setText(r.name, a.nome);
+    setText(r.sub, a.tipo === "album" ? "Álbum do Spotify" : "Playlist do Spotify");
+    const busy = !!sa.busyId;
+    r.play.setAttribute("aria-disabled", String(busy));
+    r.play.classList.toggle("is-loading", busy && sa.busyId === a.id);
+    r.play.setAttribute("aria-label", "Tocar " + (a.tipo === "album" ? "o álbum " : "a playlist ") + a.nome);
+    r.edit.setAttribute("aria-label", "Editar a playlist salva " + a.nome);
+    r.edit.title = "Editar";
+    if (!r.rm.classList.contains("is-confirm")) {
+      r.rm.setAttribute("aria-label", "Apagar a playlist salva " + a.nome);
+      r.rm.title = "Apagar";
+    }
+  }
+
+  function saRender() {
+    const show = !sa.missing && (sa.loaded || sa.failed);
+    tileAtalhos.hidden = !show;
+    if (!show) return;
+    const n = sa.items.length;
+    atalhosCount.hidden = n === 0;
+    setText(atalhosCount, String(n));
+    atalhosEmpty.hidden = !(sa.loaded && n === 0);
+    const note = sa.failed && !sa.loaded ? "Não consegui carregar as playlists salvas agora." : "";
+    atalhosNote.hidden = !note;
+    setText(atalhosNote, note);
+    const cheio = n >= sa.limites.atalhos;
+    btnAtalhoNew.setAttribute("aria-disabled", String(cheio));
+    btnAtalhoNew.title = cheio ? "Você já salvou " + sa.limites.atalhos + " playlists. Apague uma para salvar outra." : "";
+    // "Salvar a playlist que está tocando": só se o Spotify toca uma playlist/álbum que ainda não está salva
+    const ctx = sa.ctx && sa.loaded && !cheio && !sa.items.some((a) => a.sid === sa.ctx.sid) ? sa.ctx : null;
+    const csig = ctx ? ctx.sid + "|" + (ctx.nome || "") : "";
+    if (csig !== sa.ctxSig) {
+      const was = atalhosCtx.hidden;
+      sa.ctxSig = csig;
+      atalhosCtx.hidden = !ctx;
+      if (ctx) {
+        const que = ctx.tipo === "album" ? "o álbum" : "a playlist";
+        setText(atalhosCtxText, ctx.nome ? "Tocando agora " + que + " “" + truncate(ctx.nome, 60) + "”. Quer guardar para tocar com um toque?" : "O Spotify está tocando " + que + " que ainda não foi salv" + (ctx.tipo === "album" ? "o" : "a") + ". Quer guardar para tocar com um toque?");
+        if (was) playEnter(atalhosCtx);
+      }
+    }
+    const sig = sa.busyId + "|" + sa.items.map((a) => [a.id, a.nome, a.tipo].join(",")).join(";");
+    if (sig !== sa.sig) {
+      sa.sig = sig;
+      reconcileList(atalhosGrid, sa.items, (a) => a.id, makeAtalhoCard, updateAtalhoCard);
+    }
+  }
+
+  function saReset() {
+    Object.assign(sa, { loaded: false, failed: false, missing: false, loading: false, versao: -1, items: [], busyId: "", sig: "", ctx: null, ctxSig: "" });
+    atalhosGrid.replaceChildren();
+    atalhosCtx.hidden = true;
+    tileAtalhos.hidden = true;
+  }
+
+  // ---- Tocar / Apagar ----
+  async function saPlay(a, btn) {
+    if (sa.busyId || btn.getAttribute("aria-disabled") === "true") return;
+    sa.busyId = a.id;
+    saRender();
+    try {
+      let r = null;
+      try { r = await postJSON("/api/spotify/atalhos/" + a.id + "/tocar", {}, { timeout: 15000 }); } catch (e) { if (e && e.name === "AuthLockedError") return; }
+      if (r && r.ok && r.data.ok) {
+        noteSpotifyCommandOk();
+        setSpotifyPlayingLocal(true);
+        toast("Tocando: " + truncate(a.nome, 40), "success", { duration: 3200 });
+        setTimeout(() => scheduler.kick("spotify-now"), 700);
+        setTimeout(() => scheduler.kick("sp-atalhos"), 2500);
+        if (r.data.tocador_pausado) scheduler.kick("yt-state"); // o Spotify assumiu: a música do Tocador da loja foi pausada
+      } else if (r && r.status === 404 && r.data.codigo === "atalho_inexistente") {
+        toast("Essa playlist salva não existe mais.", "warn");
+        saPoll(); // tira o cartão
+      } else if (r && r.status === 404) {
+        toast("Este recurso não existe nesta versão do Proclamare. Atualize o programa no computador da loja.", "warn");
+      } else if (r && r.data && typeof r.data.codigo === "string") {
+        toastSpotifyFailure(r.data, "O Spotify não aceitou tocar essa playlist agora.");
+      } else if (r && r.status === 429) {
+        toast("Muitos pedidos seguidos. Espere um instante e toque de novo.", "info");
+      } else {
+        toast(libErr(r, r ? "Não foi possível tocar a playlist agora." : "Sem resposta do servidor."), "error");
+      }
+    } finally {
+      sa.busyId = "";
+      saRender();
+    }
+  }
+
+  async function saRemove(a, btn) {
+    if (sa.busyId || btn.getAttribute("aria-disabled") === "true") return;
+    if (!btn.classList.contains("is-confirm")) {
+      btn.setAttribute("aria-label", "Confirmar: apagar a playlist salva " + a.nome + ". A playlist continua no Spotify");
+      arm(btn, () => { btn.setAttribute("aria-label", "Apagar a playlist salva " + a.nome); }, 4500);
+      return;
+    }
+    disarm();
+    btn.setAttribute("aria-disabled", "true");
+    const r = await libPost("/api/spotify/atalhos/" + a.id + "/apagar", { versao: a.versao });
+    btn.removeAttribute("aria-disabled");
+    if (r && r.ok && r.data.ok) {
+      sa.items = sa.items.filter((x) => x.id !== a.id);
+      saRender();
+      const usos = prog.itens.filter((i) => i.tipo === "spotify" && i.alvo === a.id).length;
+      toast("Playlist apagada daqui. Ela continua no Spotify." + (usos ? " " + plural(usos, "horário usava", "horários usavam") + " esta playlist e ficou sem música." : ""), usos ? "warn" : "success", { duration: usos ? 8000 : 4200 });
+      scheduler.kick("sp-atalhos");
+      scheduler.kick("prog");
+    } else if (r && r.status === 409 && r.data.codigo === "versao_mudou") {
+      await saFetch();
+      saRender();
+      toast("Outro aparelho mexeu nessa playlist agora há pouco. Confira e apague de novo.", "warn");
+    } else if (r && r.status === 404 && r.data.codigo === "atalho_inexistente") {
+      sa.items = sa.items.filter((x) => x.id !== a.id);
+      saRender();
+      toast("Essa playlist salva não existe mais.", "info");
+      saPoll();
+    } else if (r && r.status === 404) {
+      toast("Este recurso não existe nesta versão do Proclamare. Atualize o programa no computador da loja.", "warn");
+    } else {
+      toast(libErr(r, r ? "Não foi possível apagar a playlist salva." : "Sem resposta do servidor."), "error");
+    }
+  }
+
+  atalhosGrid.addEventListener("click", (e) => {
+    const btn = e.target instanceof Element ? e.target.closest("button[data-act]") : null;
+    if (!btn || !atalhosGrid.contains(btn)) return;
+    const li = btn.closest(".lcard");
+    const a = li ? sa.items.find((x) => x.id === li.dataset.key) : null;
+    if (!a) return;
+    const act = btn.dataset.act;
+    if (act !== "remove" && armed.btn && armed.btn !== btn) disarm();
+    if (act === "play") saPlay(a, btn);
+    else if (act === "edit") openAtalhoEditor(a, null, btn);
+    else if (act === "remove") saRemove(a, btn);
+  });
+
+  // ---- Diálogo: salvar / editar ----
+  const atalhoDialog = $("atalho-dialog");
+  const atalhoForm = $("atalho-form");
+  const atalhoTitle = $("atalho-title");
+  const atalhoNome = $("atalho-nome");
+  const atalhoNomeCount = $("atalho-nome-count");
+  const atalhoNomeErro = $("atalho-nome-erro");
+  const atalhoLink = $("atalho-link");
+  const atalhoLinkErro = $("atalho-link-erro");
+  const atalhoError = $("atalho-error");
+  const btnAtalhoCancel = $("btn-atalho-cancel");
+  const btnAtalhoSave = $("btn-atalho-save");
+  const at = { mode: "new", id: "", versao: 0, base: "", busy: false, opener: null, nomeOrig: "", linkOrig: "" };
+  const atSig = () => JSON.stringify([atalhoNome.value.trim(), atalhoLink.value.trim()]);
+  const atGuard = bindDiscardGuard(atalhoDialog, $("atalho-confirm"), $("btn-atalho-confirm-yes"), $("btn-atalho-confirm-no"), () => atalhoDialog.open && atSig() !== at.base, () => at.busy);
+
+  function atFieldError(el, box, text) {
+    box.hidden = !text;
+    setText(box, text || "");
+    if (text) el.setAttribute("aria-invalid", "true");
+    else el.removeAttribute("aria-invalid");
+  }
+  const atNameError = (t) => atFieldError(atalhoNome, atalhoNomeErro, t);
+  const atLinkError = (t) => atFieldError(atalhoLink, atalhoLinkErro, t);
+  function atShowError(text) {
+    atalhoError.hidden = !text;
+    setText(atalhoError, text || "");
+  }
+  function atSetBusy(on) {
+    at.busy = on;
+    btnAtalhoSave.classList.toggle("is-loading", on);
+    for (const b of [btnAtalhoSave, btnAtalhoCancel]) {
+      if (on) b.setAttribute("aria-disabled", "true");
+      else b.removeAttribute("aria-disabled");
+    }
+  }
+
+  /** `a` = atalho a editar (ou null = novo); `preset` = {nome, link} para pré-preencher um novo. */
+  function openAtalhoEditor(a, preset, opener) {
+    if (atalhoDialog.open || authLocked || shuttingDown) return;
+    at.mode = a ? "edit" : "new";
+    at.id = a ? a.id : "";
+    at.versao = a ? a.versao : 0;
+    at.opener = opener || document.activeElement;
+    at.nomeOrig = a ? a.nome : "";
+    at.linkOrig = a ? a.url : "";
+    const max = sa.limites.nome;
+    atalhoNome.maxLength = max;
+    atalhoNome.value = a ? a.nome : preset && preset.nome ? preset.nome.slice(0, max) : "";
+    atalhoLink.value = a ? a.url : preset && preset.link ? preset.link : "";
+    paintCounter(atalhoNomeCount, atalhoNome.value.length, max);
+    atNameError("");
+    atLinkError("");
+    atShowError("");
+    atGuard.hide();
+    atSetBusy(false);
+    setText(atalhoTitle, a ? "Editar playlist salva" : "Salvar playlist do Spotify");
+    at.base = atSig();
+    atalhoDialog.showModal();
+    // o que falta preencher ganha o foco
+    (atalhoNome.value ? atalhoLink : atalhoNome).focus();
+  }
+
+  async function atSave() {
+    if (at.busy) return;
+    atShowError("");
+    const max = sa.limites.nome;
+    const nome = cleanMsgText(atalhoNome.value, false);
+    const link = atalhoLink.value.trim();
+    if (!nome) { atNameError("Dê um nome à playlist."); atalhoNome.focus(); return; }
+    if (nome.length > max) { atNameError("O nome pode ter até " + max + " letras."); atalhoNome.focus(); return; }
+    atNameError("");
+    const info = saLinkInfo(link);
+    if (info.error) { atLinkError(info.error); atalhoLink.focus(); return; }
+    atLinkError("");
+    const edit = at.mode === "edit";
+    const body = { nome, link };
+    if (edit) {
+      // só manda o que mudou (e a versão que este aparelho viu)
+      delete body.nome;
+      delete body.link;
+      if (nome !== at.nomeOrig) body.nome = nome;
+      if (link !== at.linkOrig) body.link = link;
+      if (!Object.keys(body).length) { closeDialogAnimated(atalhoDialog); return; }
+      body.versao = at.versao;
+    }
+    atSetBusy(true);
+    try {
+      let r = null;
+      for (let tentativa = 0; tentativa < 2; tentativa++) {
+        r = await postJSON(edit ? "/api/spotify/atalhos/" + at.id : "/api/spotify/atalhos", body, { timeout: 15000 });
+        if (edit && tentativa === 0 && r.status === 409 && r.data.codigo === "versao_mudou") {
+          // outro aparelho gravou antes: pega a versão atual e reaplica só esta mudança
+          await saFetch();
+          const cur = sa.items.find((x) => x.id === at.id);
+          if (!cur) { r = { ok: false, status: 404, data: { codigo: "atalho_inexistente" } }; break; }
+          body.versao = cur.versao;
+          continue;
+        }
+        break;
+      }
+      const d = r.data;
+      if (r.ok && d.ok) {
+        closeDialogAnimated(atalhoDialog);
+        toast(edit ? "Playlist salva." : "Playlist salva. Agora é só tocar aqui ou marcar a hora em Horários.", "success", { duration: edit ? 3200 : 5200 });
+        await saFetch();
+        saRender();
+        saCtxPoll();
+        scheduler.kick("prog");
+        return;
+      }
+      if (r.status === 400 && d.campo === "link") {
+        atLinkError(typeof d.error === "string" && d.error ? d.error : "O link não é de uma playlist nem de um álbum do Spotify.");
+        atalhoLink.focus();
+      } else if (r.status === 400 && d.campo === "nome") {
+        atNameError(typeof d.error === "string" && d.error ? d.error : "O nome é inválido.");
+        atalhoNome.focus();
+      } else if (r.status === 409 && d.codigo === "nome_repetido") {
+        atNameError("Já existe uma playlist salva com esse nome.");
+        atalhoNome.focus();
+      } else if (r.status === 404 && d.codigo === "atalho_inexistente") {
+        atShowError("Essa playlist salva não existe mais. Feche e salve de novo, se quiser.");
+        saPoll();
+      } else if (r.status === 404) {
+        atShowError("Este recurso não existe nesta versão do Proclamare. Atualize o programa no computador da loja.");
+      } else if (r.status === 429) {
+        atShowError("Muitas alterações seguidas. Espere um minuto e tente de novo.");
+      } else {
+        atShowError(typeof d.error === "string" && d.error ? d.error : "Não foi possível salvar a playlist agora.");
+      }
+    } catch (err) {
+      if (!err || err.name !== "AuthLockedError") atShowError("Sem conexão com o servidor. Tente de novo.");
+    } finally {
+      atSetBusy(false);
+    }
+  }
+
+  atalhoForm.addEventListener("submit", (e) => { e.preventDefault(); atSave(); });
+  btnAtalhoCancel.addEventListener("click", atGuard.request);
+  atalhoNome.addEventListener("input", () => {
+    paintCounter(atalhoNomeCount, atalhoNome.value.length, sa.limites.nome);
+    if (!atalhoNomeErro.hidden) atNameError("");
+    if (!atalhoError.hidden) atShowError("");
+  });
+  atalhoLink.addEventListener("input", () => {
+    if (!atalhoLinkErro.hidden) atLinkError("");
+    if (!atalhoError.hidden) atShowError("");
+  });
+  // colar um link com texto em volta (ex.: "Ouça X no Spotify https://open.spotify.com/...") deixa só o endereço
+  atalhoLink.addEventListener("paste", (e) => {
+    const t = e.clipboardData ? e.clipboardData.getData("text") : "";
+    const m = /(https:\/\/open\.spotify\.com\/[^\s]+|spotify:(?:playlist|album|track):[A-Za-z0-9]+)/i.exec(t || "");
+    if (!m || m[0] === t.trim()) return;
+    e.preventDefault();
+    atalhoLink.value = m[0].slice(0, 300);
+    atalhoLink.dispatchEvent(new Event("input"));
+  });
+  atalhoDialog.addEventListener("close", () => {
+    atGuard.hide();
+    atSetBusy(false);
+    atalhoNome.value = "";
+    atalhoLink.value = "";
+    if (!shuttingDown && !authLocked && at.opener && at.opener.isConnected) at.opener.focus({ preventScroll: true });
+    at.opener = null;
+  });
+
+  btnAtalhoNew.addEventListener("click", () => {
+    if (btnAtalhoNew.getAttribute("aria-disabled") === "true") {
+      toast("Você já salvou " + sa.limites.atalhos + " playlists. Apague uma para salvar outra.", "info");
+      return;
+    }
+    openAtalhoEditor(null, null, btnAtalhoNew);
+  });
+  btnAtalhoCtx.addEventListener("click", () => {
+    if (!sa.ctx) return;
+    openAtalhoEditor(null, { nome: sa.ctx.nome || "", link: sa.ctx.url }, btnAtalhoCtx);
+  });
 
   // ======================================================================
   // 17. Configurações do Spotify (diálogo)
@@ -9563,6 +10389,8 @@
     // Programação (v2.6): a cada 5 s com o bloco à vista; fora de vista só confere de vez em quando (avisos e o ponto da aba)
     scheduler.add("prog", progPoll, PROG_POLL_MS, { enabled: progVisible, immediate: true });
     scheduler.add("prog-bg", progPoll, PROG_BG_POLL_MS, { enabled: () => !progVisible(), immediate: true });
+    // Playlists salvas do Spotify (v2.7): só com a área do Spotify à vista; some sozinho se o servidor não tiver a função
+    scheduler.add("sp-atalhos", saTask, SA_POLL_MS, { enabled: () => spotifyActive() && !sa.missing, immediate: true });
 
     refreshSpotifyStatus();
     finishSpotifyRedirectBack();

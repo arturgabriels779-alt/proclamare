@@ -2808,6 +2808,45 @@ dialog.dialog--wide { scroll-padding-bottom: 120px; }
   .progf__pair { grid-template-columns: minmax(0, 1fr) 132px; gap: 10px; }
 }
 
+/* ---- v2.7: listas com itens do YouTube, "Salvar fila como lista" e Playlists salvas do Spotify ---- */
+/* bloco Fila: o "Salvar fila como lista" divide a linha do título com "Limpar fila" */
+.ytq__tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 8px; margin-left: auto; }
+.ytq__tools .btn--ghost.btn--sm { background: var(--btn-secondary); }
+
+/* item do YouTube dentro do editor de lista: ícone de vídeo no selo e um filete de destaque */
+.lrow--yt { box-shadow: inset 3px 0 0 var(--accent-soft); }
+.lrow__sub--yt { display: flex; align-items: center; gap: 5px; color: var(--accent-text); font-weight: 500; }
+.lrow__sub--yt .icon { flex: none; width: 13px; height: 13px; }
+.lrow__sub--yt span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.lrow__err { margin-top: 2px; font: 600 12px/16px var(--font); color: var(--live); overflow-wrap: anywhere; }
+.lrow.is-bad { background: var(--live-soft); }
+.listyt__row .btn { flex: none; }
+
+/* Playlists salvas (área do Spotify): reaproveita o cartão das listas, em fundo suave */
+.tile--atalhos .lists__grid { max-height: none; overflow: visible; margin: 0; padding: 0; }
+.tile--atalhos .lcard { background: var(--tile-inset); border-color: transparent; }
+.atalhos__empty, .atalhos__note { text-wrap: balance; }
+.atalhos__ctx {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px;
+  padding: 12px 14px; border-radius: var(--r-card); background: var(--accent-soft);
+}
+.atalhos__ctx-ico { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: var(--tile); color: var(--accent-text); }
+.atalhos__ctx-ico .icon { width: 16px; height: 16px; }
+.atalhos__ctx-text { flex: 1 1 180px; min-width: 0; font-size: 14px; line-height: 20px; color: var(--text-1); overflow-wrap: anywhere; text-wrap: pretty; }
+.atalhos__ctx .btn { flex: none; }
+
+/* horário do tipo Spotify */
+.prow--spotify { --ico-bg: var(--ok-soft); --ico-ink: var(--ok); }
+
+@media (max-width: 767.98px) {
+  .ytq__tools { flex: 1 1 100%; justify-content: space-between; margin-left: 0; }
+  .ytq__tools .btn--sm { min-height: 44px; }
+  .tile--atalhos .btn--sm { min-height: 44px; }
+  .tile--atalhos .tile__action { flex: 1 1 100%; margin-left: 0; height: 48px; }
+  .atalhos__ctx .btn { flex: 1 1 100%; min-height: 44px; }
+  .listyt__row .btn { min-height: var(--h-control, 48px); }
+}
+
 /* ---- Biblioteca em coluna estreita (tablet): com "+ Lista" são 4 botões; eles descem para uma linha própria ---- */
 .tile--lib { container: lib / inline-size; }
 @media (min-width: 421px) {

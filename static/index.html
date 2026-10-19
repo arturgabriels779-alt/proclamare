@@ -329,7 +329,7 @@
             <span>Novo horário</span>
           </button>
         </div>
-        <p class="hint prog__help">Áudios e anúncios tocam nos horários marcados mesmo com o navegador fechado. Listas precisam da aba <b>Tocador da loja</b> aberta. Isto substitui o Agendador do Windows.</p>
+        <p class="hint prog__help">Áudios e anúncios tocam nos horários marcados mesmo com o navegador fechado. Listas precisam da aba <b>Tocador da loja</b> aberta; playlists do Spotify precisam do Spotify aberto no computador da loja. Isto substitui o Agendador do Windows.</p>
 
         <!-- Avisos: "Tocando agora [Parar]", lista que não tocou, Tocador fechado… (montados pelo app.js) -->
         <div class="prog__alerts" id="prog-alerts" role="status" aria-live="polite"></div>
@@ -481,6 +481,32 @@
                 <input type="range" id="spotify-volume" class="range" min="0" max="100" step="1" value="70" aria-label="Volume do Spotify">
                 <output class="volume__out" id="spotify-volume-out" for="spotify-volume">70%</output>
               </div>
+            </div>
+
+            <!-- Playlists salvas (v2.7): atalhos de playlist/álbum do Spotify; tocam com um toque e entram na Programação -->
+            <div class="tile tile--atalhos" id="tile-atalhos" aria-labelledby="title-atalhos" hidden>
+              <div class="tile__head tile__head--wrap">
+                <div class="lib__titlerow">
+                  <svg class="icon tile__icon" aria-hidden="true"><use href="#i-list"/></svg>
+                  <h2 class="tile__title" id="title-atalhos">Playlists salvas</h2>
+                  <span class="ytq__count" id="atalhos-count" hidden></span>
+                </div>
+                <button type="button" class="btn btn--ghost btn--sm tile__action" id="btn-atalho-new" aria-haspopup="dialog">
+                  <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+                  <span>Salvar playlist do Spotify</span>
+                </button>
+              </div>
+
+              <!-- Tocando uma playlist ou álbum que ainda não foi salvo -->
+              <div class="atalhos__ctx" id="atalhos-ctx" hidden>
+                <span class="atalhos__ctx-ico" aria-hidden="true"><svg class="icon"><use href="#i-music"/></svg></span>
+                <p class="atalhos__ctx-text" id="atalhos-ctx-text"></p>
+                <button type="button" class="btn btn--primary btn--sm" id="btn-atalho-ctx">Salvar a playlist que está tocando</button>
+              </div>
+
+              <p class="hint atalhos__empty" id="atalhos-empty" hidden>Salve as playlists que a loja sempre toca. Depois é só um toque em <b>Tocar</b>, ou marque a hora na aba Horários. No Spotify, toque em <b>⋯ &gt; Compartilhar &gt; Copiar link</b> e cole aqui.</p>
+              <p class="hint atalhos__note" id="atalhos-note" role="status" hidden></p>
+              <ul class="lists__grid atalhos__grid" id="atalhos-grid" aria-label="Playlists salvas"></ul>
             </div>
 
             <!-- Dispositivo + busca -->
@@ -659,7 +685,7 @@
                     <span>Nova lista</span>
                   </button>
                 </div>
-                <p class="hint lists__empty" id="lists-empty" hidden>Monte listas com as suas músicas e toque em ordem ou embaralhadas. Dá para marcar a hora de uma lista na aba Horários.</p>
+                <p class="hint lists__empty" id="lists-empty" hidden>Monte listas com as suas músicas e links do YouTube e toque em ordem ou embaralhadas. Dá para marcar a hora de uma lista na aba Horários. Para guardar o que está tocando, use “Salvar fila como lista” no bloco Fila.</p>
                 <p class="hint lists__note" id="lists-note" role="status" hidden></p>
                 <ul class="lists__grid" id="lists-grid" aria-label="Suas listas"></ul>
               </section>
@@ -754,7 +780,14 @@
                   <svg class="icon tile__icon" aria-hidden="true"><use href="#i-list"/></svg>
                   <h2 class="tile__title" id="title-yt-queue">Fila</h2>
                 </div>
-                <button type="button" class="btn btn--text btn--sm" id="btn-yt-queue-clear" hidden>Limpar fila</button>
+                <div class="ytq__tools">
+                  <!-- v2.7: guarda a fila (e o que está tocando) como uma Lista em "Minhas músicas" -->
+                  <button type="button" class="btn btn--ghost btn--sm" id="btn-yt-queue-save" aria-haspopup="dialog" aria-disabled="true">
+                    <svg class="icon" aria-hidden="true"><use href="#i-list-plus"/></svg>
+                    <span>Salvar fila como lista</span>
+                  </button>
+                  <button type="button" class="btn btn--text btn--sm" id="btn-yt-queue-clear" hidden>Limpar fila</button>
+                </div>
               </div>
 
               <div class="ytq__section">
@@ -1176,6 +1209,7 @@
           <button type="button" class="seg__opt" data-value="audio" role="radio" aria-checked="true">Áudio</button>
           <button type="button" class="seg__opt" data-value="lista" role="radio" aria-checked="false">Lista</button>
           <button type="button" class="seg__opt" data-value="anuncio" role="radio" aria-checked="false">Anúncio</button>
+          <button type="button" class="seg__opt" data-value="spotify" role="radio" aria-checked="false">Spotify</button>
         </div>
         <p class="hint" id="prog-tipo-hint"></p>
       </div>
@@ -1212,6 +1246,14 @@
           <span class="switch__text">Tocar embaralhada</span>
         </label>
         <p class="hint">No horário, a lista <b>troca a música atual</b>. Precisa da aba Tocador da loja aberta.</p>
+      </div>
+
+      <!-- Playlist do Spotify (v2.7): escolhe uma das "Playlists salvas" -->
+      <div class="field" id="prog-alvo-spotify" hidden>
+        <label class="label" for="prog-spotify-sel">Playlist do Spotify</label>
+        <div class="select"><select id="prog-spotify-sel"></select></div>
+        <p class="hint" id="prog-spotify-hint"></p>
+        <p class="hint">No horário, a playlist <b>troca a música do Spotify</b>. O Spotify precisa estar aberto e conectado no computador da loja.</p>
       </div>
 
       <!-- Anúncio de texto falado -->
@@ -1314,7 +1356,7 @@
     <div class="formsheet__body">
       <div class="formsheet__head">
         <h2 class="sheet__title" id="list-dlg-title">Nova lista</h2>
-        <p class="hint">Escolha as músicas e a ordem. Na hora de tocar, dá para seguir a ordem ou embaralhar.</p>
+        <p class="hint">Misture músicas da sua pasta e links do YouTube, na ordem que quiser. Na hora de tocar, dá para seguir a ordem ou embaralhar.</p>
       </div>
 
       <div class="field">
@@ -1328,11 +1370,11 @@
 
       <div class="field">
         <div class="label label--split">
-          <span id="list-songs-label">Músicas da lista</span>
+          <span id="list-songs-label">Itens da lista</span>
           <span class="msg-card__counter" id="list-songs-count"></span>
         </div>
         <ol class="listed" id="list-songs" aria-labelledby="list-songs-label"></ol>
-        <p class="hint listed__empty" id="list-songs-empty">Nenhuma música ainda. Toque em “Adicionar músicas”.</p>
+        <p class="hint listed__empty" id="list-songs-empty">Nada na lista ainda. Toque em “Adicionar músicas” ou cole um link do YouTube.</p>
         <div class="msgs__undo" id="list-undo" role="status" hidden>
           <span class="msgs__undo-text" id="list-undo-text"></span>
           <button type="button" class="btn btn--text btn--sm" id="btn-list-undo">Desfazer</button>
@@ -1364,6 +1406,20 @@
           <button type="button" class="btn btn--ghost btn--sm" id="btn-list-pick-more" hidden>Carregar mais</button>
           <button type="button" class="btn btn--ghost btn--sm" id="btn-list-pick-all" hidden>Adicionar todas</button>
         </div>
+      </div>
+
+      <!-- v2.7: itens do YouTube (vídeo ou playlist) colados por link; a validação final é do servidor -->
+      <div class="field" id="list-yt-field">
+        <label class="label" for="list-yt-link">Colar link do YouTube</label>
+        <div class="row listyt__row">
+          <div class="input input--grow"><input type="text" id="list-yt-link" inputmode="url" maxlength="300" autocomplete="off" spellcheck="false" aria-describedby="list-yt-erro list-yt-hint" placeholder="https://www.youtube.com/watch?v=…"></div>
+          <button type="button" class="btn btn--ghost" id="btn-list-yt-add">
+            <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+            <span>Adicionar</span>
+          </button>
+        </div>
+        <p class="msg-card__error" id="list-yt-erro" hidden></p>
+        <p class="hint" id="list-yt-hint">Serve para vídeo ou playlist do YouTube. Os vídeos tocam no Tocador da loja, junto com as músicas da pasta.</p>
       </div>
 
       <div class="net__confirm" id="list-confirm" role="group" aria-labelledby="list-confirm-title" hidden>
@@ -1404,6 +1460,88 @@
       <button type="button" class="btn btn--ghost" id="btn-addlist-close">Fechar</button>
     </div>
   </div>
+</dialog>
+
+<!-- ====================== SALVAR A FILA COMO LISTA (v2.7) ====================== -->
+<dialog id="savequeue-dialog" class="dialog--narrow" aria-labelledby="savequeue-title">
+  <form class="sheet formsheet" id="savequeue-form" novalidate>
+    <div class="formsheet__body">
+      <div class="formsheet__head">
+        <h2 class="sheet__title" id="savequeue-title">Salvar fila como lista</h2>
+        <p class="hint" id="savequeue-info"></p>
+      </div>
+
+      <div class="field">
+        <div class="label label--split">
+          <label for="savequeue-nome">Nome da lista</label>
+          <span class="msg-card__counter" id="savequeue-count" aria-hidden="true">0/40</span>
+        </div>
+        <div class="input"><input type="text" id="savequeue-nome" maxlength="40" autocomplete="off" placeholder="ex.: Playlist da manhã" aria-describedby="savequeue-nome-erro"></div>
+        <p class="msg-card__error" id="savequeue-nome-erro" hidden></p>
+      </div>
+
+      <label class="switch" id="savequeue-atual-box">
+        <input type="checkbox" role="switch" class="switch__input" id="savequeue-atual" checked>
+        <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+        <span class="switch__text">Incluir a música que está tocando</span>
+      </label>
+    </div>
+
+    <div class="formsheet__foot actions actions--end">
+      <p class="form-error formsheet__error" id="savequeue-error" role="alert" hidden></p>
+      <button type="button" class="btn btn--ghost" id="btn-savequeue-cancel">Cancelar</button>
+      <button type="submit" class="btn btn--primary" id="btn-savequeue-save">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Salvar lista</span>
+      </button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ====================== PLAYLIST SALVA DO SPOTIFY (v2.7) ====================== -->
+<dialog id="atalho-dialog" class="dialog--narrow" aria-labelledby="atalho-title">
+  <form class="sheet formsheet" id="atalho-form" novalidate>
+    <div class="formsheet__body">
+      <div class="formsheet__head">
+        <h2 class="sheet__title" id="atalho-title">Salvar playlist do Spotify</h2>
+        <p class="hint">Dê um nome e cole o link de uma playlist ou de um álbum do Spotify.</p>
+      </div>
+
+      <div class="field">
+        <div class="label label--split">
+          <label for="atalho-nome">Nome</label>
+          <span class="msg-card__counter" id="atalho-nome-count" aria-hidden="true">0/40</span>
+        </div>
+        <div class="input"><input type="text" id="atalho-nome" maxlength="40" autocomplete="off" placeholder="ex.: Playlist da loja" aria-describedby="atalho-nome-erro"></div>
+        <p class="msg-card__error" id="atalho-nome-erro" hidden></p>
+      </div>
+
+      <div class="field">
+        <label class="label" for="atalho-link">Link do Spotify</label>
+        <div class="input"><input type="text" id="atalho-link" inputmode="url" maxlength="300" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://open.spotify.com/playlist/…" aria-describedby="atalho-link-erro atalho-link-hint"></div>
+        <p class="msg-card__error" id="atalho-link-erro" hidden></p>
+        <p class="hint" id="atalho-link-hint">Onde pegar: no Spotify, abra a playlist, toque em <b>⋯ &gt; Compartilhar &gt; Copiar link</b> e cole aqui.</p>
+      </div>
+
+      <div class="net__confirm" id="atalho-confirm" role="group" aria-labelledby="atalho-confirm-title" hidden>
+        <p class="net__confirm-title" id="atalho-confirm-title">Descartar as alterações?</p>
+        <p class="hint">O que você mudou ainda não foi salvo.</p>
+        <div class="actions">
+          <button type="button" class="btn btn--danger-solid" id="btn-atalho-confirm-yes">Descartar</button>
+          <button type="button" class="btn btn--ghost" id="btn-atalho-confirm-no">Continuar editando</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="formsheet__foot actions actions--end">
+      <p class="form-error formsheet__error" id="atalho-error" role="alert" hidden></p>
+      <button type="button" class="btn btn--ghost" id="btn-atalho-cancel">Cancelar</button>
+      <button type="submit" class="btn btn--primary" id="btn-atalho-save">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Salvar playlist</span>
+      </button>
+    </div>
+  </form>
 </dialog>
 
 <!-- A API do YouTube só é carregada pelo app.js quando o modo "Tocador da loja" é usado -->

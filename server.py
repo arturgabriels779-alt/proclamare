@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -31,6 +31,98 @@ da loja. Serve a interface (static/) e cuida de três coisas:
                                computadores também consigam controlá-la.
                                A aba tocadora recebe os comandos por
                                long-poll (latência quase instantânea).
+
+Contrato v2.7 ("Salvar playlists": listas mistas com YouTube + atalhos do Spotify)
+----------------------------------------------------------------------------------
+  Só ACRESCENTA campos, rotas e um tipo de horário; o que existia continua igual. Mesmas regras de sempre: PIN para
+  aparelhos remotos, 415 (não JSON), 403 (Origin de outro host), 429 (limite por IP), esquema estrito (chave
+  desconhecida = 400) e erros {"ok":false,"error",codigo?,campo?,indice?}. Nada de nome, título, link ou id vai para o
+  log ou para a auditoria (só QUANTOS). Armazém único: o listas.json (programacao.ArquivoJson) guarda também os atalhos.
+  A) Listas MISTAS (músicas da pasta + YouTube)
+  * Item guardado (no array "musicas" da lista, o nome antigo da chave): {"tipo":"musica","id","titulo"} (entrada
+    antiga sem "tipo" = música) | {"tipo":"youtube","video_id"|null,"list_id"|null,"index"|null,"start"|null,
+    "titulo"|null}. Os campos valem pelas MESMAS regras do parse_youtube_url (video_id 11 caracteres, list_id 2..64
+    sem Mix "RD...", index 0..199 só com list_id, start 0..86400); zero em index/start vira null; NUNCA se guarda a
+    URL. Ao ler do disco o item torto/repetido é descartado (nunca derruba). Título guardado <= 60.
+  * POST /api/listas {"nome","itens"?|"musicas"?} e POST /api/listas/<id> {"versao","nome"?,"itens"?|"musicas"?}.
+    "itens" = a lista INTEIRA, na ordem, cada elemento com UMA chave: {"music_id"} | {"url": link do YouTube} |
+    {"youtube": {video_id,list_id,index,start}} (o editor reenvia assim o que já estava na lista, sem reparsear;
+    chaves nulas podem ser omitidas). "itens" e "musicas" juntos = 400 campo "itens". Até 500 itens; repetido (mesma
+    música, ou mesmo video_id+list_id+index+start) = 400 com "indice" do segundo; link inválido = 400 campo "itens"
+    com "indice" e mensagem em português. Corpo máx. 60 KB só nestas duas rotas (era 32 KB). NÃO são 96 KB: o waitress
+    corta em 64 KB toda rota que não seja o envio de músicas (waitress_limites.py); 500 itens na forma "youtube"
+    cabem em ~55 KB e 500 links curtos também; passou de 60 KB = 413. Música nova tem de estar na pasta (400; 409
+    "lendo_pasta" se a pasta não foi lida), as que já estavam na lista continuam aceitas mesmo sumidas.
+  * Título do YouTube: o guardado, senão o do cache da fila (o mesmo _oembed_buscar/_pedir_titulo, sem host novo);
+    até resolver "titulo": null (o painel mostra "Vídeo do YouTube"/"Playlist do YouTube"). Os títulos que o cache
+    já resolveu são gravados no listas.json SEM mexer em versao/atualizada_em, por um gravador com debounce: UMA
+    escrita do arquivo inteiro a cada ~30 s no máximo (TITULOS_GRAVAR_INTERVALO_S), para todas as listas juntas,
+    agendada quando o oEmbed resolve um título que alguma lista espera e quando um GET /api/listas/<id> encontra
+    título nulo. O GET em si não grava. Limite leve (60/min por IP) só para esse trabalho extra (pedir títulos ao
+    YouTube e agendar a gravação): passou dele a lista continua saindo (200), sem pedir nada; leitura nunca dá 429.
+    Tamanho esperado do listas.json: ~100 bytes por item do YouTube com título; 50 listas x 500 itens chegam a
+    ~5-6 MB (tudo é lido para a memória e regravado por inteiro a cada alteração).
+  * GET /api/listas -> o resumo ganha "youtube" (quantos itens do YouTube); "total" conta tudo; "disponiveis" = músicas
+    que existem + itens do YouTube (None enquanto a pasta não foi lida, salvo lista só com YouTube); "limites" ganha
+    "itens": 500. GET /api/listas/<id>: cada item ganha "tipo"; música igual à v2.6 (+"tipo"); YouTube = {tipo:
+    "youtube", kind:"video"|"playlist", video_id, list_id, index, start, titulo|null, disponivel:true, url} com "url"
+    canônica montada pelo servidor (watch?v=..&list=..&index=N&t=Ns ou playlist?list=..).
+  * tocar_lista(lista_id, embaralhar): a fila é substituída pelos itens na ordem (ou embaralhados), música sumida é
+    pulada, YouTube entra como os itens da fila (kind video/playlist), teto 200; o 1º vai num "load". Só exige a pasta
+    lida se houver música na lista. Player do YouTube da aba não carregado (yt_pronto false, como o play_now): os
+    itens do YouTube são pulados ("pulados_youtube"); lista só com YouTube nessa situação = 409 "youtube_indisponivel".
+    404 "sem_musicas" só se não sobrar nada tocável. Resposta: os campos de sempre + "youtube" (quantos itens do
+    YouTube entraram) + "pulados_youtube". O título guardado aparece na fila (semeia o cache de títulos).
+  * POST /api/listas/da-fila {"nome","incluir_atual"?:bool=true} -> 201 {ok, versao, lista, cortados, ignorados}:
+    o SERVIDOR monta os itens (o cliente não manda nenhum; chave extra = 400): o que toca agora na aba Tocador (se
+    incluir_atual, o tocador estiver vivo e houver um item atual de verdade: arquivo com music_id, ou vídeo/playlist
+    do YouTube com o player carregado; parado conta como pausado, MENOS faixa terminada (parada com a posição
+    recente a menos de 2 s do fim) e tocador ocioso; playlist em reprodução entra INTEIRA, vídeo avulso entra o
+    vídeo, arquivo entra a música) + a fila na ordem. Repetidos e músicas que já saíram da pasta são ignorados ("ignorados"); passou
+    de 500 corta ("cortados"). 409 "fila_vazia" | "limite_listas" | "nome_repetido" | "lendo_pasta"; 429. A fila não
+    é mexida. Auditoria: acao=lista_da_fila, só quantos.
+  B) Atalhos do Spotify (uma playlist ou álbum + um nome; tocam com um toque; entram na Programação)
+  * Guardados no listas.json, chave "spotify": [{id (8 hex), nome (1..40, mesma regra do nome de lista, único sem
+    diferenciar caixa), uri ("spotify:playlist:<22 base62>" | "spotify:album:<22 base62>"), versao, atualizada_em}],
+    até 50, saneados ao ler; contador próprio "spotify_versao". O link colado nunca é guardado nem aberto.
+  * GET  /api/spotify/atalhos -> {ok, versao, limites:{atalhos:50,nome:40}, atalhos:[{id,nome,tipo:"playlist"|"album",
+        versao,atualizada_em,url}]} (url = https://open.spotify.com/<tipo>/<id>; a uri não sai do servidor).
+  * POST /api/spotify/atalhos {"nome","link"} -> 201 {ok, versao, atalho}. "link" = https://open.spotify.com/
+        (intl-xx/)?(playlist|album)/<22 base62>(?si=...) ou spotify:(playlist|album):<22 base62>; qualquer outra
+        coisa = 400 campo "link" ("Cole o link de uma playlist ou álbum do Spotify."). O TIPO (playlist|album) e o
+        "intl-xx" não diferenciam maiúsculas (guardados em minúsculas); o id de 22 base62 diferencia.
+        409 "limite_atalhos" | "nome_repetido".
+  * POST /api/spotify/atalhos/<id> {"versao","nome"?,"link"?} (pelo menos um) -> {ok, versao, atalho};
+    POST /api/spotify/atalhos/<id>/apagar {"versao"} -> {ok, versao}. 409 "versao_mudou" por atalho; 404
+    "atalho_inexistente".
+  * POST /api/spotify/atalhos/<id>/tocar {} -> o PUT /me/player/play com context_uri no aparelho salvo (a lógica do
+    /api/spotify/play, em tocar_atalho_spotify(atalho_id), sem contexto de requisição). Sucesso 200 {ok:true,
+    tocador_pausado:bool}: se a aba Tocador estava tocando ela recebe "pause" (SÓ depois de o Spotify aceitar; se o
+    Spotify falhar a aba continua tocando). Falha no formato v2.4.2: HTTP 200 {ok:false, error, codigo, espera_s?}
+    com codigo premium | sem_dispositivo | reconectar | limite | indisponivel; nenhum aparelho escolhido = 400
+    codigo "sem_dispositivo" (ou 200 "reconectar" se nem está conectado); atalho apagado = 404 "atalho_inexistente".
+    429: o limite geral de comandos do Spotify (20/10 s) e 6 pedidos em 10 s por IP.
+  * GET /api/spotify/atual-contexto -> {ok, uri_tipo:"playlist"|"album"|null, url|null, nome|null, tocando:bool}
+    quando o Spotify está com uma playlist/álbum (para "Salvar a playlist que está tocando"); outro contexto ou nada
+    = tudo null; falha do Spotify = {ok:false,error,codigo}. O nome vem de api.spotify.com (host fixo, id de 22
+    base62 validado, cache de 10 min; falha = null e NÃO conta no "api_ok" do /api/spotify/status). 20 pedidos/10 s.
+  * Auditoria: acao spotify_atalho_criar | spotify_atalho_salvar | spotify_atalho_apagar | spotify_atalho_tocar, IP,
+    local/remoto e total (sempre quantos, nunca nome/uri/id). O tocar leva também resultado=ok | <codigo da falha>
+    (premium, sem_dispositivo, reconectar, limite, indisponivel, atalho_inexistente), nunca texto livre.
+    O log de falha de rede do Spotify nunca leva o caminho de uma consulta com id (/playlists/<id>).
+  C) Programação: tipo novo "spotify" (alvo = id do atalho, 8 hex; "embaralhar"/voz/motor/velocidade = 400)
+  * No horário chama tocar_atalho_spotify (sem a trava de áudio dos anúncios; a aba Tocador, se tocava, é pausada e
+    NÃO é retomada: o Spotify a substitui). tocar_atalho_spotify e tocar_lista marcam "música substituída": um
+    áudio/anúncio agendado que pausou a música antes (_musica_pausada) NÃO a devolve no finally (a aba não volta a
+    tocar junto com o Spotify, nem o Spotify antigo sobrepõe a lista). Não entra no teto diário de 60 min de áudio. Falhou = "não tocou" com
+    "motivo" estável: spotify_desconectado | spotify_sem_aparelho | spotify_premium | spotify_limite |
+    spotify_indisponivel | atalho_inexistente | desligando.
+  * Atalho que não existe: 400 "atalho_inexistente" (campo "alvo") ao criar/trocar o alvo; item que já existia e
+    ficou sem atalho continua aceito (alvo_ok:false, alvo_motivo:"atalho_inexistente", rotulo "Spotify das HH:MM").
+    "Tocar agora" de atalho apagado = 404 "atalho_inexistente"; os outros erros vão para o histórico (202).
+  * Lista agendada com YouTube: o mesmo tocar_lista (não espera a pasta se só tem YouTube). Motivos novos do
+    histórico: youtube_indisponivel (lista só com YouTube e o player da aba não carregou); "aviso" quando itens do
+    YouTube foram pulados.
 
 Contrato v2.6 etapa 1 (Listas de músicas criadas no painel)
 -----------------------------------------------------------
@@ -736,7 +828,7 @@ _taxa_lock = threading.Lock()
 _taxa_hist: dict[str, deque] = {}
 _taxa_janela: dict[str, float] = {}      # chave -> janela (s) usada por ela
 _TAXA_MAX_CHAVES = 512
-_TAXA_GLOBAIS = frozenset({"testar:global"})   # tetos da loja toda: nunca são descartados
+_TAXA_GLOBAIS = frozenset({"testar:global", "oembed"})   # tetos da loja toda: nunca são descartados
 
 
 def excedeu_limite(chave: str, maximo: int, janela_s: float) -> bool:
@@ -1944,6 +2036,16 @@ MSG_CREDENCIAL_SPOTIFY = "Cole só o código (32 letras e números)."
 _ASPAS_E_INVISIVEIS = "\"'`“”‘’«»​‌‍﻿ "
 RE_URI_TRACK = re.compile(r"spotify:track:[A-Za-z0-9]{1,64}")
 RE_URI_CONTEXTO = re.compile(r"spotify:(?:playlist|album|artist):[A-Za-z0-9]{1,64}")
+# v2.7: atalhos guardados (listas.json): só playlist ou álbum, com o id de 22 caracteres base62 do Spotify
+# O id é sensível a maiúsculas; o TIPO não (normalizado para minúsculas por quem lê: _uri_spotify).
+_SPOTIFY_ID22 = r"[A-Za-z0-9]{22}"
+_SPOTIFY_TIPO = r"(?i:playlist|album)"
+RE_URI_SPOTIFY_ATALHO = re.compile(rf"spotify:({_SPOTIFY_TIPO}):({_SPOTIFY_ID22})")
+
+
+def _uri_spotify(tipo: str, ident: str) -> str:
+    """A URI canônica de um atalho: tipo em minúsculas, id como veio."""
+    return f"spotify:{tipo.lower()}:{ident}"
 
 
 def _criar_sessao_http() -> requests.Session:
@@ -2318,6 +2420,8 @@ def spotify_api(
     params: dict[str, Any] | None = None,
     json_body: dict | None = None,
     critico: bool = False,
+    registrar_resultado: bool = True,
+    rotulo_log: str | None = None,
 ) -> tuple[dict, int, str | None]:
     """
     Chama a API do Spotify. Devolve (json, status, reason):
@@ -2327,6 +2431,8 @@ def spotify_api(
     Parâmetros de query SEMPRE via `params` (nunca concatenados na URL).
     `critico=True` ignora o backoff 429 (pausar a música e restaurar o volume depois do anúncio
     não podem ficar presos atrás de um 429 de leitura); um 429 novo continua sendo registrado.
+    `registrar_resultado=False` (v2.7): consulta acessória (ex.: o nome de uma playlist) cuja falha não pode
+    deixar o painel âmbar ("api_ok" do /api/spotify/status); o backoff 429 continua valendo.
     """
     if not critico and _em_backoff():
         return {}, 429, None
@@ -2334,9 +2440,10 @@ def spotify_api(
     if not token:
         motivo = _motivo_sem_token(load_config())
         if motivo == "rede":
-            _registrar_api(method, 0, "rede")
+            if registrar_resultado:
+                _registrar_api(method, 0, "rede")
             return {}, 0, "rede"
-        if motivo == "reconectar":
+        if motivo == "reconectar" and registrar_resultado:
             _registrar_api(method, 401, "reconectar")
         return {}, 401, motivo
     res: requests.Response | None = None
@@ -2351,8 +2458,10 @@ def spotify_api(
                 timeout=SPOTIFY_TIMEOUT,
             )
         except requests.RequestException:
-            log.warning("Falha de rede ao chamar o Spotify (%s %s).", method, path)
-            _registrar_api(method, 0, "rede")
+            # `rotulo_log`: consultas cujo caminho leva um id (ex.: /playlists/<id>) logam só um rótulo fixo
+            log.warning("Falha de rede ao chamar o Spotify (%s %s).", method, rotulo_log or path)
+            if registrar_resultado:
+                _registrar_api(method, 0, "rede")
             return {}, 0, "rede"
         if res.status_code == 401 and tentativa == 0:
             novo = spotify_get_token(stale=token)  # token revogado/expirado antes da hora
@@ -2374,9 +2483,11 @@ def spotify_api(
         log.warning("Spotify: QUOTA_EXCEEDED (cota do app esgotada; HTTP %s).", status)
     if status == 429:
         _registrar_429(res)
-        _registrar_api(method, 429, reason)
+        if registrar_resultado:
+            _registrar_api(method, 429, reason)
         return {}, 429, reason
-    _registrar_api(method, status, reason)
+    if registrar_resultado:
+        _registrar_api(method, status, reason)
     return corpo, status, reason
 
 
@@ -3586,6 +3697,7 @@ def _resolver_titulo(url: str) -> None:
     if titulo:
         with _yt_fila_lock:  # título novo muda o que o front mostra
             _yt_fila_versao += 1
+        _titulo_resolvido_para_listas(url)
 
 
 def _pedir_titulo(url: str | None) -> None:
@@ -3645,6 +3757,33 @@ def _item_arquivo(item_id: int, m: "musicas.Musica") -> dict[str, Any]:
     }
 
 
+def _item_youtube(item_id: int, alvo: dict[str, Any]) -> dict[str, Any]:
+    """Item de fila para um vídeo/playlist do YouTube (os campos do item de `op: add` com url)."""
+    return {
+        "id": item_id, "kind": "playlist" if alvo["list_id"] else "video",
+        "video_id": alvo["video_id"], "list_id": alvo["list_id"],
+        "index": alvo["index"], "start": alvo["start"],
+        "title": None, "added_at": int(time.time()),
+    }
+
+
+def _semear_titulo(url: str | None, titulo: str) -> None:
+    """
+    Põe no cache de títulos um título que já conhecemos (o guardado numa lista), se o cache ainda não tiver um
+    TÍTULO para a URL (nem nada, nem só uma falha de oEmbed).
+    """
+    if url is None:
+        return
+    achou, atual = _titulo_em_cache(url)
+    if achou and atual:
+        return
+    with _yt_titulos_lock:
+        _yt_titulos[url] = (titulo, None)
+        _yt_titulos.move_to_end(url)
+        while len(_yt_titulos) > YOUTUBE_OEMBED_CACHE_MAX:
+            _yt_titulos.popitem(last=False)
+
+
 def _musica_ou_erro(valor: Any, nome: str = "music_id") -> "musicas.Musica":
     """Valida o formato do id (400) e exige que a música exista no acervo (404)."""
     if not isinstance(valor, str) or not musicas.RE_ID.fullmatch(valor):
@@ -3680,7 +3819,7 @@ def _limitar_adicoes() -> None:
 
 
 def _adicionar_arquivos(
-    achadas: list["musicas.Musica"], *, posicao: str = "fim", substituir: bool = False,
+    achadas: "list[musicas.Musica | dict[str, Any]]", *, posicao: str = "fim", substituir: bool = False,
     tirar_primeiro: bool = False,
 ) -> tuple[list[dict[str, Any]], int, int, dict[str, Any] | None]:
     """
@@ -3688,6 +3827,7 @@ def _adicionar_arquivos(
     perde a fila antiga se algo falhar, e o 'ended' do tocador não corre entre o add e o pop).
     `substituir` esvazia a fila antes; `tirar_primeiro` devolve o 1º item novo já fora da fila
     (para o front mandar tocar). Devolve (novos, cortados, queue_version, primeiro|None).
+    v2.7: um elemento de `achadas` pode ser um dict {video_id,list_id,index,start,...} = item do YouTube.
     """
     global _yt_fila_prox_id, _yt_fila_versao
     with _yt_fila_lock:
@@ -3700,7 +3840,8 @@ def _adicionar_arquivos(
         novos = []
         for m in entram:
             _yt_fila_prox_id += 1
-            novos.append(_item_arquivo(_yt_fila_prox_id, m))
+            novos.append(_item_youtube(_yt_fila_prox_id, m) if isinstance(m, dict)
+                         else _item_arquivo(_yt_fila_prox_id, m))
         if posicao == "inicio":
             _yt_fila[0:0] = novos
         else:
@@ -5217,10 +5358,7 @@ def mensagens_salvar() -> Response:
         for i, m in enumerate(itens):
             ident = m.get("id")
             if ident is None:   # mensagem nova: o servidor gera o id (estável a partir de agora)
-                while True:
-                    ident = secrets.token_hex(4)
-                    if ident not in existentes and ident not in usados:
-                        break
+                ident = programacao.novo_id(existentes | usados)
                 usados.add(ident)
             elif ident not in existentes:
                 raise ErroMensagem(f"Mensagem {i + 1}: esta mensagem não existe mais. Recarregue a lista.",
@@ -5269,14 +5407,20 @@ LISTA_MUSICAS_MAX = 500             # músicas por lista
 LISTA_TITULO_GUARDADO_MAX = 60      # título guardado de cada música (só para exibir se ela sumir)
 LISTAS_ESCRITA_MAX_POR_MIN = 20     # POST de criar/salvar/apagar, por IP
 LISTAS_TOCAR_MAX_POR_10S = 6        # POST .../tocar, por IP
-LISTAS_CORPO_MAX = 32 * 1024        # 500 ids de 16 hex + aspas/vírgulas = ~10 KB; folga para o nome
+# v2.7: a lista aceita links do YouTube (até 300 caracteres cada, como na fila): 500 links passam de 32 KB. O teto
+# sobe para 60 KB SÓ nestas rotas. NÃO dá para 96 KB: o waitress corta em 64 KB (waitress_limites.py) toda rota
+# que não seja o envio de músicas, então 60 KB é o maior valor que o servidor consegue honrar. A forma "youtube"
+# ({"youtube": {...}}, campos nulos podem ser omitidos) cabe em ~55 KB mesmo com 500 itens.
+LISTAS_CORPO_MAX = 60 * 1024
+LISTA_ITENS_MAX = LISTA_MUSICAS_MAX  # 500 itens por lista (músicas da pasta + YouTube)
+ATALHOS_SPOTIFY_MAX = 50            # atalhos do Spotify (v2.7)
 RE_LISTA_ID = re.compile(r"[0-9a-f]{8}")
 MSG_LISTA_VERSAO_MUDOU = "Outro aparelho mudou esta lista. Recarregue para ver a versão atual."
 MSG_LISTA_NAO_EXISTE = "Essa lista não existe mais."
 MSG_SEM_TOCADOR = "Nenhum tocador aberto. Abra o modo Tocador da loja primeiro."
 MSG_LENDO_PASTA = "O Proclamare está lendo a pasta de músicas. Tente de novo em instantes."
-_LISTA_CHAVES_CRIAR = frozenset({"nome", "musicas"})
-_LISTA_CHAVES_SALVAR = frozenset({"versao", "nome", "musicas"})
+_LISTA_CHAVES_CRIAR = frozenset({"nome", "musicas", "itens"})
+_LISTA_CHAVES_SALVAR = frozenset({"versao", "nome", "musicas", "itens"})
 
 
 class ErroLista(ErroMensagem):
@@ -5300,15 +5444,100 @@ def _inteiro(valor: Any, minimo: int, maximo: int, padrao: int) -> int:
     return valor if ok else padrao
 
 
+# --- item do YouTube dentro de uma lista (v2.7) ---------------------------------------------------
+_YT_CAMPOS = ("video_id", "list_id", "index", "start")
+MSG_ITEM_YOUTUBE_INVALIDO = "Esse item do YouTube não é válido."
+
+
+def _validar_youtube(bruto: Any) -> dict[str, Any]:
+    """
+    Campos de um item do YouTube com as MESMAS regras do parse_youtube_url: video_id (11 caracteres) e/ou
+    list_id (2..64, Mix "RD..." NÃO vale), index (0..199, só com list_id) e start (0..86400 s). Chaves
+    ausentes = null; zero em index/start vira null (é o mesmo que não ter). Nunca guarda URL crua.
+    Levanta ValueError com uma mensagem nossa (pode ir ao cliente).
+    """
+    if not isinstance(bruto, dict) or set(bruto) - set(_YT_CAMPOS):
+        raise ValueError(MSG_ITEM_YOUTUBE_INVALIDO)
+    video_id, list_id = bruto.get("video_id"), bruto.get("list_id")
+    index, start = bruto.get("index"), bruto.get("start")
+    if video_id is not None and not (isinstance(video_id, str) and _RE_VIDEO_ID.fullmatch(video_id)):
+        raise ValueError(MSG_ITEM_YOUTUBE_INVALIDO)
+    if list_id is not None and not (isinstance(list_id, str) and _RE_LIST_ID.fullmatch(list_id)
+                                    and not list_id.upper().startswith("RD")):
+        raise ValueError(MSG_ITEM_YOUTUBE_INVALIDO)
+    if video_id is None and list_id is None:
+        raise ValueError(MSG_ITEM_YOUTUBE_INVALIDO)
+    if index is not None:
+        if (isinstance(index, bool) or not isinstance(index, int) or list_id is None
+                or not 0 <= index < YOUTUBE_PLAYLIST_MAX):
+            raise ValueError(MSG_ITEM_YOUTUBE_INVALIDO)
+    if start is not None:
+        if isinstance(start, bool) or not isinstance(start, int) or not 0 <= start <= SEGUNDOS_MAX:
+            raise ValueError(MSG_ITEM_YOUTUBE_INVALIDO)
+    return {"video_id": video_id, "list_id": list_id, "index": index or None, "start": start or None}
+
+
+def _chave_youtube(alvo: dict[str, Any]) -> tuple:
+    """Identidade de um item do YouTube na lista: (video_id, list_id, index, start)."""
+    return tuple(alvo.get(c) for c in _YT_CAMPOS)
+
+
+def _url_youtube_da_lista(alvo: dict[str, Any]) -> str:
+    """Link canônico (montado SÓ com ids já validados: nunca a URL que o usuário colou)."""
+    video_id, list_id, index, start = (alvo.get(c) for c in _YT_CAMPOS)
+    if video_id:
+        url = f"https://www.youtube.com/watch?v={video_id}" + (f"&list={list_id}" if list_id else "")
+    else:
+        url = f"https://www.youtube.com/playlist?list={list_id}"
+    if list_id and index is not None:
+        url += f"&index={index + 1}"
+    if start:
+        url += f"&t={start}s"
+    return url
+
+
+def _sanear_item_lista(e: Any) -> dict[str, Any] | None:
+    """Um item lido do disco: música da pasta (entrada antiga sem "tipo" também) ou YouTube; torto = None."""
+    if not isinstance(e, dict):
+        return None
+    tipo = e.get("tipo", "musica")
+    if tipo == "musica":
+        mid = e.get("id")
+        if not isinstance(mid, str) or not musicas.RE_ID.fullmatch(mid):
+            return None
+        return {"tipo": "musica", "id": mid, "titulo": _titulo_guardado(e.get("titulo"))}
+    if tipo == "youtube":
+        try:
+            alvo = _validar_youtube({c: e.get(c) for c in _YT_CAMPOS})
+        except ValueError:
+            return None
+        return {"tipo": "youtube", **alvo, "titulo": _titulo_guardado(e.get("titulo")) or None}
+    return None
+
+
+def _sanear_atalho_spotify(a: Any) -> dict[str, Any] | None:
+    if not isinstance(a, dict):
+        return None
+    ident, uri = a.get("id"), a.get("uri")
+    nome = programacao.texto_limpo(a.get("nome"), LISTA_NOME_MAX, multilinha=False)
+    m = RE_URI_SPOTIFY_ATALHO.fullmatch(uri) if isinstance(uri, str) else None
+    if not isinstance(ident, str) or not RE_LISTA_ID.fullmatch(ident) or nome is None or m is None:
+        return None
+    return {"id": ident, "nome": nome, "uri": _uri_spotify(m.group(1), m.group(2)), "versao": _inteiro(a.get("versao"), 1, 2**31, 1),
+            "atualizada_em": _inteiro(a.get("atualizada_em"), 0, 2**40, 0)}
+
+
 def _sanear_listas(bruto: Any) -> dict:
     """
     Revalida o que foi lido do disco. Um listas.json editado à mão perde só o item torto
-    (lista sem id/nome, id ou nome repetido, música com id inválido ou repetida); nunca derruba a rota.
+    (lista sem id/nome, id ou nome repetido, item inválido ou repetido, atalho do Spotify torto);
+    nunca derruba a rota.
     """
-    doc: dict = {"versao": 0, "listas": []}
+    doc: dict = {"versao": 0, "listas": [], "spotify": [], "spotify_versao": 0}
     if not isinstance(bruto, dict):
         return doc
     doc["versao"] = _inteiro(bruto.get("versao"), 0, 2**31, 0)
+    doc["spotify_versao"] = _inteiro(bruto.get("spotify_versao"), 0, 2**31, 0)
     brutas = bruto.get("listas")
     ids_vistos: set[str] = set()
     nomes_vistos: set[str] = set()
@@ -5321,37 +5550,52 @@ def _sanear_listas(bruto: Any) -> dict:
         nome = programacao.texto_limpo(nome, LISTA_NOME_MAX, multilinha=False)   # a mesma regra do POST
         if nome is None or nome.casefold() in nomes_vistos:
             continue
-        faixas: list[dict[str, str]] = []
-        musicas_vistas: set[str] = set()
-        itens = lista.get("musicas")
-        for m in (itens[:LISTA_MUSICAS_MAX] if isinstance(itens, list) else []):
-            mid = m.get("id") if isinstance(m, dict) else None
-            if not isinstance(mid, str) or not musicas.RE_ID.fullmatch(mid) or mid in musicas_vistas:
+        faixas: list[dict[str, Any]] = []
+        vistos: set[Any] = set()
+        itens = lista.get("musicas")   # a chave continua "musicas" (a lista mistura músicas e YouTube)
+        for bruto_item in (itens[:LISTA_ITENS_MAX] if isinstance(itens, list) else []):
+            item = _sanear_item_lista(bruto_item)
+            if item is None:
                 continue
-            musicas_vistas.add(mid)
-            faixas.append({"id": mid, "titulo": _titulo_guardado(m.get("titulo"))})
+            chave = item["id"] if item["tipo"] == "musica" else _chave_youtube(item)
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+            faixas.append(item)
         ids_vistos.add(ident)
         nomes_vistos.add(nome.casefold())
         doc["listas"].append({
             "id": ident, "nome": nome, "versao": _inteiro(lista.get("versao"), 1, 2**31, 1),
             "atualizada_em": _inteiro(lista.get("atualizada_em"), 0, 2**40, 0), "musicas": faixas,
         })
+    atalhos = bruto.get("spotify")
+    ids_vistos, nomes_vistos = set(), set()
+    for a in (atalhos[:ATALHOS_SPOTIFY_MAX] if isinstance(atalhos, list) else []):
+        atalho = _sanear_atalho_spotify(a)
+        if atalho is None or atalho["id"] in ids_vistos or atalho["nome"].casefold() in nomes_vistos:
+            continue
+        ids_vistos.add(atalho["id"])
+        nomes_vistos.add(atalho["nome"].casefold())
+        doc["spotify"].append(atalho)
     return doc
 
 
 # Armazém: o MESMO do programacao.json (programacao.ArquivoJson): cache validado por os.stat, gravação
 # atômica com DACL antes dos dados e cópia "<nome>.corrompido-*" se o arquivo ficar ilegível. Regra:
 # quem lê NÃO muda o que recebe; quem grava monta uma cópia (copy.deepcopy), grava e troca o cache.
+# (v2.7: o mesmo arquivo guarda também os atalhos do Spotify, na chave "spotify".)
 _listas_arquivo = programacao.ArquivoJson(
-    _listas_path, lambda: {"versao": 0, "listas": []}, lambda bruto: _sanear_listas(bruto),
+    _listas_path, lambda: {"versao": 0, "listas": [], "spotify": [], "spotify_versao": 0},
+    lambda bruto: _sanear_listas(bruto),
     lambda caminho: _restringir_acl_windows(caminho), rotulo=LISTAS_ARQUIVO, prefixo=".listas.")
 
 
 def listas_ler() -> dict:
     """
-    Documento atual {"versao", "listas": [{id, nome, versao, atualizada_em, musicas: [{id, titulo}]}]}.
-    SOMENTE LEITURA (é o cache): quem quiser alterar usa copy.deepcopy. Relê o disco só quando o
-    arquivo mudou (um os.stat por chamada). Arquivo ilegível: mantém o último documento válido.
+    Documento atual {"versao", "listas": [{id, nome, versao, atualizada_em, musicas: [item]}], "spotify":
+    [atalho], "spotify_versao"}; item = {"tipo":"musica","id","titulo"} | {"tipo":"youtube",video_id,list_id,
+    index,start,"titulo"|None}. SOMENTE LEITURA (é o cache): quem quiser alterar usa copy.deepcopy. Relê o
+    disco só quando o arquivo mudou (um os.stat por chamada). Arquivo ilegível: mantém o último documento válido.
     """
     return _listas_arquivo.ler()
 
@@ -5370,46 +5614,167 @@ def _tocador_vivo() -> bool:
         return beat is not None and (time.monotonic() - beat) < YOUTUBE_PLAYER_TIMEOUT
 
 
+def _titulo_youtube(alvo: dict[str, Any], guardado: str | None, pedir: bool = True) -> str | None:
+    """
+    Título de um item do YouTube: o guardado, senão o do cache da fila (oEmbed, o mesmo host de sempre).
+    Sem nenhum dos dois pede a busca em segundo plano (None até resolver; o painel mostra "Vídeo do
+    YouTube"/"Playlist do YouTube").
+    """
+    if guardado:
+        return guardado
+    url = _yt_url_canonica(alvo.get("video_id"), alvo.get("list_id"))
+    achou, titulo = _titulo_em_cache(url)
+    if achou:
+        return _titulo_guardado(titulo) or None
+    if pedir:
+        _pedir_titulo(url)
+    return None
+
+
 def _resumo_lista(lista: dict) -> dict[str, Any]:
-    """Visão de lista para o GET geral. `disponiveis` é None enquanto a pasta ainda não foi lida."""
-    pronto = ACERVO.pronto
+    """
+    Visão de lista para o GET geral. `total` conta tudo; `youtube` = itens do YouTube; `disponiveis` = músicas
+    da pasta que existem + itens do YouTube (sempre disponíveis), ou None enquanto a pasta ainda não foi lida
+    (lista só com YouTube não depende da pasta).
+    """
+    itens = lista["musicas"]
+    yt = sum(1 for e in itens if e["tipo"] == "youtube")
+    if ACERVO.pronto:
+        disponiveis: int | None = yt + sum(
+            1 for e in itens if e["tipo"] == "musica" and ACERVO.obter(e["id"]) is not None)
+    else:
+        disponiveis = yt if itens and yt == len(itens) else None
     return {
         "id": lista["id"], "nome": lista["nome"], "versao": lista["versao"], "atualizada_em": lista["atualizada_em"],
-        "total": len(lista["musicas"]),
-        "disponiveis": sum(1 for m in lista["musicas"] if ACERVO.obter(m["id"]) is not None) if pronto else None,
+        "total": len(itens), "youtube": yt, "disponiveis": disponiveis,
     }
 
 
-def _detalhe_lista(lista: dict) -> dict[str, Any]:
-    """Resumo + as músicas na ordem da lista. Indisponível = só o id e o título que foi guardado."""
+def _detalhe_lista(lista: dict, buscar_titulos: bool = True) -> dict[str, Any]:
+    """
+    Resumo + os itens na ordem da lista. Música indisponível = só o id e o título que foi guardado.
+    `buscar_titulos=False`: título que falta só vem do cache, sem pedir a busca ao YouTube.
+    """
     pronto = ACERVO.pronto
     itens: list[dict[str, Any]] = []
     for e in lista["musicas"]:
+        if e["tipo"] == "youtube":
+            itens.append({
+                "tipo": "youtube", "kind": "playlist" if e["list_id"] else "video",
+                "video_id": e["video_id"], "list_id": e["list_id"], "index": e["index"], "start": e["start"],
+                "titulo": _titulo_youtube(e, e["titulo"], buscar_titulos), "disponivel": True,
+                "url": _url_youtube_da_lista(e),
+            })
+            continue
         m = ACERVO.obter(e["id"])
         if m is not None:
-            itens.append({**m.publico(), "disponivel": True})
+            itens.append({**m.publico(), "tipo": "musica", "disponivel": True})
         else:
-            itens.append({"id": e["id"], "titulo": e["titulo"] or None,
+            itens.append({"tipo": "musica", "id": e["id"], "titulo": e["titulo"] or None,
                           "disponivel": False if pronto else None})
     resumo = _resumo_lista(lista)
     resumo["musicas"] = itens
     return resumo
 
 
+TITULOS_GRAVAR_INTERVALO_S = 30.0    # no máximo UMA gravação de títulos a cada ~30 s (todas as listas juntas)
+LISTA_DETALHE_BUSCA_MAX_POR_MIN = 60  # GET /api/listas/<id> que PEDE títulos ao YouTube, por IP
+_titulos_gravar_lock = threading.Lock()
+_titulos_gravar_timer: threading.Timer | None = None
+_titulos_gravar_ultimo = -1e9         # time.monotonic() da última gravação de títulos
+
+
+def _gravar_titulos_youtube() -> bool:
+    """
+    Grava no listas.json, de UMA vez, os títulos do YouTube que o cache já resolveu para itens de QUALQUER lista (para
+    aparecerem sem internet e depois de reiniciar). Não é uma alteração do dono: NÃO mexe em versao nem em
+    atualizada_em. Só grava se algo mudou. Falha de disco é ignorada. True = gravou.
+    """
+    global _titulos_gravar_ultimo
+    try:
+        with _listas_arquivo.lock:
+            doc = copy.deepcopy(listas_ler())
+            mudou = False
+            for lista in doc["listas"]:
+                for e in lista["musicas"]:
+                    if e["tipo"] != "youtube" or e["titulo"]:
+                        continue
+                    achou, titulo = _titulo_em_cache(_yt_url_canonica(e["video_id"], e["list_id"]))
+                    limpo = _titulo_guardado(titulo) if achou else ""
+                    if limpo:
+                        e["titulo"] = limpo
+                        mudou = True
+            if mudou:
+                _listas_arquivo.gravar(doc)
+                _titulos_gravar_ultimo = time.monotonic()
+            return mudou
+    except OSError:
+        log.warning("Não foi possível guardar os títulos do YouTube das listas.")
+        return False
+
+
+def _gravar_titulos_agora() -> None:
+    """O que o temporizador chama: libera o agendamento e grava."""
+    global _titulos_gravar_timer
+    with _titulos_gravar_lock:
+        _titulos_gravar_timer = None
+    _gravar_titulos_youtube()
+
+
+def _agendar_gravacao_de_titulos() -> None:
+    """
+    Pede a gravação dos títulos resolvidos (debounce): um único temporizador por vez; a gravação acontece quando
+    passaram TITULOS_GRAVAR_INTERVALO_S desde a anterior (ou já, se faz tempo). Vários GETs e vários títulos
+    resolvidos viram UMA escrita do arquivo.
+    """
+    global _titulos_gravar_timer
+    with _titulos_gravar_lock:
+        if _titulos_gravar_timer is not None:
+            return
+        espera = max(0.0, _titulos_gravar_ultimo + TITULOS_GRAVAR_INTERVALO_S - time.monotonic())
+        _titulos_gravar_timer = threading.Timer(espera, _gravar_titulos_agora)
+        _titulos_gravar_timer.daemon = True
+        _titulos_gravar_timer.start()
+
+
+def _cancelar_gravacao_de_titulos() -> None:
+    """Para o temporizador pendente (os testes e o desligamento)."""
+    global _titulos_gravar_timer
+    with _titulos_gravar_lock:
+        if _titulos_gravar_timer is not None:
+            _titulos_gravar_timer.cancel()
+            _titulos_gravar_timer = None
+
+
+def _titulo_resolvido_para_listas(url: str | None) -> None:
+    """Chamado quando o oEmbed resolve um título: se alguma lista tem esse item sem título, agenda a gravação."""
+    if url is None:
+        return
+    for lista in listas_ler()["listas"]:
+        for e in lista["musicas"]:
+            if e["tipo"] == "youtube" and not e["titulo"] and _yt_url_canonica(e["video_id"], e["list_id"]) == url:
+                _agendar_gravacao_de_titulos()
+                return
+
+
 def _limites_listas() -> dict[str, int]:
-    return {"listas": LISTAS_MAX, "nome": LISTA_NOME_MAX, "musicas": LISTA_MUSICAS_MAX}
+    return {"listas": LISTAS_MAX, "nome": LISTA_NOME_MAX, "musicas": LISTA_MUSICAS_MAX, "itens": LISTA_ITENS_MAX}
 
 
-def _nome_de_lista(valor: Any) -> str:
+def _nome_de(valor: Any, rotulo: str) -> str:
     """Nome: texto, strip, 1..40 caracteres, UMA linha, sem controle/formato/substituto/uso privado."""
     nome, motivo = programacao.validar_texto(valor, LISTA_NOME_MAX, multilinha=False)
     if motivo == "tipo":
-        raise ErroLista("O nome da lista é inválido.", campo="nome")
+        raise ErroLista(f"O nome {rotulo} é inválido.", campo="nome")
     if motivo == "tamanho":
-        raise ErroLista(f"O nome da lista precisa ter de 1 a {LISTA_NOME_MAX} caracteres.", campo="nome")
+        raise ErroLista(f"O nome {rotulo} precisa ter de 1 a {LISTA_NOME_MAX} caracteres.", campo="nome")
     if motivo == "caractere":
-        raise ErroLista("O nome da lista tem um caractere que não é permitido.", campo="nome")
+        raise ErroLista(f"O nome {rotulo} tem um caractere que não é permitido.", campo="nome")
     return nome
+
+
+def _nome_de_lista(valor: Any) -> str:
+    return _nome_de(valor, "da lista")
 
 
 def _ids_de_musicas(valor: Any) -> list[str]:
@@ -5428,25 +5793,97 @@ def _ids_de_musicas(valor: Any) -> list[str]:
     return list(valor)
 
 
-def _faixas_da_lista(ids: list[str], anteriores: dict[str, str]) -> list[dict[str, str]]:
+def _entradas_de_ids(ids: list[str]) -> list[dict[str, Any]]:
+    return [{"tipo": "musica", "id": mid} for mid in ids]
+
+
+def _entradas_de_itens(valor: Any) -> list[dict[str, Any]]:
     """
-    Monta as entradas {id, titulo}. Música presente no acervo: guarda o título atual. Fora do acervo:
-    só passa se JÁ estava na lista (re-salvar uma lista com indisponíveis) e conserva o título
-    antigo; senão 400 (id inventado ou de música removida). Pasta ainda não lida = 409 (não dá
-    para saber se a música existe; o painel tenta de novo).
+    Campo "itens" (v2.7): [{"music_id"} | {"url"} | {"youtube": {video_id,list_id,index,start}}], 0..500, na
+    ordem. O link passa pelo parse_youtube_url (mesmas regras da fila); a forma "youtube" é validada igual.
+    Repetido (mesma música, ou mesmo video_id+list_id+index+start) = 400 com o "indice" do segundo.
     """
-    faixas: list[dict[str, str]] = []
-    for i, mid in enumerate(ids):
+    if not isinstance(valor, list):
+        raise ErroLista("Campo 'itens' inválido.", campo="itens")
+    if len(valor) > LISTA_ITENS_MAX:
+        raise ErroLista(f"Cada lista pode ter no máximo {LISTA_ITENS_MAX} itens.", campo="itens")
+    entradas: list[dict[str, Any]] = []
+    vistos: set[Any] = set()
+    for i, bruto in enumerate(valor):
+        n = i + 1
+        if not isinstance(bruto, dict) or len(bruto) != 1 or next(iter(bruto)) not in ("music_id", "url", "youtube"):
+            raise ErroLista(f"Item {n} inválido.", campo="itens", indice=i)
+        (forma, conteudo), = bruto.items()
+        if forma == "music_id":
+            if not isinstance(conteudo, str) or not musicas.RE_ID.fullmatch(conteudo):
+                raise ErroLista(f"Item {n}: música inválida.", campo="itens", indice=i)
+            entrada: dict[str, Any] = {"tipo": "musica", "id": conteudo}
+            chave: Any = conteudo
+        else:
+            try:
+                if forma == "url":
+                    try:
+                        conteudo = parse_youtube_url(conteudo)
+                    except ErroApi as e:
+                        texto = e.mensagem
+                        if texto.startswith("Campo 'url'"):
+                            texto = "isso não parece um link do YouTube."
+                        raise ValueError(texto) from None
+                alvo = _validar_youtube(conteudo)
+            except ValueError as e:
+                raise ErroLista(f"Item {n}: {e}", campo="itens", indice=i) from None
+            entrada = {"tipo": "youtube", **alvo}
+            chave = _chave_youtube(alvo)
+        if chave in vistos:
+            raise ErroLista(f"O item {n} já está na lista.", campo="itens", indice=i)
+        vistos.add(chave)
+        entradas.append(entrada)
+    return entradas
+
+
+def _entradas_do_corpo(corpo: dict) -> list[dict[str, Any]] | None:
+    """Os itens do POST: "itens" (v2.7) OU "musicas" (lista de ids, como na v2.6); os dois juntos = 400."""
+    if "itens" in corpo and "musicas" in corpo:
+        raise ErroLista("Use 'itens' ou 'musicas', não os dois.", campo="itens")
+    if "itens" in corpo:
+        return _entradas_de_itens(corpo["itens"])
+    if "musicas" in corpo:
+        return _entradas_de_ids(_ids_de_musicas(corpo["musicas"]))
+    return None
+
+
+def _faixas_da_lista(entradas: list[dict[str, Any]], anteriores: dict[Any, str | None],
+                     campo: str = "musicas") -> list[dict[str, Any]]:
+    """
+    Monta os itens guardados. Música presente no acervo: guarda o título atual. Fora do acervo: só passa se
+    JÁ estava na lista (re-salvar uma lista com indisponíveis) e conserva o título antigo; senão 400 (id
+    inventado ou de música removida). Pasta ainda não lida = 409 (não dá para saber se a música existe; o
+    painel tenta de novo). YouTube: título que já estava na lista, senão o do cache (ou None até resolver).
+    `anteriores` mapeia id da música -> título e (video_id,list_id,index,start) -> título.
+    """
+    faixas: list[dict[str, Any]] = []
+    for i, e in enumerate(entradas):
+        if e["tipo"] == "youtube":
+            alvo = {c: e[c] for c in _YT_CAMPOS}
+            faixas.append({"tipo": "youtube", **alvo,
+                           "titulo": _titulo_youtube(alvo, anteriores.get(_chave_youtube(alvo)))})
+            continue
+        mid = e["id"]
         m = ACERVO.obter(mid)
         if m is not None:
-            faixas.append({"id": mid, "titulo": _titulo_guardado(m.titulo)})
+            faixas.append({"tipo": "musica", "id": mid, "titulo": _titulo_guardado(m.titulo)})
         elif mid in anteriores:
-            faixas.append({"id": mid, "titulo": anteriores[mid]})
+            faixas.append({"tipo": "musica", "id": mid, "titulo": anteriores[mid] or ""})
         elif not ACERVO.pronto:
             raise ErroLista(MSG_LENDO_PASTA, 409, codigo="lendo_pasta")
         else:
-            raise ErroLista(f"A música {i + 1} não está mais na pasta.", campo="musicas", indice=i)
+            raise ErroLista(f"A música {i + 1} não está mais na pasta.", campo=campo, indice=i)
     return faixas
+
+
+def _titulos_anteriores(lista: dict) -> dict[Any, str | None]:
+    """Títulos já guardados na lista (música por id, YouTube por video_id+list_id+index+start)."""
+    return {(e["id"] if e["tipo"] == "musica" else _chave_youtube(e)): e["titulo"] for e in lista["musicas"]}
 
 
 def _limitar_escrita_listas() -> None:
@@ -5454,10 +5891,14 @@ def _limitar_escrita_listas() -> None:
         raise ErroLista("Muitas alterações seguidas. Aguarde um minuto.", 429)
 
 
-def _auditar_listas(acao: str, total: int) -> None:
-    """Quem (local/IP) e QUANTAS músicas. Nome da lista e ids nunca vão para o log."""
-    auditoria.info("acao=%s ip=%s origem=%s total=%d", acao, request.remote_addr or "?",
-                   "local" if _requisicao_local() else "remoto", total)
+def _auditar_listas(acao: str, total: int, resultado: str | None = None) -> None:
+    """
+    Quem (local/IP) e QUANTAS músicas. Nome da lista e ids nunca vão para o log. `resultado` (opcional) é o
+    "codigo" estável de uma falha (ex.: premium), nunca texto livre, nome, id ou uri.
+    """
+    extra = f" resultado={resultado}" if resultado else ""
+    auditoria.info("acao=%s ip=%s origem=%s total=%d%s", acao, request.remote_addr or "?",
+                   "local" if _requisicao_local() else "remoto", total, extra)
 
 
 def _versao_da_lista(corpo: dict) -> int:
@@ -5481,7 +5922,7 @@ def _nome_em_uso(doc: dict, nome: str, exceto: str | None = None) -> bool:
 
 @app.get("/api/listas")
 def listas_listar() -> Response:
-    """Resumo de todas as listas (sem as músicas; para elas há GET /api/listas/<id>)."""
+    """Resumo de todas as listas (sem os itens; para eles há GET /api/listas/<id>)."""
     doc = listas_ler()
     return jsonify({"ok": True, "versao": doc["versao"], "limites": _limites_listas(),
                     "acervo_pronto": ACERVO.pronto,
@@ -5490,48 +5931,166 @@ def listas_listar() -> Response:
 
 @app.get("/api/listas/<lista_id>")
 def listas_detalhe(lista_id: str) -> Response:
-    """Uma lista com as músicas, na ordem. Músicas que sumiram: disponivel false."""
+    """Uma lista com os itens, na ordem. Músicas que sumiram: disponivel false. YouTube: sempre true."""
     lista = lista_obter(_lista_da_rota(lista_id))
     if lista is None:
         raise ErroLista(MSG_LISTA_NAO_EXISTE, 404)
-    return jsonify({"ok": True, "limites": _limites_listas(), "lista": _detalhe_lista(lista)})
+    # Itens do YouTube sem título: este GET pede a busca em 2º plano e agenda a gravação (com debounce). O limite
+    # leve (60/min por IP) vale SÓ para esse trabalho extra: passou dele, a lista continua saindo (200), mas sem
+    # pedir títulos nem gravar nada (nunca um 429 numa leitura que o painel faz ao abrir uma lista).
+    sem_titulo = any(e["tipo"] == "youtube" and not e["titulo"] for e in lista["musicas"])
+    buscar = sem_titulo and not excedeu_limite(
+        "listas-titulos:" + (request.remote_addr or "?"), LISTA_DETALHE_BUSCA_MAX_POR_MIN, 60.0)
+    detalhe = _detalhe_lista(lista, buscar_titulos=buscar)
+    if buscar:
+        _agendar_gravacao_de_titulos()
+    return jsonify({"ok": True, "limites": _limites_listas(), "lista": detalhe})
+
+
+def _criar_lista(doc: dict, nome: str, faixas: list[dict[str, Any]]) -> dict:
+    """Acrescenta a lista nova ao `doc` (cópia sob o lock do armazém) e devolve o registro. Sem gravar."""
+    ident = programacao.novo_id({lista["id"] for lista in doc["listas"]})
+    nova = {"id": ident, "nome": nome, "versao": 1, "atualizada_em": int(time.time()), "musicas": faixas}
+    doc["listas"].append(nova)
+    doc["versao"] += 1
+    return nova
+
+
+def _exigir_espaco_para_lista(doc: dict, nome: str) -> None:
+    if len(doc["listas"]) >= LISTAS_MAX:
+        raise ErroLista(f"Você já tem {LISTAS_MAX} listas. Apague alguma para criar outra.", 409,
+                        codigo="limite_listas")
+    if _nome_em_uso(doc, nome):
+        raise ErroLista("Já existe uma lista com esse nome.", 409, codigo="nome_repetido", campo="nome")
 
 
 @app.post("/api/listas")
 def listas_criar() -> tuple[Response, int]:
-    """Cria uma lista {nome, musicas?}. Ordem: 400, 429, 409 (limite / nome repetido)."""
+    """
+    Cria uma lista {nome, itens? | musicas?}. Ordem: 400, 429, 409 (limite / nome repetido). "itens" (v2.7)
+    mistura músicas da pasta e links do YouTube; "musicas" (lista de ids) continua valendo; os dois = 400.
+    """
     request.max_content_length = LISTAS_CORPO_MAX
     corpo = corpo_json()
     if set(corpo) - _LISTA_CHAVES_CRIAR:
         raise ErroLista("Campo desconhecido.", campo="chave")
     nome = _nome_de_lista(corpo.get("nome"))
-    ids = _ids_de_musicas(corpo.get("musicas", []))
+    entradas = _entradas_do_corpo(corpo) or []
     _limitar_escrita_listas()
     with _listas_arquivo.lock:
         doc = copy.deepcopy(listas_ler())
-        if len(doc["listas"]) >= LISTAS_MAX:
-            raise ErroLista(f"Você já tem {LISTAS_MAX} listas. Apague alguma para criar outra.", 409,
-                            codigo="limite_listas")
-        if _nome_em_uso(doc, nome):
-            raise ErroLista("Já existe uma lista com esse nome.", 409, codigo="nome_repetido", campo="nome")
-        faixas = _faixas_da_lista(ids, {})
-        usados = {lista["id"] for lista in doc["listas"]}
-        while True:
-            ident = secrets.token_hex(4)
-            if ident not in usados:
-                break
-        nova = {"id": ident, "nome": nome, "versao": 1, "atualizada_em": int(time.time()), "musicas": faixas}
-        doc["listas"].append(nova)
-        doc["versao"] += 1
+        _exigir_espaco_para_lista(doc, nome)
+        faixas = _faixas_da_lista(entradas, {}, "itens" if "itens" in corpo else "musicas")
+        nova = _criar_lista(doc, nome, faixas)
         _listas_arquivo.gravar(doc)
     _auditar_listas("lista_criar", len(faixas))
     return jsonify({"ok": True, "versao": doc["versao"], "lista": _detalhe_lista(nova)}), 201
 
 
+@app.post("/api/listas/da-fila")
+def listas_da_fila() -> tuple[Response, int]:
+    """
+    "Salvar fila como lista" (v2.7) {nome, incluir_atual?: bool = true}. O SERVIDOR monta os itens: o que está
+    tocando agora na aba Tocador (se incluir_atual e o tocador estiver vivo) + a fila atual, na ordem; repetidos
+    são ignorados e passou de 500 corta (resposta com "cortados"). O cliente nunca manda os itens. Ordem: 400,
+    429, 409 ("fila_vazia", "limite_listas", "nome_repetido", "lendo_pasta").
+    """
+    corpo = corpo_json()
+    if set(corpo) - {"nome", "incluir_atual"}:
+        raise ErroLista("Campo desconhecido.", campo="chave")
+    nome = _nome_de_lista(corpo.get("nome"))
+    incluir_atual = corpo.get("incluir_atual", True)
+    if not isinstance(incluir_atual, bool):
+        raise ErroLista("Campo 'incluir_atual' inválido.", campo="incluir_atual")
+    _limitar_escrita_listas()
+    entradas, ignorados = _entradas_da_fila(incluir_atual)
+    cortados = max(0, len(entradas) - LISTA_ITENS_MAX)
+    entradas = entradas[:LISTA_ITENS_MAX]
+    if not entradas:
+        raise ErroLista("Não há nada na fila para salvar.", 409, codigo="fila_vazia")
+    with _listas_arquivo.lock:
+        doc = copy.deepcopy(listas_ler())
+        _exigir_espaco_para_lista(doc, nome)
+        faixas = _faixas_da_lista(entradas, {}, "itens")
+        nova = _criar_lista(doc, nome, faixas)
+        _listas_arquivo.gravar(doc)
+    _auditar_listas("lista_da_fila", len(faixas))
+    return jsonify({"ok": True, "versao": doc["versao"], "lista": _detalhe_lista(nova),
+                    "cortados": cortados, "ignorados": ignorados}), 201
+
+
+def _entradas_da_fila(incluir_atual: bool) -> tuple[list[dict[str, Any]], int]:
+    """
+    Itens (músicas e YouTube) do que toca agora + a fila do Proclamare, sem repetidos, na ordem. Devolve
+    (entradas, ignorados): ignorados = repetidos, músicas que já saíram da pasta e itens tortos. Tudo é
+    lido do ESTADO DO SERVIDOR sob os locks (estado -> fila, a ordem de sempre) e revalidado.
+    Regra do "tocando agora": entra se a aba Tocador está viva E há um item atual de verdade: arquivo com
+    music_id, ou vídeo/playlist do YouTube com o player carregado; parado conta (pausado), EXCETO se a faixa já
+    terminou (parada com a posição recente no fim da duração) ou se o tocador está ocioso (nada em cena).
+    """
+    with _yt_estado_lock:
+        agora = time.monotonic()
+        beat = _yt_estado["last_heartbeat"]
+        vivo = beat is not None and (agora - beat) < YOUTUBE_PLAYER_TIMEOUT
+        atual = {k: _yt_estado[k] for k in ("source", "video_id", "list_id", "music_id")} if vivo else None
+        if atual is not None and not _yt_estado["is_playing"]:
+            # Parado pode ser PAUSADO (entra) ou TERMINADO (o video_id fica para trás; não entra): terminado =
+            # posição recente a menos de 2 s do fim da duração conhecida.
+            em, pos, dur = _yt_estado["posicao_em"], _yt_estado["posicao_s"], _yt_estado["duracao_s"]
+            if (em is not None and agora - em <= YOUTUBE_PLAYER_TIMEOUT and pos is not None and dur
+                    and pos >= dur - 2.0):
+                atual = None
+        if atual is not None and atual["source"] == "youtube" and not _yt_estado["yt_pronto"]:
+            atual = None   # ocioso: sem o player do YouTube não há vídeo de verdade em cena
+        with _yt_fila_lock:
+            fila = [dict(i) for i in _yt_fila]
+    brutos: list[dict[str, Any]] = []
+    if incluir_atual and atual is not None:
+        if atual["source"] == "arquivo" and atual["music_id"]:
+            brutos.append({"kind": "arquivo", "music_id": atual["music_id"]})
+        elif atual["list_id"] or atual["video_id"]:
+            # Playlist em reprodução: a playlist inteira (do começo); vídeo avulso: o vídeo. O ponto em que
+            # ela está e o "t=" do link original não são conhecidos aqui (e nem faria sentido guardar).
+            brutos.append({"kind": "playlist" if atual["list_id"] else "video",
+                           "video_id": None if atual["list_id"] else atual["video_id"],
+                           "list_id": atual["list_id"]})
+    brutos.extend(fila)
+    entradas: list[dict[str, Any]] = []
+    vistos: set[Any] = set()
+    ignorados = 0
+    for it in brutos:
+        if it.get("kind") == "arquivo":
+            mid = it.get("music_id")
+            if not isinstance(mid, str) or not musicas.RE_ID.fullmatch(mid):
+                ignorados += 1
+                continue
+            if ACERVO.obter(mid) is None:
+                if not ACERVO.pronto:
+                    raise ErroLista(MSG_LENDO_PASTA, 409, codigo="lendo_pasta")
+                ignorados += 1   # saiu da pasta depois de entrar na fila
+                continue
+            entrada: dict[str, Any] = {"tipo": "musica", "id": mid}
+            chave: Any = mid
+        else:
+            try:
+                alvo = _validar_youtube({c: it.get(c) for c in _YT_CAMPOS})
+            except ValueError:
+                ignorados += 1
+                continue
+            entrada = {"tipo": "youtube", **alvo}
+            chave = _chave_youtube(alvo)
+        if chave in vistos:
+            ignorados += 1
+            continue
+        vistos.add(chave)
+        entradas.append(entrada)
+    return entradas, ignorados
+
+
 @app.post("/api/listas/<lista_id>")
 def listas_salvar(lista_id: str) -> Response:
     """
-    Renomeia e/ou define as músicas (lista INTEIRA, na ordem). {versao, nome?, musicas?} com pelo
+    Renomeia e/ou define os itens (lista INTEIRA, na ordem). {versao, nome?, itens? | musicas?} com pelo
     menos um dos dois. Ordem: 404 (id mal formado), 400, 429, 404 (lista), 409 (versão / nome).
     """
     _lista_da_rota(lista_id)
@@ -5540,10 +6099,10 @@ def listas_salvar(lista_id: str) -> Response:
     if set(corpo) - _LISTA_CHAVES_SALVAR:
         raise ErroLista("Campo desconhecido.", campo="chave")
     versao = _versao_da_lista(corpo)
-    if "nome" not in corpo and "musicas" not in corpo:
-        raise ErroLista("Informe o nome e/ou as músicas.", campo="chave")
+    if "nome" not in corpo and "musicas" not in corpo and "itens" not in corpo:
+        raise ErroLista("Informe o nome e/ou os itens.", campo="chave")
     nome = _nome_de_lista(corpo["nome"]) if "nome" in corpo else None
-    ids = _ids_de_musicas(corpo["musicas"]) if "musicas" in corpo else None
+    entradas = _entradas_do_corpo(corpo)
     _limitar_escrita_listas()
     with _listas_arquivo.lock:
         doc = copy.deepcopy(listas_ler())
@@ -5554,8 +6113,9 @@ def listas_salvar(lista_id: str) -> Response:
             raise ErroLista(MSG_LISTA_VERSAO_MUDOU, 409, codigo="versao_mudou")
         if nome is not None and _nome_em_uso(doc, nome, exceto=lista_id):
             raise ErroLista("Já existe uma lista com esse nome.", 409, codigo="nome_repetido", campo="nome")
-        if ids is not None:
-            lista["musicas"] = _faixas_da_lista(ids, {e["id"]: e["titulo"] for e in lista["musicas"]})
+        if entradas is not None:
+            lista["musicas"] = _faixas_da_lista(entradas, _titulos_anteriores(lista),
+                                                "itens" if "itens" in corpo else "musicas")
         if nome is not None:
             lista["nome"] = nome
         lista["versao"] += 1
@@ -5591,45 +6151,77 @@ def listas_apagar(lista_id: str) -> Response:
 
 def tocar_lista(lista_id: str, embaralhar: bool = False) -> dict[str, Any]:
     """
-    Toca uma lista no Tocador da loja: o MESMO mecanismo do "Tocar pasta" (fila esvaziada, músicas
-    entram, a primeira sai da fila e vai num comando "load" para a aba). Sem contexto de
+    Toca uma lista no Tocador da loja: o MESMO mecanismo do "Tocar pasta" (fila esvaziada, itens
+    entram, o primeiro sai da fila e vai num comando "load" para a aba). Sem contexto de
     requisição: a rota e a programação (etapa 2) chamam esta função.
-    Levanta ErroLista: 404 (lista não existe / nenhuma música dela está na pasta), 409 com "codigo"
-    "sem_tocador" (nenhuma aba Tocador viva; NADA é mexido na fila) ou "lendo_pasta".
-    Devolve {total, adicionados, indisponiveis, cortados, queue_version, primeiro, id}.
+    v2.7: a lista mistura músicas da pasta e itens do YouTube (vídeo ou playlist, como os itens da fila).
+    Lista só com YouTube não depende da pasta de músicas; música sumida é pulada. Sem o player do YouTube
+    carregado na aba (yt_pronto false) os itens do YouTube são pulados (como o play_now recusa).
+    Levanta ErroLista: 404 (lista não existe / nada dela pode tocar), 409 com "codigo" "sem_tocador"
+    (nenhuma aba Tocador viva; NADA é mexido na fila), "lendo_pasta" ou "youtube_indisponivel" (só tem
+    YouTube e o player da aba não carregou).
+    Devolve {total, adicionados, indisponiveis, cortados, queue_version, primeiro, id, youtube,
+    pulados_youtube}.
     """
     lista = lista_obter(lista_id)
     if lista is None:
         raise ErroLista(MSG_LISTA_NAO_EXISTE, 404)
-    if not ACERVO.pronto:
+    itens = lista["musicas"]
+    if any(e["tipo"] == "musica" for e in itens) and not ACERVO.pronto:
         raise ErroLista(MSG_LENDO_PASTA, 409, codigo="lendo_pasta")
     if not _tocador_vivo():   # aviso cedo e claro; é conferido de novo, sob o lock, antes de mexer na fila
         raise ErroLista(MSG_SEM_TOCADOR, 409, codigo="sem_tocador")
-    achadas = [m for m in (ACERVO.obter(e["id"]) for e in lista["musicas"]) if m is not None]
+    achadas: list[Any] = []   # Musica | item do YouTube (dict), na ordem da lista
+    indisponiveis = 0
+    for e in itens:
+        if e["tipo"] == "youtube":
+            achadas.append(e)
+            continue
+        m = ACERVO.obter(e["id"])
+        if m is None:
+            indisponiveis += 1
+        else:
+            achadas.append(m)
     if not achadas:
-        raise ErroLista("Nenhuma música dessa lista está na pasta.", 404, codigo="sem_musicas")
+        texto = ("Nenhuma música dessa lista está na pasta." if not any(e["tipo"] == "youtube" for e in itens)
+                 else "Nenhum item dessa lista pode tocar agora.")
+        raise ErroLista(texto, 404, codigo="sem_musicas")
     if embaralhar:
         random.shuffle(achadas)
     # Ordem de locks igual à do play_now: estado -> fila. O tocador precisa estar vivo ANTES de a
     # fila antiga ser trocada (senão a lista ficaria na fila sem ninguém para tocá-la).
+    pulados = 0
     with _yt_estado_lock:
         beat = _yt_estado["last_heartbeat"]
         if beat is None or (time.monotonic() - beat) >= YOUTUBE_PLAYER_TIMEOUT:
             raise ErroLista(MSG_SEM_TOCADOR, 409, codigo="sem_tocador")
+        if not _yt_estado["yt_pronto"]:
+            # tocador "vivo" só para arquivos (sem internet/API do YouTube): um "load" do YouTube ficaria
+            # parado para sempre (a mesma regra do play_now)
+            antes = len(achadas)
+            achadas = [a for a in achadas if not isinstance(a, dict)]
+            pulados = antes - len(achadas)
+            if not achadas:
+                raise ErroLista("O player do YouTube desta aba ainda não carregou. Confira a internet ou "
+                                "toque uma música do computador.", 409, codigo="youtube_indisponivel")
+        for a in achadas[:YOUTUBE_FILA_MAX]:   # o título guardado aparece na fila sem esperar o oEmbed
+            if isinstance(a, dict) and a.get("titulo"):
+                _semear_titulo(_yt_url_canonica(a["video_id"], a["list_id"]), a["titulo"])
         novos, cortados, versao_fila, primeiro = _adicionar_arquivos(
             achadas, posicao="fim", substituir=True, tirar_primeiro=True)
     comando = youtube_enqueue("load", _params_load(primeiro)) if primeiro is not None else None
+    _marcar_musica_substituida()   # a lista tomou o lugar da música: quem pausou a anterior não a devolve
     return {
-        "total": len(lista["musicas"]), "adicionados": len(novos),
-        "indisponiveis": len(lista["musicas"]) - len(achadas), "cortados": cortados,
+        "total": len(itens), "adicionados": len(novos),
+        "indisponiveis": indisponiveis, "cortados": cortados,
         "queue_version": versao_fila, "primeiro": _item_publico(primeiro) if primeiro else None,
-        "id": comando,
+        "id": comando, "youtube": sum(1 for n in novos if n["kind"] != "arquivo"), "pulados_youtube": pulados,
     }
 
 
 @app.post("/api/listas/<lista_id>/tocar")
 def listas_tocar(lista_id: str) -> Response:
-    """Toca a lista {embaralhar?}. 404 (lista / sem músicas), 409 (sem Tocador vivo), 429."""
+    """Toca a lista {embaralhar?}. 404 (lista / nada para tocar), 409 (sem Tocador vivo), 429."""
     _lista_da_rota(lista_id)
     corpo = corpo_json()
     if set(corpo) - {"embaralhar"}:
@@ -5642,6 +6234,306 @@ def listas_tocar(lista_id: str) -> Response:
     resultado = tocar_lista(lista_id, embaralhar)
     _auditar_listas("lista_tocar", resultado["adicionados"])
     return jsonify({"ok": True, **resultado})
+
+
+# ---------------------------------------------------------------------------
+# Atalhos do Spotify (contrato v2.7)
+# "Salvar a playlist do Spotify": nome + uma playlist OU um álbum, que toca com um toque (e entra na
+# Programação como o tipo "spotify"). Ficam no MESMO listas.json das listas (chave "spotify", com versão
+# própria "spotify_versao" e a versão de CADA atalho para o 409 "versao_mudou"). Guardamos só a URI
+# ("spotify:playlist:<22 base62>"): o link que o dono cola nunca é guardado nem buscado (nenhuma requisição
+# a partir dele). Tocar = o mesmo PUT /me/player/play com context_uri do /api/spotify/play. Nada daqui vai
+# para o log além de contagens.
+# ---------------------------------------------------------------------------
+MSG_LINK_SPOTIFY = "Cole o link de uma playlist ou álbum do Spotify."
+MSG_ATALHO_NAO_EXISTE = "Esse atalho do Spotify não existe mais."
+MSG_ATALHO_VERSAO_MUDOU = "Outro aparelho mudou este atalho. Recarregue para ver a versão atual."
+ATALHO_TOCAR_MAX_POR_10S = 6        # POST .../tocar, por IP (além do limite geral de comandos do Spotify)
+CONTEXTO_SPOTIFY_MAX_POR_10S = 20   # GET /api/spotify/atual-contexto, por IP
+CONTEXTO_NOME_TTL_S = 600.0         # o nome de uma playlist/álbum muda raramente
+CONTEXTO_NOME_FALHA_TTL_S = 60.0
+CONTEXTO_NOME_CACHE_MAX = 32
+_RE_LINK_SPOTIFY_CAMINHO = re.compile(
+    rf"/(?:(?i:intl-[a-z]{{2,3}}(?:-[a-z]{{2,4}})?)/)?({_SPOTIFY_TIPO})/({_SPOTIFY_ID22})/?")
+_ATALHO_CHAVES_CRIAR = frozenset({"nome", "link"})
+_ATALHO_CHAVES_SALVAR = frozenset({"versao", "nome", "link"})
+
+
+class ErroTocarSpotify(Exception):
+    """Falha ao tocar um atalho do Spotify: o formato do Spotify v2.4.2 ("error" + "codigo"[, "espera_s"])."""
+
+    def __init__(self, mensagem: str, codigo: str, http: int = 200, espera_s: int | None = None) -> None:
+        super().__init__(mensagem)
+        self.mensagem = mensagem
+        self.codigo = codigo
+        self.http = http
+        self.espera_s = espera_s
+
+
+def _uri_spotify_do_link(valor: Any) -> str:
+    """
+    "https://open.spotify.com/(intl-xx/)?(playlist|album)/<22 base62>[?si=...]" ou
+    "spotify:(playlist|album):<22 base62>" -> a URI ("spotify:playlist:<id>"). Qualquer outra coisa = 400
+    (campo "link"). Só lê o texto: não abre o link, não segue redirecionamento, não busca nada.
+    """
+    erro = ErroLista(MSG_LINK_SPOTIFY, campo="link")
+    if not isinstance(valor, str):
+        raise erro
+    texto = valor.strip()
+    if not 1 <= len(texto) <= 300 or any(ord(c) < 33 or ord(c) == 127 for c in texto):
+        raise erro
+    m = RE_URI_SPOTIFY_ATALHO.fullmatch(texto)
+    if m is None:
+        try:
+            partes = urlsplit(texto)
+            porta = partes.port
+        except ValueError:
+            raise erro from None
+        if (partes.scheme != "https" or partes.hostname != "open.spotify.com" or partes.username is not None
+                or partes.password is not None or porta not in (None, 443)):
+            raise erro
+        m = _RE_LINK_SPOTIFY_CAMINHO.fullmatch(partes.path)
+        if m is None:
+            raise erro
+    return _uri_spotify(m.group(1), m.group(2))
+
+
+def _atalho_publico(atalho: dict) -> dict[str, Any]:
+    _, tipo, ident = atalho["uri"].split(":")
+    return {"id": atalho["id"], "nome": atalho["nome"], "tipo": tipo, "versao": atalho["versao"],
+            "atualizada_em": atalho["atualizada_em"], "url": f"https://open.spotify.com/{tipo}/{ident}"}
+
+
+def _limites_atalhos() -> dict[str, int]:
+    return {"atalhos": ATALHOS_SPOTIFY_MAX, "nome": LISTA_NOME_MAX}
+
+
+def atalho_spotify_obter(atalho_id: Any) -> dict | None:
+    """O atalho (registro do cache, SOMENTE LEITURA) ou None. Para a programação também."""
+    if not isinstance(atalho_id, str) or not RE_LISTA_ID.fullmatch(atalho_id):
+        return None
+    return next((a for a in listas_ler()["spotify"] if a["id"] == atalho_id), None)
+
+
+def _atalho_da_rota(atalho_id: str) -> str:
+    if not RE_LISTA_ID.fullmatch(atalho_id):
+        raise ErroLista(MSG_ATALHO_NAO_EXISTE, 404, codigo="atalho_inexistente")
+    return atalho_id
+
+
+def _nome_de_atalho_em_uso(doc: dict, nome: str, exceto: str | None = None) -> bool:
+    chave = nome.casefold()
+    return any(a["nome"].casefold() == chave and a["id"] != exceto for a in doc["spotify"])
+
+
+@app.get("/api/spotify/atalhos")
+def spotify_atalhos_listar() -> Response:
+    doc = listas_ler()
+    return jsonify({"ok": True, "versao": doc["spotify_versao"], "limites": _limites_atalhos(),
+                    "atalhos": [_atalho_publico(a) for a in doc["spotify"]]})
+
+
+@app.post("/api/spotify/atalhos")
+def spotify_atalhos_criar() -> tuple[Response, int]:
+    """Cria {nome, link}. Ordem: 400, 429, 409 ("limite_atalhos" | "nome_repetido")."""
+    corpo = corpo_json()
+    if set(corpo) - _ATALHO_CHAVES_CRIAR:
+        raise ErroLista("Campo desconhecido.", campo="chave")
+    nome = _nome_de(corpo.get("nome"), "do atalho")
+    uri = _uri_spotify_do_link(corpo.get("link"))
+    _limitar_escrita_listas()
+    with _listas_arquivo.lock:
+        doc = copy.deepcopy(listas_ler())
+        if len(doc["spotify"]) >= ATALHOS_SPOTIFY_MAX:
+            raise ErroLista(f"Você já tem {ATALHOS_SPOTIFY_MAX} atalhos do Spotify. Apague algum para criar outro.",
+                            409, codigo="limite_atalhos")
+        if _nome_de_atalho_em_uso(doc, nome):
+            raise ErroLista("Já existe um atalho com esse nome.", 409, codigo="nome_repetido", campo="nome")
+        ident = programacao.novo_id({a["id"] for a in doc["spotify"]})
+        novo = {"id": ident, "nome": nome, "uri": uri, "versao": 1, "atualizada_em": int(time.time())}
+        doc["spotify"].append(novo)
+        doc["spotify_versao"] += 1
+        _listas_arquivo.gravar(doc)
+    _auditar_listas("spotify_atalho_criar", 1)
+    return jsonify({"ok": True, "versao": doc["spotify_versao"], "atalho": _atalho_publico(novo)}), 201
+
+
+@app.post("/api/spotify/atalhos/<atalho_id>")
+def spotify_atalhos_salvar(atalho_id: str) -> Response:
+    """Muda o nome e/ou o link {versao, nome?, link?}. Ordem: 404 (id mal formado), 400, 429, 404, 409."""
+    _atalho_da_rota(atalho_id)
+    corpo = corpo_json()
+    if set(corpo) - _ATALHO_CHAVES_SALVAR:
+        raise ErroLista("Campo desconhecido.", campo="chave")
+    versao = _versao_da_lista(corpo)
+    if "nome" not in corpo and "link" not in corpo:
+        raise ErroLista("Informe o nome e/ou o link.", campo="chave")
+    nome = _nome_de(corpo["nome"], "do atalho") if "nome" in corpo else None
+    uri = _uri_spotify_do_link(corpo["link"]) if "link" in corpo else None
+    _limitar_escrita_listas()
+    with _listas_arquivo.lock:
+        doc = copy.deepcopy(listas_ler())
+        atalho = next((a for a in doc["spotify"] if a["id"] == atalho_id), None)
+        if atalho is None:
+            raise ErroLista(MSG_ATALHO_NAO_EXISTE, 404, codigo="atalho_inexistente")
+        if versao != atalho["versao"]:
+            raise ErroLista(MSG_ATALHO_VERSAO_MUDOU, 409, codigo="versao_mudou")
+        if nome is not None and _nome_de_atalho_em_uso(doc, nome, exceto=atalho_id):
+            raise ErroLista("Já existe um atalho com esse nome.", 409, codigo="nome_repetido", campo="nome")
+        if nome is not None:
+            atalho["nome"] = nome
+        if uri is not None:
+            atalho["uri"] = uri
+        atalho["versao"] += 1
+        atalho["atualizada_em"] = int(time.time())
+        doc["spotify_versao"] += 1
+        _listas_arquivo.gravar(doc)
+    _auditar_listas("spotify_atalho_salvar", 1)
+    return jsonify({"ok": True, "versao": doc["spotify_versao"], "atalho": _atalho_publico(atalho)})
+
+
+@app.post("/api/spotify/atalhos/<atalho_id>/apagar")
+def spotify_atalhos_apagar(atalho_id: str) -> Response:
+    """Apaga o atalho {versao}. Um horário da Programação que o usava fica com alvo_ok false."""
+    _atalho_da_rota(atalho_id)
+    corpo = corpo_json()
+    if set(corpo) - {"versao"}:
+        raise ErroLista("Campo desconhecido.", campo="chave")
+    versao = _versao_da_lista(corpo)
+    _limitar_escrita_listas()
+    with _listas_arquivo.lock:
+        doc = copy.deepcopy(listas_ler())
+        atalho = next((a for a in doc["spotify"] if a["id"] == atalho_id), None)
+        if atalho is None:
+            raise ErroLista(MSG_ATALHO_NAO_EXISTE, 404, codigo="atalho_inexistente")
+        if versao != atalho["versao"]:
+            raise ErroLista(MSG_ATALHO_VERSAO_MUDOU, 409, codigo="versao_mudou")
+        doc["spotify"].remove(atalho)
+        doc["spotify_versao"] += 1
+        _listas_arquivo.gravar(doc)
+    _auditar_listas("spotify_atalho_apagar", 1)
+    return jsonify({"ok": True, "versao": doc["spotify_versao"]})
+
+
+def tocar_atalho_spotify(atalho_id: str) -> dict[str, Any]:
+    """
+    Toca o atalho no Spotify do PC da loja (o PUT /me/player/play com context_uri do /api/spotify/play).
+    Sem contexto de requisição: a rota e a programação chamam esta função. A música do Spotify SUBSTITUI a da
+    aba Tocador: se ela estiver tocando, recebe "pause" (só depois de o Spotify aceitar o comando, para um
+    erro nunca deixar a loja em silêncio). Devolve {"tocador_pausado": bool}. Levanta ErroTocarSpotify com
+    "codigo": atalho_inexistente (404) | sem_dispositivo (400, nenhum aparelho escolhido) | reconectar |
+    premium | limite | indisponivel (os cinco últimos como na v2.4.2, HTTP 200 + ok:false na rota).
+    """
+    atalho = atalho_spotify_obter(atalho_id)
+    if atalho is None:
+        raise ErroTocarSpotify(MSG_ATALHO_NAO_EXISTE, "atalho_inexistente", 404)
+    device_id = spotify_active_device_id()
+    if not device_id:
+        # sem aparelho escolhido: se nem está conectado, a causa é a conexão (o que o dono precisa fazer)
+        if spotify_get_token() is None and _motivo_sem_token(load_config()) != "rede":
+            raise ErroTocarSpotify(MSG_SPOTIFY["reconectar"], "reconectar")
+        raise ErroTocarSpotify("Nenhum dispositivo Spotify selecionado.", "sem_dispositivo", 400)
+    status, reason = spotify_comando(
+        "PUT", "/me/player/play", params={"device_id": device_id}, json_body={"context_uri": atalho["uri"]})
+    if not _sucesso(status):
+        erro = _corpo_erro_spotify(status, reason)
+        raise ErroTocarSpotify(erro["error"], erro["codigo"], 200, erro.get("espera_s"))
+    pausou = False
+    _marcar_musica_substituida()   # antes de checar a aba: se um bloco pausado está terminando, ele não retoma
+    vivo, tocando, _ = _estado_do_tocador()
+    if vivo and tocando:
+        youtube_enqueue("pause")
+        with _yt_estado_lock:   # a aba só avisa no próximo sinal dela; o painel não pode ver "tocando" até lá
+            _yt_estado["is_playing"] = False
+        pausou = True
+    return {"tocador_pausado": pausou}
+
+
+@app.post("/api/spotify/atalhos/<atalho_id>/tocar")
+def spotify_atalhos_tocar(atalho_id: str) -> tuple[Response, int] | Response:
+    """
+    Toca o atalho {}. Falha do Spotify: o formato v2.4.2 ({ok:false, error, codigo[, espera_s]}, HTTP 200; 400 sem
+    aparelho escolhido). 404 "atalho_inexistente". 429 (limite de comandos do Spotify / 6 em 10 s).
+    """
+    _atalho_da_rota(atalho_id)
+    if corpo_json():
+        raise ErroLista("Campo desconhecido.", campo="chave")
+    _limitar_comandos_spotify()
+    if excedeu_limite("spotify-atalho-tocar:" + (request.remote_addr or "?"), ATALHO_TOCAR_MAX_POR_10S, 10.0):
+        raise ErroApi("Muitos pedidos seguidos. Aguarde um instante.", 429)
+    try:
+        resultado = tocar_atalho_spotify(atalho_id)
+    except ErroTocarSpotify as e:
+        _auditar_listas("spotify_atalho_tocar", 0, e.codigo)
+        corpo: dict[str, Any] = {"ok": False, "error": e.mensagem, "codigo": e.codigo}
+        if e.espera_s is not None:
+            corpo["espera_s"] = e.espera_s
+        return jsonify(corpo), e.http
+    _auditar_listas("spotify_atalho_tocar", 1, "ok")
+    return jsonify({"ok": True, **resultado})
+
+
+# --- "Salvar a playlist que está tocando" ---------------------------------------------------------
+_contexto_nomes_lock = threading.Lock()
+_contexto_nomes: OrderedDict[str, tuple[str | None, float]] = OrderedDict()   # uri -> (nome|None, expira_em)
+
+
+def _nome_do_contexto_spotify(tipo: str, ident: str) -> str | None:
+    """
+    Nome da playlist/álbum que toca, para sugerir ao dono. SÓ api.spotify.com (SPOTIFY_API fixo) com o id já
+    validado (22 base62). Qualquer falha = None (o nome é um enfeite; a falha não vira "api_ok" do painel).
+    Cache curto por URI.
+    """
+    chave = f"{tipo}:{ident}"
+    agora = time.monotonic()
+    with _contexto_nomes_lock:
+        achado = _contexto_nomes.get(chave)
+        if achado is not None and achado[1] > agora:
+            return achado[0]
+    caminho = f"/{'playlists' if tipo == 'playlist' else 'albums'}/{ident}"
+    params = {"fields": "name"} if tipo == "playlist" else None
+    nome: str | None = None
+    try:
+        dados, status, _ = spotify_api("GET", caminho, params=params, registrar_resultado=False,
+                                       rotulo_log="nome do contexto")
+        bruto = dados.get("name") if status == 200 else None
+        if isinstance(bruto, str):
+            limpo = "".join(c for c in bruto if c.isprintable()).strip()[:LISTA_NOME_MAX].strip()
+            nome = programacao.texto_limpo(limpo, LISTA_NOME_MAX, multilinha=False)
+    except Exception:  # noqa: BLE001 - o nome é opcional
+        log.debug("Nome da playlist do Spotify indisponível.")
+    with _contexto_nomes_lock:
+        _contexto_nomes[chave] = (nome, agora + (CONTEXTO_NOME_TTL_S if nome else CONTEXTO_NOME_FALHA_TTL_S))
+        _contexto_nomes.move_to_end(chave)
+        while len(_contexto_nomes) > CONTEXTO_NOME_CACHE_MAX:
+            _contexto_nomes.popitem(last=False)
+    return nome
+
+
+@app.get("/api/spotify/atual-contexto")
+def spotify_atual_contexto() -> Response:
+    """
+    Se o Spotify está com uma playlist ou um álbum: {ok, uri_tipo: "playlist"|"album", url, nome|null,
+    tocando}. Outra coisa (música avulsa, artista, podcast, nada): uri_tipo/url/nome null. Falha do Spotify:
+    {ok:false, error, codigo}. Usa o cache do player (~2 s) compartilhado com o now-playing.
+    """
+    if excedeu_limite("spctx:" + (request.remote_addr or "?"), CONTEXTO_SPOTIFY_MAX_POR_10S, 10.0):
+        raise ErroApi("Muitos pedidos seguidos. Aguarde um instante.", 429)
+    vazio = {"uri_tipo": None, "url": None, "nome": None, "tocando": False}
+    dados = spotify_player_state()
+    if dados is None:
+        status, reason = _player_estado.get("erro") or (0, None)
+        if _em_backoff():
+            status = 429
+        return jsonify({"ok": False, **vazio, **_corpo_erro_spotify(status, reason)})
+    contexto = dados.get("context") if dados else None
+    uri = contexto.get("uri") if isinstance(contexto, dict) else None
+    achado = RE_URI_SPOTIFY_ATALHO.fullmatch(uri) if isinstance(uri, str) else None
+    if achado is None:
+        return jsonify({"ok": True, **vazio})
+    tipo, ident = achado.group(1).lower(), achado.group(2)
+    return jsonify({"ok": True, "uri_tipo": tipo, "url": f"https://open.spotify.com/{tipo}/{ident}",
+                    "nome": _nome_do_contexto_spotify(tipo, ident), "tocando": bool(dados.get("is_playing"))})
 
 
 # ---------------------------------------------------------------------------
@@ -5720,6 +6612,9 @@ def _prog_nome(item: dict) -> str:
     if item.get("tipo") == "lista":
         lista = lista_obter(item.get("alvo"))
         return lista["nome"] if lista is not None else f"Lista das {item.get('hora')}"
+    if item.get("tipo") == "spotify":
+        atalho = atalho_spotify_obter(item.get("alvo"))
+        return atalho["nome"] if atalho is not None else f"Spotify das {item.get('hora')}"
     return f"Anúncio das {item.get('hora')}"
 
 
@@ -5743,6 +6638,24 @@ def _estado_do_tocador() -> tuple[bool, bool, tuple]:
         vivo = beat is not None and (time.monotonic() - beat) < YOUTUBE_PLAYER_TIMEOUT
         return vivo, bool(_yt_estado["is_playing"]), (
             _yt_estado["source"], _yt_estado["video_id"], _yt_estado["music_id"])
+
+
+# Geração das "substituições de música": tocar_lista() e tocar_atalho_spotify() TROCAM o que toca. Um bloco
+# _musica_pausada (áudio/anúncio agendado) que pausou a música antes disso não pode devolvê-la no `finally`
+# (a aba Tocador voltaria a tocar junto com o Spotify; o Spotify antigo sobreporia a lista nova).
+_substituicao_lock = threading.Lock()
+_substituicao_gen = 0
+
+
+def _marcar_musica_substituida() -> None:
+    global _substituicao_gen
+    with _substituicao_lock:
+        _substituicao_gen += 1
+
+
+def _geracao_da_musica() -> int:
+    with _substituicao_lock:
+        return _substituicao_gen
 
 
 def _retomar_musica(faixa_tocador: tuple | None, device_spotify: str | None, avisos: list[str]) -> None:
@@ -5813,6 +6726,7 @@ def _musica_pausada(avisos: list[str] | None = None) -> Iterator[None]:
     avisos = avisos if avisos is not None else []
     faixa_tocador: tuple | None = None
     device_spotify: str | None = None
+    geracao = _geracao_da_musica()
     try:
         vivo, tocando, faixa = _estado_do_tocador()
         if vivo and tocando:
@@ -5823,7 +6737,9 @@ def _musica_pausada(avisos: list[str] | None = None) -> Iterator[None]:
             _prog_dormir(PROG_PAUSA_FOLGA_S)
         yield
     finally:
-        _retomar_musica(faixa_tocador, device_spotify, avisos)
+        if _geracao_da_musica() == geracao:
+            _retomar_musica(faixa_tocador, device_spotify, avisos)
+        # senão: uma lista ou uma playlist do Spotify tomou o lugar da música durante o bloco; não há o que devolver
 
 
 # --- execução ---------------------------------------------------------------------------------------
@@ -5858,11 +6774,14 @@ def _prog_aguardar_tocador(ctx: programacao.Execucao) -> bool:
 
 def _prog_executar_lista(item: dict, ctx: programacao.Execucao) -> dict:
     """
-    Lista agendada = o "Tocar lista" (TROCA a música). Espera a 1ª leitura da pasta (recém-ligado) e a
+    Lista agendada = o "Tocar lista" (TROCA a música). Espera a 1ª leitura da pasta (recém-ligado) SÓ se a lista
+    tem música da pasta (lista só com YouTube, ou mista, v2.7, não espera por ela quando não precisa) e a
     aba Tocador reconectar; sem Tocador vivo: "não tocou". Se o Spotify estiver tocando ele é PAUSADO
     e NÃO volta (a lista substitui a música); se a lista não chegar a tocar, o Spotify é devolvido.
     """
-    _prog_aguardar_acervo(ctx)
+    lista = lista_obter(item["alvo"])
+    if lista is None or any(e["tipo"] == "musica" for e in lista["musicas"]):
+        _prog_aguardar_acervo(ctx)   # lista só com YouTube (v2.7) não depende da pasta de músicas
     if not _tocador_vivo() and not _prog_aguardar_tocador(ctx):
         raise programacao.NaoTocou("tocador_fechado", "Tocador da loja fechado")
     avisos: list[str] = []
@@ -5877,7 +6796,10 @@ def _prog_executar_lista(item: dict, ctx: programacao.Execucao) -> dict:
         if e.codigo == "lendo_pasta":
             raise programacao.NaoTocou("lendo_pasta", "O Proclamare ainda estava lendo a pasta de músicas.") from None
         if e.codigo == "sem_musicas":
-            raise programacao.NaoTocou("lista_sem_musicas", "Nenhuma música da lista está na pasta.") from None
+            raise programacao.NaoTocou("lista_sem_musicas", "Nada da lista pode tocar agora.") from None
+        if e.codigo == "youtube_indisponivel":
+            raise programacao.NaoTocou("youtube_indisponivel",
+                                       "O player do YouTube do Tocador da loja não carregou.") from None
         if e.status == 404:
             raise programacao.NaoTocou("lista_inexistente", "A lista não existe mais.") from None
         raise
@@ -5887,7 +6809,31 @@ def _prog_executar_lista(item: dict, ctx: programacao.Execucao) -> dict:
     if resultado["cortados"]:
         avisos.append(f"A fila do Tocador comporta {YOUTUBE_FILA_MAX} músicas; as {resultado['cortados']} "
                       "últimas da lista não entraram.")
+    if resultado.get("pulados_youtube"):
+        avisos.append(f"O player do YouTube do Tocador não estava pronto: {resultado['pulados_youtube']} item(ns) "
+                      "do YouTube da lista ficaram de fora.")
     return {"aviso": " ".join(avisos) or None}
+
+
+# Motivos estáveis (histórico) das falhas do Spotify; o painel mapeia por eles.
+_MOTIVO_SPOTIFY = {"reconectar": "spotify_desconectado", "sem_dispositivo": "spotify_sem_aparelho",
+                   "premium": "spotify_premium", "limite": "spotify_limite",
+                   "indisponivel": "spotify_indisponivel", "atalho_inexistente": "atalho_inexistente"}
+
+
+def _prog_executar_spotify(item: dict, ctx: programacao.Execucao) -> dict:
+    """
+    Playlist/álbum do Spotify agendado = o "Tocar" do atalho (tocar_atalho_spotify): TROCA a música. Se a aba
+    Tocador estava tocando, ela é pausada (a música do Spotify a substitui; nada é retomado depois). Falhou =
+    "não tocou" com o motivo: spotify_desconectado | spotify_sem_aparelho | spotify_premium | spotify_limite |
+    spotify_indisponivel | atalho_inexistente. Não usa a trava de áudio (o som sai pelo Spotify do PC, não
+    pelo caminho dos anúncios) e não conta no teto diário de áudio.
+    """
+    try:
+        tocar_atalho_spotify(item["alvo"])   # {"tocador_pausado": bool}: nada a avisar (o Spotify substitui a aba)
+    except ErroTocarSpotify as e:
+        raise programacao.NaoTocou(_MOTIVO_SPOTIFY.get(e.codigo, "spotify_indisponivel"), e.mensagem) from None
+    return {"aviso": None}
 
 
 def _prog_aguardar_acervo(ctx: programacao.Execucao) -> None:
@@ -6032,10 +6978,10 @@ def _prog_executar_som(item: dict, ctx: programacao.Execucao) -> dict:
 
 def _prog_executar(item: dict, ctx: programacao.Execucao) -> dict | None:
     """O que o agendador chama (thread própria): despacha por tipo. Levanta NaoTocou ou Exception."""
-    if item["tipo"] == "lista":
+    if item["tipo"] in ("lista", "spotify"):
         if _desligamento_agendado or _desligando.is_set():
             raise programacao.NaoTocou("desligando", "O Proclamare estava sendo desligado.")
-        return _prog_executar_lista(item, ctx)
+        return _prog_executar_lista(item, ctx) if item["tipo"] == "lista" else _prog_executar_spotify(item, ctx)
     return _prog_executar_som(item, ctx)
 
 
@@ -6067,7 +7013,7 @@ def _prog_limites() -> dict[str, Any]:
 def _prog_alvo_info(item: dict) -> tuple[str | None, bool | None, str | None]:
     """
     (nome do alvo, alvo_ok, alvo_motivo). ok=None enquanto a pasta de músicas não foi lida. `motivo`
-    (só quando ok é False): "sem_musica" | "formato" | "audio_longo" | "lista_inexistente".
+    (só quando ok é False): "sem_musica" | "formato" | "audio_longo" | "lista_inexistente" | "atalho_inexistente".
     """
     if item["tipo"] == "audio":
         m = ACERVO.obter(item["alvo"])
@@ -6081,6 +7027,9 @@ def _prog_alvo_info(item: dict) -> tuple[str | None, bool | None, str | None]:
     if item["tipo"] == "lista":
         lista = lista_obter(item["alvo"])
         return (lista["nome"], True, None) if lista is not None else (None, False, "lista_inexistente")
+    if item["tipo"] == "spotify":
+        atalho = atalho_spotify_obter(item["alvo"])
+        return (atalho["nome"], True, None) if atalho is not None else (None, False, "atalho_inexistente")
     return None, True, None
 
 
@@ -6145,6 +7094,9 @@ def _prog_checar_alvo(tipo: str, alvo: str, ja_existia: bool, indice: int) -> No
     elif tipo == "lista" and not ja_existia and lista_obter(alvo) is None:
         raise programacao.ErroValidacao(f"Horário {n}: essa lista não existe.", campo="alvo", indice=indice,
                                         codigo="lista_inexistente")
+    elif tipo == "spotify" and not ja_existia and atalho_spotify_obter(alvo) is None:
+        raise programacao.ErroValidacao(f"Horário {n}: essa playlist do Spotify não existe.", campo="alvo",
+                                        indice=indice, codigo="atalho_inexistente")
 
 
 _NOMES_DIAS = ("domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado")
@@ -6274,10 +7226,13 @@ def programacao_testar(item_id: str) -> tuple[Response, int]:
         raise ErroProg("Muitos pedidos seguidos. Aguarde um instante.", 429)
     if _desligamento_agendado:
         raise ErroProg("O Proclamare está sendo desligado.", 409, codigo="desligando")
-    if item["tipo"] == "lista":
+    if item["tipo"] in ("lista", "spotify"):
         if PROGRAMACAO.tocando is not None:
             raise ErroProg(_msg_ocupado(""), 409, codigo="ocupado")
-        if not _tocador_vivo():
+        if item["tipo"] == "spotify":   # sem a trava de áudio: o som sai pelo Spotify do PC
+            if atalho_spotify_obter(item["alvo"]) is None:
+                raise ErroProg(MSG_ATALHO_NAO_EXISTE, 404, codigo="atalho_inexistente")
+        elif not _tocador_vivo():
             raise ErroProg(MSG_SEM_TOCADOR, 409, codigo="sem_tocador")
         PROGRAMACAO.solicitar(item, lock_tomado=False)
     else:

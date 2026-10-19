@@ -187,7 +187,7 @@ class TesteLeituraECriacao(Base):
         d = r.get_json()
         self.assertEqual(d["listas"], [])
         self.assertEqual(d["versao"], 0)
-        self.assertEqual(d["limites"], {"listas": 50, "nome": 40, "musicas": 500})
+        self.assertEqual(d["limites"], {"listas": 50, "nome": 40, "musicas": 500, "itens": 500})
         self.assertEqual(set(d), {"ok", "versao", "limites", "acervo_pronto", "listas"})
         self.assertEqual(r.headers["Cache-Control"], "no-store")
         self.assertFalse(self.arquivo_listas().exists(), "ler não pode criar o arquivo")
@@ -201,7 +201,7 @@ class TesteLeituraECriacao(Base):
                          ("Manhã calma", 0, 1, []))
         self.assertRegex(lista["id"], r"^[0-9a-f]{8}$")
         self.assertEqual(d["versao"], 1)
-        self.assertEqual(set(lista), {"id", "nome", "versao", "atualizada_em", "total", "disponiveis", "musicas"})
+        self.assertEqual(set(lista), {"id", "nome", "versao", "atualizada_em", "total", "youtube", "disponiveis", "musicas"})
 
     def test_criar_com_musicas_na_ordem(self) -> None:
         a, b, c = (self.criar_musica(n) for n in ("a.mp3", "b.mp3", "c.mp3"))
@@ -212,7 +212,7 @@ class TesteLeituraECriacao(Base):
         # o item da música é o mesmo de /api/musicas (+ disponivel) e NUNCA traz caminho
         self.assertEqual(set(lista["musicas"][0]),
                          {"id", "titulo", "artista", "album", "duracao_s", "pasta", "formato",
-                          "tem_capa", "adicionada_em", "disponivel"})
+                          "tem_capa", "adicionada_em", "disponivel", "tipo"})
         self.assertNotIn(str(self.pasta), json.dumps(lista))
 
     def test_resumo_no_get_geral_sem_musicas(self) -> None:
@@ -235,7 +235,7 @@ class TesteLeituraECriacao(Base):
         self.assertEqual(json.loads(server.CONFIG_PATH.read_text(encoding="utf-8")), OUTRAS_CHAVES)
         doc = self.listas_no_disco()
         self.assertEqual(doc["versao"], 1)
-        self.assertEqual(doc["listas"][0]["musicas"], [{"id": a, "titulo": doc["listas"][0]["musicas"][0]["titulo"]}])
+        self.assertEqual(doc["listas"][0]["musicas"], [{"tipo": "musica", "id": a, "titulo": doc["listas"][0]["musicas"][0]["titulo"]}])
         # "reinício": cache zerado, tudo volta do disco
         server._listas_arquivo.resetar()
         d = self.c.get(f"/api/listas/{lista['id']}").get_json()["lista"]
@@ -311,8 +311,9 @@ class TesteValidacaoDeCriar(Base):
         # o arquivo cheio continua pequeno (compacto): bem menos de 200 KB com títulos de 10 caracteres
         self.assertLess(self.arquivo_listas().stat().st_size, 200 * 1024)
 
-    def test_corpo_acima_de_32kb_e_413(self) -> None:
-        r = self.c.post("/api/listas", json={"nome": "T", "musicas": ["0123456789abcdef"] * 3000})
+    def test_corpo_acima_de_60kb_e_413(self) -> None:
+        # v2.7: o teto desta rota subiu de 32 para 60 KB (links do YouTube); o waitress corta em 64 KB
+        r = self.c.post("/api/listas", json={"nome": "T", "musicas": ["0123456789abcdef"] * 4000})
         self.assertEqual(r.status_code, 413)
 
     def test_nome_repetido_ignora_caixa_e_acento_nao(self) -> None:
@@ -454,7 +455,7 @@ class TesteIndisponiveis(Base):
         self.sumir("fechamento.mp3")
         det = self.detalhe(lista["id"])
         self.assertEqual([m["disponivel"] for m in det["musicas"]], [True, False])
-        self.assertEqual(det["musicas"][1], {"id": b, "titulo": titulo_b, "disponivel": False})
+        self.assertEqual(det["musicas"][1], {"tipo": "musica", "id": b, "titulo": titulo_b, "disponivel": False})
         self.assertEqual((det["total"], det["disponiveis"]), (2, 1))
         resumo = self.c.get("/api/listas").get_json()["listas"][0]
         self.assertEqual((resumo["total"], resumo["disponiveis"]), (2, 1))
@@ -565,7 +566,7 @@ class TesteTocar(Base):
         self.assertEqual(loads[0]["params"], {"music_id": b})                 # só o id, nunca caminho
         self.assertEqual(d["id"], loads[0]["id"])
         self.assertEqual(set(d), {"ok", "total", "adicionados", "indisponiveis", "cortados",
-                                  "queue_version", "primeiro", "id"})
+                                  "queue_version", "primeiro", "id", "youtube", "pulados_youtube"})
 
     def test_a_fila_e_a_mesma_do_tocar_pasta(self) -> None:
         a, b = self.criar_musica("a.mp3"), self.criar_musica("b.mp3")

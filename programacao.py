@@ -3,7 +3,7 @@ Programação de horários (contrato v2.6, etapa 2) — o "relógio" do Proclama
 
 O que este módulo faz (e o que NÃO faz)
 ---------------------------------------
-Guarda a lista de itens agendados {tipo "audio" | "lista" | "anuncio", hora, dias da semana OU uma
+Guarda a lista de itens agendados {tipo "audio" | "lista" | "anuncio" | "spotify", hora, dias da semana OU uma
 data}, calcula as próximas execuções, vigia o relógio LOCAL do PC e, na hora, entrega o item para quem
 sabe tocar (o server.py). Aqui NÃO existe áudio, Flask, Spotify nem YouTube: tudo o que toca entra por
 funções injetadas (`executar`), então os testes rodam sem som e com um relógio de mentira.
@@ -55,7 +55,7 @@ from typing import Any, Callable
 log = logging.getLogger("proclamare.programacao")
 
 # --- limites e constantes do contrato -----------------------------------------------------------
-TIPOS = ("audio", "lista", "anuncio")
+TIPOS = ("audio", "lista", "anuncio", "spotify")
 ITENS_MAX = 100
 NOME_MAX = 40
 TEXTO_MAX = 500                  # o mesmo teto do /api/announce e das Mensagens prontas
@@ -79,6 +79,7 @@ ORIGENS_ITEM = ("local", "remoto")   # "origem" do item: gravada pelo servidor (
 RE_ITEM_ID = re.compile(r"[0-9a-f]{8}")
 RE_MUSIC_ID = re.compile(r"[0-9a-f]{16}")     # musicas.RE_ID (conferido nos testes)
 RE_LISTA_ID = re.compile(r"[0-9a-f]{8}")      # server.RE_LISTA_ID (conferido nos testes)
+RE_ATALHO_ID = re.compile(r"[0-9a-f]{8}")     # atalho do Spotify (v2.7): o mesmo formato do id da lista
 _RE_HORA = re.compile(r"([01][0-9]|2[0-3]):([0-5][0-9])")
 _RE_DATA = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
@@ -299,7 +300,7 @@ def _validar_item(bruto: Any, i: int, atuais: dict[str, dict], hoje: date, ids_v
 
     tipo = bruto.get("tipo")
     if not isinstance(tipo, str) or tipo not in TIPOS:
-        raise ErroValidacao(f"Horário {n}: escolha o que tocar (áudio, lista ou anúncio).",
+        raise ErroValidacao(f"Horário {n}: escolha o que tocar (áudio, lista, anúncio ou playlist do Spotify).",
                             campo="tipo", indice=i)
 
     alvo = bruto.get("alvo")
@@ -310,10 +311,10 @@ def _validar_item(bruto: Any, i: int, atuais: dict[str, dict], hoje: date, ids_v
                 f"Horário {n}: o texto do anúncio precisa ter de 1 a {TEXTO_MAX} caracteres, sem "
                 "caracteres especiais invisíveis.", campo="alvo", indice=i)
     else:
-        regex = RE_MUSIC_ID if tipo == "audio" else RE_LISTA_ID
+        regex = {"audio": RE_MUSIC_ID, "lista": RE_LISTA_ID, "spotify": RE_ATALHO_ID}[tipo]
+        oque = {"audio": "a música", "lista": "a lista", "spotify": "a playlist do Spotify"}[tipo]
         if not isinstance(alvo, str) or not regex.fullmatch(alvo):
-            raise ErroValidacao(f"Horário {n}: escolha {'a música' if tipo == 'audio' else 'a lista'}.",
-                                campo="alvo", indice=i)
+            raise ErroValidacao(f"Horário {n}: escolha {oque}.", campo="alvo", indice=i)
 
     nome = bruto.get("nome")
     if nome is not None:

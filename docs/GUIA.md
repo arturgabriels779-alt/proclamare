@@ -421,6 +421,23 @@ loja (arquivo `config.json`, que nunca deve ser compartilhado ou enviado
 para a internet) — é o que permite o servidor renovar sozinho o acesso ao
 Spotify sem pedir login de novo a cada uso.
 
+### Playlists do Spotify salvas (atalhos)
+
+Se a loja toca sempre a mesma playlist (ou álbum) do Spotify, salve como um **atalho**: um nome + a playlist, e ela toca com
+um toque.
+
+1. No Spotify, em uma playlist ou álbum, escolha *Compartilhar → Copiar link* (algo como
+   `https://open.spotify.com/playlist/...`). Vale também o formato `spotify:playlist:...`.
+2. No Proclamare, em *Música → Spotify*, toque em **Salvar playlist do Spotify**, dê um nome (até 40 letras) e cole o link.
+   Se a playlist **já estiver tocando** no Spotify, o painel oferece **Salvar a playlist que está tocando** (e sugere o nome).
+3. Para tocar, toque no atalho. Se a aba **Tocador da loja** estiver tocando alguma coisa, ela é **pausada** (a música do
+   Spotify toma o lugar).
+
+Só entram **playlists e álbuns** (não músicas avulsas, artistas ou podcasts). Qualquer outro link recebe a mensagem *"Cole o
+link de uma playlist ou álbum do Spotify"*. São até 50 atalhos. Tocar o atalho precisa do Spotify conectado, do aplicativo
+aberto no computador da loja e de conta Premium, igual aos botões Play do Spotify; se faltar algo, o painel mostra a mesma
+mensagem de sempre (por exemplo *"Abra o Spotify no PC da loja e dê play uma vez"*). Os atalhos também ficam em `listas.json`.
+
 ### A conexão vale por cerca de 6 meses
 
 O Spotify faz a autorização expirar mais ou menos **6 meses** depois de você
@@ -635,6 +652,30 @@ mexer em arquivos. Elas aparecem em *Música → Minhas músicas*, na seção **
 - Como as músicas, as listas tocam no **Tocador da loja** (aba aberta no computador das caixas). Os dados ficam em
   `listas.json`, ao lado do `config.json`.
 
+#### Listas com YouTube (a "playlist salva" da loja)
+
+Uma lista agora pode misturar **músicas da pasta** com **vídeos e playlists do YouTube**, na ordem que você quiser. Dá para
+criar de duas formas:
+
+- **Salvar fila como lista**: monte a fila do jeito que a loja gosta (links do YouTube e músicas da pasta) e toque em
+  *Salvar fila como lista*, dando um nome. A lista guarda o que está tocando agora (se você deixar marcado) e tudo o que
+  está na fila, na ordem; repetidos são ignorados. A fila em si não muda.
+- **Colando links**: ao criar ou editar uma lista, cole links do YouTube (um por linha). Vale link de vídeo, de playlist ou
+  de vídeo dentro de playlist; o tempo de início (`t=90`) e a posição na playlist (`index=3`) são respeitados. Link de
+  *Mix* automático do YouTube toca só o vídeo (igual à fila); link que é só de Mix é recusado.
+
+Detalhes que ajudam:
+
+- O Proclamare guarda só o **vídeo/playlist** (nunca o link colado) e busca o **título** no YouTube em segundo plano; até
+  aparecer, a lista mostra *"Vídeo do YouTube"* ou *"Playlist do YouTube"*. Depois o título fica guardado.
+- Uma lista tem até **500 itens** (músicas + YouTube), sem repetir o mesmo item, e a fila comporta **200** por vez (se a lista
+  for maior, os últimos não entram ao tocar).
+- Uma lista **só com YouTube** não precisa da pasta de músicas. Item do YouTube é sempre contado como disponível; se a
+  internet cair, ele simplesmente não toca naquele momento.
+- Se o player do YouTube da aba Tocador ainda não carregou (sem internet), a lista toca só as músicas da pasta e avisa que os
+  itens do YouTube ficaram de fora.
+- Dá para **agendar** uma lista com YouTube na Programação como qualquer outra.
+
 ### Remover uma música
 
 No computador da loja, cada linha tem uma lixeira (toque duas vezes para
@@ -684,9 +725,9 @@ dias escolhidos ou uma data só). São até 100 horários.
 **Como marcar um horário no painel.** No computador, o bloco **Programação** fica abaixo do Anúncio; no celular é a aba
 **Horários**. Ele mostra o *Horário do PC da loja*, os próximos horários, a lista dos seus horários e as últimas execuções.
 
-1. Toque em **Novo horário** e escolha **Áudio**, **Lista** ou **Anúncio**.
+1. Toque em **Novo horário** e escolha **Áudio**, **Lista**, **Playlist do Spotify** ou **Anúncio**.
 2. Escolha o alvo: busque a música na biblioteca (os formatos que não tocam em horário aparecem desativados), escolha uma
-   lista, ou escreva o texto do anúncio (ou toque numa das *Mensagens prontas*; em *Voz do anúncio* dá para mudar a voz).
+   lista ou um atalho de playlist do Spotify, ou escreva o texto do anúncio (ou toque numa das *Mensagens prontas*; em *Voz do anúncio* dá para mudar a voz).
 3. Marque a **hora** e a repetição: *Todos os dias*, *Dias úteis*, *Fim de semana*, *Escolher dias* (D S T Q Q S S) ou *Uma data*.
 4. Salve. Cada horário tem um **interruptor** (ativo/desativado), **Tocar agora** (pede um segundo toque, porque interrompe a
    música da loja), **Editar** e **Remover**.
@@ -703,7 +744,8 @@ ou erro, com o motivo); o histórico fica na memória e some se o Proclamare for
 |---|---|
 | **Áudio** (uma música da pasta, ex.: *Ave Maria* às 18:00) | Toca pelo mesmo caminho dos anúncios (a saída fixada em "Som da loja"), **mesmo com o navegador fechado**. Só MP3, OGG, WAV e FLAC, até 10 minutos. Arquivos M4A/AAC/OPUS não tocam em horário marcado: converta para MP3. |
 | **Anúncio de texto** (até 500 caracteres, ex.: aviso de fechamento às 21:45) | Fala com a voz e o motor que você escolheu no horário, **mesmo com o navegador fechado**. |
-| **Lista** (ex.: *Manhã calma* de segunda a sexta às 8:00) | **Troca** a música atual pela lista. Precisa da aba **Tocador da loja** aberta; se estiver fechada, o painel avisa "não tocou: Tocador da loja fechado". |
+| **Lista** (ex.: *Manhã calma* de segunda a sexta às 8:00) | **Troca** a música atual pela lista. Precisa da aba **Tocador da loja** aberta; se estiver fechada, o painel avisa "não tocou: Tocador da loja fechado". A lista pode ter itens do YouTube junto das músicas da pasta. |
+| **Playlist do Spotify** (um atalho salvo, ex.: *Rock da loja* às 9:00) | **Troca** a música atual pela playlist/álbum no Spotify do computador da loja; se a aba Tocador estava tocando, ela é pausada. Precisa do Spotify conectado e aberto no PC (e Premium). Se não der, o histórico diz o motivo: *Spotify desconectado*, *sem aparelho* (abra o Spotify e dê play uma vez), *conta sem Premium*, *limite do Spotify* ou *indisponível*. Se o atalho for apagado, o horário fica marcado como sem alvo e não toca. Não entra no limite de 60 minutos de áudio por dia. |
 
 **O que acontece com a música que estava tocando.** No horário de um áudio ou anúncio, o Proclamare **pausa** a música
 (a da aba Tocador e a do Spotify), toca, e **retoma de onde parou** — só o que estava tocando; o que já estava pausado
