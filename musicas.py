@@ -744,6 +744,11 @@ class Acervo:
         with self._lock:
             return self._versao, self._lista, self._truncado, self._varrendo or not self._ja_varreu
 
+    @property
+    def pronto(self) -> bool:
+        """True depois da 1ª varredura concluída (antes disso "não achei" não quer dizer "sumiu")."""
+        return self._ja_varreu
+
     def obter(self, music_id: Any) -> Musica | None:
         if not isinstance(music_id, str) or not RE_ID.fullmatch(music_id):
             return None

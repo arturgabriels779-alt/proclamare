@@ -337,19 +337,30 @@ class MotorAudio:
         self._exigir_vivo()
         return self._duracao(caminho)
 
-    def tocar(self, caminho: Path, *, prazo: float | None = None, duracao: float | None = None) -> float:
+    def tocar(self, caminho: Path, *, prazo: float | None = None, duracao: float | None = None,
+              parar: Any = None, teto_s: float | None = None, folga_proporcional: float = 0.0,
+              margem_s: float | None = None) -> float:
         """
         (Thread de áudio) Toca o arquivo no dispositivo já aberto e espera terminar, com o
         vigia de progresso. `prazo` = instante (relógio do motor) até o qual o servidor
         aceita esperar. Devolve a duração tocada, em segundos. Levanta ErroReproducao se a
         reprodução travar ou estourar o teto. O arquivo é descarregado no final; apagá-lo
         é com quem chamou. `duracao` já medida (`medir`) evita decodificar com a música baixa.
+        `parar` (v2.6, programação): objeto com `is_set()`; quando fica verdadeiro o laço sai limpo
+        (para e descarrega o arquivo) e devolve o que tocou. `teto_s` troca o teto absoluto do motor
+        (80 s) só nesta chamada: o áudio agendado pode durar até 10 min; os anúncios comuns não passam
+        `teto_s` e continuam com o teto de sempre. `folga_proporcional`/`margem_s` alargam o teto
+        relativo à duração medida (duração x (1 + folga) + margem; padrão: duração + 3 s): o áudio
+        agendado usa 15% + 10 s porque a duração de um mp3 VBR sem cabeçalho pode ser subestimada.
         """
         self._exigir_vivo()
         musica = self._modulo().mixer.music
         if duracao is None:
             duracao = self._duracao(caminho)
-        teto = self._teto if duracao is None else min(duracao + MARGEM_DURACAO_S, self._teto)
+        teto_maximo = self._teto if teto_s is None else float(teto_s)
+        margem = MARGEM_DURACAO_S if margem_s is None else float(margem_s)
+        teto = teto_maximo if duracao is None else min(duracao * (1.0 + folga_proporcional) + margem,
+                                                       teto_maximo)
         inicio = self._relogio()
         if prazo is not None:
             teto = min(teto, max(1.0, prazo - inicio))
@@ -363,6 +374,8 @@ class MotorAudio:
             ultima_pos: Any = None
             ultimo_movimento = self._relogio()
             while musica.get_busy():
+                if parar is not None and parar.is_set():
+                    break   # pedido de parada (POST /api/programacao/parar): sai limpo
                 agora = self._relogio()
                 if agora - inicio > teto:
                     self.invalidar()

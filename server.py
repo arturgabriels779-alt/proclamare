@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -31,6 +31,145 @@ da loja. Serve a interface (static/) e cuida de três coisas:
                                computadores também consigam controlá-la.
                                A aba tocadora recebe os comandos por
                                long-poll (latência quase instantânea).
+
+Contrato v2.6 etapa 1 (Listas de músicas criadas no painel)
+-----------------------------------------------------------
+  Só ACRESCENTA rotas; nada do que já existia muda. Todas ficam atrás do PIN (PC local é livre), com
+  415 (não JSON), 403 (Origin de outro host) e 429 (limite por IP) como as demais. Erros no formato
+  {"ok":false,"error",codigo?,campo?,indice?} (o mesmo do /api/mensagens). Esquema estrito: chave
+  desconhecida = 400. A programação de horários vem logo abaixo (etapa 2).
+  * Armazenamento: listas.json AO LADO do config.json (não dentro dele: 50 x 500 músicas passam de
+    500 KB e o config é regravado a cada token/volume do Spotify). Gravação atômica + DACL restrita,
+    cópia "listas.json.corrompido-*" se ilegível. Só ids opacos: lista_id = 8 hex; music_id = o do
+    acervo (nunca caminho). Cada música guarda um título curto (60) só para mostrar se ela sumir.
+  * Limites: 50 listas; nome 1..40 caracteres (uma linha, sem controle/formato/substituto/uso privado,
+    único sem diferenciar maiúsculas); até 500 músicas por lista, sem repetição; corpo máx. 32 KB.
+  * Versão: cada lista tem "versao" (1 ao criar, +1 a cada gravação); as rotas que mudam uma lista
+    exigem a versão que o aparelho viu. 409 {"codigo":"versao_mudou"} se outro aparelho salvou antes.
+    O GET geral traz também uma "versao" do arquivo (muda a cada gravação de qualquer lista).
+  * GET  /api/listas        -> {ok, versao, limites:{listas,nome,musicas}, acervo_pronto, listas:[{id,
+        nome, versao, atualizada_em, total, disponiveis}]}  ("disponiveis" = null até a pasta ser lida).
+  * GET  /api/listas/<id>   -> {ok, limites, lista:{...resumo, musicas:[item]}}; item de música da pasta =
+        o item de /api/musicas + "disponivel":true; sumida = {id, titulo (o guardado|null),
+        "disponivel":false} ("disponivel":null enquanto a pasta não foi lida). 404 se não existe.
+  * POST /api/listas {"nome","musicas"?:[music_id]} -> 201 {ok, versao, lista}. 409 "limite_listas" |
+        "nome_repetido" | "lendo_pasta"; 400 com campo/indice (música que não está na pasta = 400).
+  * POST /api/listas/<id> {"versao", "nome"?, "musicas"?} (pelo menos um dos dois; "musicas" = a lista
+        INTEIRA, na ordem) -> {ok, versao, lista}. Música nova tem de estar na pasta (400); as que já
+        estavam na lista continuam aceitas mesmo sumidas (indisponíveis).
+  * POST /api/listas/<id>/apagar {"versao"} -> {ok, versao}. As músicas ficam na pasta.
+  * POST /api/listas/<id>/tocar {"embaralhar"?:bool} = "Tocar pasta" com a lista (fila esvaziada, as
+        disponíveis entram em ordem ou embaralhadas, a 1ª sai da fila e vai num "load" ao Tocador;
+        indisponíveis são puladas) -> {ok, total, adicionados, indisponiveis, cortados (teto 200 da
+        fila), queue_version, primeiro, id}. 409 "sem_tocador" (nenhuma aba Tocador viva; a fila NÃO
+        é mexida) | "lendo_pasta"; 404 (lista) | 404 "sem_musicas" (nenhuma disponível); 429.
+  * Auditoria ("proclamare.som.auditoria"): acao (lista_criar|lista_salvar|lista_apagar|lista_tocar),
+    IP, local/remoto e QUANTAS músicas; nunca nome nem ids.
+  * Internos que a etapa 2 reutiliza: tocar_lista(lista_id, embaralhar) (sem contexto de requisição,
+    levanta ErroLista), lista_obter(lista_id), listas_ler(), _tocador_vivo().
+
+Contrato v2.6 etapa 2 (Programação de horários)
+-----------------------------------------------
+  Só ACRESCENTA rotas e um 409; nada do que já existia muda. Módulo programacao.py (relógio, validação,
+  histórico; sem áudio nem Flask) + a execução aqui no server.py (seção "Programação de horários").
+  Todas as rotas ficam atrás do PIN (PC local e aparelhos com PIN podem editar), com 415 (não JSON),
+  403 (Origin de outro host) e 429 (limite por IP). Erros no formato {"ok":false,"error",codigo?,campo?,
+  indice?} (o mesmo do /api/mensagens). Esquema estrito: chave desconhecida em qualquer nível = 400.
+  * Item {id, ativo, tipo, alvo, nome, hora, dias | data, embaralhar, voz, motor, velocidade}:
+      tipo "audio"   alvo = music_id (id opaco do acervo; nunca caminho). SÓ mp3, ogg, wav e flac (o que o
+                     pygame toca): m4a/aac/opus = 400 "formato_nao_suportado" com mensagem clara. Até
+                     10 min (PROG_AUDIO_TETO_S): mais = 400 "audio_longo". Música que não existe = 400
+                     "musica_inexistente" (409 "lendo_pasta" se a pasta ainda não foi lida).
+      tipo "lista"   alvo = lista_id (8 hex); não existe = 400 "lista_inexistente". "embaralhar": bool
+                     (só vale aqui; true em outro tipo = 400).
+      tipo "anuncio" alvo = TEXTO 1..500 caracteres, mesma higienização das Mensagens prontas (sem
+                     controle/formato/substituto/uso privado; CRLF vira LF). "voz" francisca|antonio,
+                     "motor" auto|online|offline, "velocidade" -50..50: opcionais (padrão francisca/auto/0);
+                     só valem em anúncio. Soma dos textos de anúncio <= 10.000 caracteres (o corpo do POST
+                     fica abaixo dos 64 KB do waitress; emoji em todo texto pode estourar e dá 413).
+      "nome" opcional, 1..40 caracteres, uma linha (vazio = sem nome); "ativo" bool (padrão true);
+      "hora" "HH:MM" (relógio de parede do PC da loja); recorrência = EXATAMENTE UMA entre "dias"
+      (lista de 0..6, sem repetição, ordenada; 0 = DOMINGO, 1 = segunda ... 6 = sábado, como o
+      Date.getDay() do navegador) e "data" ("AAAA-MM-DD"; data que já passou = 400, salvo item que já a
+      tinha). Um item que já existia (mesmo tipo e alvo) continua aceito mesmo que a música tenha sumido,
+      tenha mudado para um formato que não toca ou passado de 10 min, a lista tenha sido apagada ou a data
+      tenha passado (fica "alvo_ok": false e o histórico diz "não tocou"): regravar a lista inteira não
+      pode falhar por OUTRO horário. Só criar ou ALTERAR o alvo exige que ele exista e seja válido.
+      "origem" ("local" | "remoto"): SOMENTE LEITURA, o servidor grava de onde veio a última criação ou
+      alteração do item (o cliente não pode mandar o campo: 400). O painel mostra "criado pelo celular".
+  * Limite de áudio por dia: a soma das durações dos itens "audio" ATIVOS não passa de 60 min em nenhum
+    dia da semana (áudio sem duração conta 10 min; data única conta no dia da semana dela): POST que
+    PIORA um dia acima disso = 400 "limite_diario" (desativar ou apagar horários sempre passa).
+    "limites" traz "audio_dia_max_s". Em POST /api/auth/pin e /api/auth/revogar (só locais) a resposta
+    ganha "programacao_remota": quantos horários foram criados/alterados por aparelhos remotos (eles
+    continuam valendo depois de trocar o PIN; o painel avisa para o dono revisar).
+  * Armazenamento: programacao.json AO LADO do config.json (mesmo motivo das listas), gravação atômica +
+    DACL restrita, cópia "programacao.json.corrompido-*" se ilegível, item torto descartado. O último
+    instante visto vai em programacao.visto.json (arquivo minúsculo, a cada ~30 s e a cada execução).
+    Os dois estão no .gitignore. Até 100 itens; versão ÚNICA do documento (+1 a cada gravação).
+  * GET  /api/programacao -> {ok, versao, agora:{iso,data,hora:"HH:MM",dia_semana,fuso}, limites,
+        acervo_pronto, tocador_vivo, itens:[item + rotulo, alvo_nome|null, alvo_ok:true|false|null,
+        alvo_motivo:"sem_musica"|"formato"|"audio_longo"|"lista_inexistente"|null,
+        proxima:ISO|null], proximas:[{id,quando,em_s,tipo,rotulo,hora}] (até 10, só ativos, calculadas
+        no servidor), historico:[até 50, mais novo primeiro], tocando:{id,nome,tipo,origem,desde,
+        interrompivel}|null}. "agora" é a hora do PC da loja (não a do aparelho que pede). "rotulo" =
+        o nome, senão o título da música / nome da lista, senão "Anúncio das HH:MM".
+  * POST /api/programacao {"versao","itens":[...]} SUBSTITUI a lista inteira (sem "id" = item novo, o
+        servidor gera 8 hex; com "id" tem de existir agora) -> o mesmo documento do GET. Ordem: 400,
+        429 (20 gravações por minuto por IP; um 400 não gasta cota), 409 {"codigo":"versao_mudou"}.
+        Corpo máx. 60 KB. Todo 400 traz "campo" e, quando é de um item, "indice" (0-based).
+  * POST /api/programacao/<id>/testar {} = "Tocar agora" (também de item inativo; mesmo pausar/retomar).
+        202 {ok, execucao:{id,tipo,nome}} e toca em segundo plano (resultado no histórico). 404 (id /
+        horário / música sumida "sem_musica"), 400, 429 (6 por minuto por IP), 409: "ocupado"
+        ("Programação tocando: <nome>" ou "Já existe um anúncio tocando. Aguarde terminar."),
+        "sem_tocador" (lista com a aba Tocador fechada), "desligando", "audio_longo"/"formato".
+  * POST /api/programacao/parar {} interrompe o ÁUDIO/ANÚNCIO da programação que está tocando (sinal de
+        parada lido pelo laço de reprodução na thread de áudio; a música é retomada normalmente).
+        200 {ok, parando:true}; voz do Windows falando direto (SAPI, sem internet) não tem como ser
+        cortada: 200 {ok, parando:false, aviso}; nada tocando: 409 "nada_tocando". 429 (20/min).
+  * Relógio (thread "programacao", tick de 2 s, relógio LOCAL do PC): cada horário dispara UMA vez
+    (dedupe por id + data do horário + "HH:MM", 3 dias). Tolerância de 60 s de atraso; passou disso =
+    "perdido" no histórico. Servidor desligado no horário: ao ligar, o que passou da tolerância (até 24 h
+    atrás) vira "perdido" (motivo "servidor_desligado") e o que ainda está dentro dela toca; religar logo
+    depois de um disparo não repete (o instante visto é gravado no disparo). Relógio do PC para TRÁS (fim
+    do horário de verão, ajuste manual): nada dispara de novo; para FRENTE (ou PC suspenso): o que foi
+    saltado e passou da tolerância vira "perdido" (motivo "relogio"), nunca uma rajada. Itens que vencem
+    entram numa fila e UMA thread ("programacao-exec") executa um por vez (dois horários no mesmo minuto
+    tocam um depois do outro). A tolerância de 60 s vale para o INÍCIO: quem esperou na fila só é
+    descartado ("atrasado") se passou mais de 60 s depois de o item anterior terminar (um áudio de 2 min
+    não derruba o horário seguinte) ou se já passaria de 12 min do horário. Mais de 20 horários perdidos
+    numa mesma varredura: 20 entram no histórico e uma linha "Mais N horários" resume o resto.
+  * Execução. "audio" e "anuncio" tocam PELO CAMINHO DOS ANÚNCIOS: trava _anuncio_lock (um som por vez),
+    thread de áudio única (executar_no_audio), saída fixada em "Som da loja" quando houver
+    (motor de saídas) ou o mixer padrão; funcionam com o navegador fechado. Com um anúncio manual tocando
+    no horário a execução espera até 60 s (tenta a cada ~1 s) e depois registra "não tocou: ocupado". O
+    áudio tem TETO PRÓPRIO (até 10 min; o laço de reprodução usa min(duração x 1,15 + 10 s, 600 s) porque
+    a duração de um mp3 VBR sem cabeçalho pode ser subestimada, e o executor espera isso + 20 s) SEM mexer nos tetos dos anúncios comuns (laço de 80 s, executor de 90 s); o
+    arquivo da pasta de músicas nunca é apagado. O anúncio de texto usa _anunciar/_anunciar_na_saida de
+    sempre, trocando o "abaixar a música" por PAUSAR e retomar. PAUSAR/RETOMAR (_musica_pausada): a aba
+    Tocador (comando "pause" / "play", só se estava tocando e só se continua a MESMA faixa) e o Spotify
+    (PUT pause / play no aparelho salvo, só se estava tocando; até 3 tentativas de play; "restriction
+    violated" com o player já tocando vale como ok); tudo no `finally`, mesmo com erro ou parada. Cada
+    problema na música vira "aviso" no histórico. O arquivo de áudio é conferido de novo na hora de tocar
+    (como no streaming: dentro da pasta, arquivo comum, sem link) e toca pelo caminho real. "lista" =
+    tocar_lista() (TROCA a música atual): espera a 1ª leitura da pasta (até 10 s) e, sem aba Tocador
+    viva, até 15 s por ela (acabou de religar) e então registra "não tocou: Tocador da loja fechado"
+    (motivo "tocador_fechado"). Se o Spotify estiver tocando, é PAUSADO e não volta (a lista o
+    substitui); se a lista não chega a tocar, o Spotify é devolvido.
+    Durante um áudio/anúncio agendado, POST /api/announce e /api/som/testar recebem 409 ("Programação
+    tocando: <nome>" no /api/announce); POST /api/sistema/desligar também (a mensagem diz qual e que dá
+    para Parar). Depois de um desligar aceito nada da programação toca ("desligando") e o relógio para
+    junto com o servidor (grava o instante visto).
+  * Histórico (memória, últimos 50, não sobrevive a reinício): {quando (ISO local), id, nome, tipo, hora,
+    origem "agendado"|"manual", status "ok"|"nao_tocou"|"perdido"|"erro", motivo, texto, interrompido,
+    aviso}. motivo: tocador_fechado, ocupado, atrasado, desligando, sem_musica, formato, audio_longo,
+    lista_sem_musicas, lista_inexistente, lendo_pasta, sem_internet, sem_saida/ausente/em_uso_exclusivo/
+    motor_contaminado (saída de som), motor_travado, falha_audio, falha (erro inesperado; o detalhe só
+    no log: só o tipo da exceção, nunca caminho nem texto), servidor_desligado e relogio (perdido).
+    "texto" é a frase em português para o painel.
+  * Auditoria ("proclamare.som.auditoria"): acao (programacao_salvar|programacao_testar|programacao_parar),
+    IP, local/remoto e QUANTOS itens; cada execução registra acao=programacao_executar com origem, tipo,
+    status e motivo. Nome, texto do anúncio, ids e caminhos NUNCA vão para o log.
 
 Contrato v2.5 (Mensagens prontas editáveis + Desligar pelo painel)
 -----------------------------------------------------------------
@@ -330,6 +469,7 @@ import asyncio
 import atexit
 import base64
 import contextlib
+import copy
 import functools
 import getpass
 import hashlib
@@ -350,13 +490,12 @@ import tempfile
 import threading
 import _thread
 import time
-import unicodedata
 import uuid
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturoTimeout
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 from http.cookiejar import DefaultCookiePolicy
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -380,6 +519,7 @@ from som.motor import frase_de_teste, gerar_bipe, texto_para_sapi
 # Acervo "Minhas músicas" (contrato v2.4). O módulo só usa stdlib na carga (mutagen entra
 # de forma tardia); nada toca o disco até a primeira consulta ou o main().
 import musicas
+import programacao
 import waitress_limites
 
 log = logging.getLogger("proclamare")
@@ -1377,7 +1517,9 @@ def auth_pin() -> Response:
     pin = dados["pin"]
     configurado = aplicar_pin(None if pin is None else validar_pin_novo(pin))
     log.info("PIN de acesso pela rede %s.", "definido/trocado" if pin is not None else "removido")
-    return jsonify({"ok": True, "pin_configurado": configurado})
+    # Horários criados por aparelhos remotos continuam valendo depois da troca do PIN: o painel avisa.
+    return jsonify({"ok": True, "pin_configurado": configurado,
+                    "programacao_remota": _prog_contar_remotos()})
 
 
 @app.post("/api/auth/revogar")
@@ -1392,7 +1534,7 @@ def auth_revogar() -> Response:
         _gravar_config_atomico(cfg)
     _login_resetar_global()
     log.info("Todas as sessões de acesso pela rede foram revogadas.")
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "programacao_remota": _prog_contar_remotos()})
 
 
 # ---------------------------------------------------------------------------
@@ -1564,9 +1706,15 @@ def _garantir_mixer(reiniciar: bool = False) -> Any:
     return pygame
 
 
-def _tocar_mp3(caminho: Path) -> None:
-    """(Thread de áudio) Toca o mp3 até o fim e apaga o arquivo em seguida."""
+def _reproduzir_legado(caminho: Path, teto_s: float, parar: Any = None) -> bool:
+    """
+    (Thread de áudio) Toca o arquivo pelo mixer padrão (fluxo legado, sem "saídas de som") até o fim,
+    até `teto_s` ou até `parar.is_set()` (v2.6: programação). Devolve True se foi cortado por `parar`.
+    NÃO apaga o arquivo: quem chamou decide (o anúncio apaga o mp3 temporário; o áudio agendado toca
+    um arquivo da pasta de músicas, que nunca pode ser apagado aqui).
+    """
     pygame = None
+    cortado = False
     try:
         for tentativa in (0, 1):
             try:
@@ -1578,14 +1726,25 @@ def _tocar_mp3(caminho: Path) -> None:
                 if tentativa == 1:
                     raise
                 log.warning("Falha ao tocar; reiniciando o mixer e tentando de novo.")
-        limite = time.monotonic() + TIMEOUT_REPRODUCAO_S
+        limite = time.monotonic() + teto_s
         while pygame.mixer.music.get_busy() and time.monotonic() < limite:
+            if parar is not None and parar.is_set():
+                cortado = True
+                break
             time.sleep(0.05)
     finally:
         if pygame is not None:
             with contextlib.suppress(Exception):
                 pygame.mixer.music.stop()
                 pygame.mixer.music.unload()  # libera o arquivo (Windows trava a exclusão)
+    return cortado
+
+
+def _tocar_mp3(caminho: Path, parar: Any = None) -> None:
+    """(Thread de áudio) Toca o mp3 do anúncio até o fim (teto de 80 s) e apaga o arquivo em seguida."""
+    try:
+        _reproduzir_legado(caminho, TIMEOUT_REPRODUCAO_S, parar)
+    finally:
         apagar_audio(caminho)
 
 
@@ -1704,6 +1863,9 @@ def obter_vozes_offline() -> dict | None:
     global _vozes_cache, _vozes_falha_ts
     if _vozes_cache is not None:
         return _vozes_cache
+    atual = PROGRAMACAO.tocando   # áudio agendado de vários minutos ocupa a thread de áudio: não espere 30 s
+    if atual is not None and atual["tipo"] == "audio":   # nem grave "falha": é só uma janela ocupada
+        return None
     with _vozes_lock:
         if _vozes_cache is not None:
             return _vozes_cache
@@ -3961,12 +4123,17 @@ def musica_abaixada(spotify: bool = True, youtube: bool = True) -> Iterator[None
 
 
 def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
-              voz_offline_id: Any, usar_online: bool) -> tuple[str, str | None]:
+              voz_offline_id: Any, usar_online: bool, *,
+              contexto: Callable[[], Any] | None = None, parar: Any = None) -> tuple[str, str | None]:
     """
     Executa o anúncio e devolve (engine_used, warning).
     Online: gera o mp3 PRIMEIRO (música ainda alta), só então abaixa, toca e restaura.
     Offline: abaixa antes da fala. No modo auto, falha online cai para offline.
+    v2.6 (programação): `contexto` troca o "abaixar a música" por outro gerenciador de contexto (o
+    anúncio agendado PAUSA e retoma a música) e `parar` (SinalParada) corta a reprodução; a voz do
+    Windows falando direto (SAPI) não tem como ser cortada e avisa o sinal disso.
     """
+    abaixar = contexto or musica_abaixada
     aviso: str | None = None
     if usar_online:
         caminho: Path | None = None
@@ -3983,13 +4150,16 @@ def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
             # Fase 2 — reprodução: falha aqui NÃO repete o anúncio em voz offline
             # (o cliente poderia ouvir duas vezes); sobe como erro 500.
             if caminho is not None:
-                with musica_abaixada():
-                    executar_no_audio(_tocar_mp3, caminho)  # apaga o mp3 ao terminar
+                with abaixar():
+                    # apaga o mp3 ao terminar
+                    executar_no_audio(_tocar_mp3, caminho, *(() if parar is None else (parar,)))
                 return "online", None
         finally:
             apagar_audio(caminho)  # no-op se já foi apagado
     voz_id = resolver_voz_offline(voz_offline_id)
-    with musica_abaixada():
+    if parar is not None:
+        parar.nao_interrompivel()   # pyttsx3.runAndWait não tem como ser interrompido de fora
+    with abaixar():
         executar_no_audio(_falar_offline, texto, VELOCIDADE_OFFLINE_WPM, voz_id)
     return ("offline_fallback" if aviso else "offline"), aviso
 
@@ -4008,7 +4178,7 @@ def announce() -> Response | tuple[Response, int]:
 
     # Não enfileira: se já há um anúncio tocando, responde 409 imediatamente.
     if not _anuncio_lock.acquire(blocking=False):
-        return _resp_erro("Já existe um anúncio tocando. Aguarde terminar.", 409)
+        return _resp_erro(_msg_ocupado("Já existe um anúncio tocando. Aguarde terminar."), 409)
     _avisos_musica_iniciar()   # v2.4.2: duck/restore do Spotify anotam aqui o que deu errado
     try:
         # v2.3: com "saida_anuncio" configurada o anúncio vai para a saída escolhida.
@@ -4243,12 +4413,14 @@ def _som_medir(caminhos: list[Path]) -> list[float | None]:
     return [SOM.motor.medir(c) for c in caminhos]
 
 
-def _som_tocar(caminhos: list[Path], duracoes: list[float | None] | None = None) -> float:
+def _som_tocar(caminhos: list[Path], duracoes: list[float | None] | None = None,
+               parar: Any = None) -> float:
     """(Thread de áudio) Toca os arquivos em sequência com o vigia de progresso; devolve segundos."""
     motor = SOM.motor
     prazo = motor.agora() + TIMEOUT_AUDIO_S - 5.0   # sempre antes do teto do executor
     medidas = duracoes if duracoes and len(duracoes) == len(caminhos) else [None] * len(caminhos)
-    return sum(motor.tocar(c, prazo=prazo, duracao=d) for c, d in zip(caminhos, medidas))
+    extra = {} if parar is None else {"parar": parar}   # v2.6: sem sinal, a chamada é a de sempre
+    return sum(motor.tocar(c, prazo=prazo, duracao=d, **extra) for c, d in zip(caminhos, medidas))
 
 
 def _abrir_saida_som(candidatas: list[Any]) -> Any:
@@ -4263,12 +4435,15 @@ def _abrir_saida_som(candidatas: list[Any]) -> Any:
 
 
 def _anunciar_na_saida(texto: str, modo: str, voz_online: str, velocidade: int,
-                       voz_offline_id: Any, usar_online: bool, som: dict) -> tuple[str, str | None, dict]:
+                       voz_offline_id: Any, usar_online: bool, som: dict, *,
+                       contexto: Callable[[], Any] | None = None,
+                       parar: Any = None) -> tuple[str, str | None, dict]:
     """
     Anúncio na saída configurada (v2.3). Devolve (engine_used, warning, extra da resposta).
     Ordem: gera o áudio (música ainda alta) -> resolve e ABRE a saída -> só então abaixa a
     música -> toca -> restaura (finally). Voz offline: pyttsx3 -> WAV -> o mesmo motor.
     Sem saída utilizável: ErroSom 503 com "codigo" e a música nem chega a ser abaixada.
+    v2.6: `contexto` (pausar em vez de abaixar a música) e `parar` (SinalParada), como em _anunciar.
     """
     aviso: str | None = None
     caminho: Path | None = None
@@ -4289,8 +4464,9 @@ def _anunciar_na_saida(texto: str, modo: str, voz_online: str, velocidade: int,
             executar_no_audio(_som_sintetizar, texto, resolver_voz_offline(voz_offline_id), caminho)
         sid_medicao = usada.sid if usada.sid is not None else SOM.padrao_sid()
         duracoes = executar_no_audio(_som_medir, [caminho])   # fora da janela com a música baixa
-        with SOM.medir_sinal(sid_medicao) as medida, _musica_abaixada_som(som):
-            executar_no_audio(_som_tocar, [caminho], duracoes)
+        silenciar = contexto() if contexto is not None else _musica_abaixada_som(som)
+        with SOM.medir_sinal(sid_medicao) as medida, silenciar:
+            executar_no_audio(_som_tocar, [caminho], duracoes, *(() if parar is None else (parar,)))
         sinal = medida.resultado
     finally:
         apagar_audio(caminho)  # mp3 ou wav; no-op se já foi
@@ -4859,8 +5035,6 @@ MENSAGENS_ESCRITA_MAX_POR_MIN = 20  # POST /api/mensagens e /restaurar, por IP
 MENSAGENS_CORPO_MAX = 60 * 1024     # 24 x (500 + 40) caracteres acentuados passam dos 16 KB globais
 RE_MENSAGEM_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
 _MENSAGEM_CHAVES = frozenset({"id", "titulo", "texto"})
-_CATEGORIAS_RECUSADAS = frozenset({"Cc", "Cf", "Cs", "Co"})
-_FORMATO_OK = frozenset({chr(0x200C), chr(0x200D)})   # ZWNJ/ZWJ (emojis compostos): únicos "Cf" aceitos
 MSG_VERSAO_MUDOU = "Outro aparelho mudou as mensagens. Recarregue para ver a versão atual."
 
 # Lista de fábrica (os atalhos que o painel sempre teve). Ids fixos, para o cliente reconhecê-los.
@@ -4946,24 +5120,21 @@ def _texto_da_mensagem(valor: Any, *, campo: str, rotulo: str, maximo: int,
                        multilinha: bool, indice: int) -> str:
     """
     Strip + 1..maximo caracteres + sem caracteres de controle. Quebra de linha (LF) só no texto;
-    CRLF vira LF. Rejeita só o que é de fato perigoso: controle (Cc), formato (Cf), substituto (Cs)
-    e uso privado (Co), menos ZWJ/ZWNJ: texto invisível ou que inverte a direção não deve ir para a
-    fala nem para a tela. "Cn" (ainda não atribuído) PASSA: o Python 3.10-3.13 conhece versões
-    diferentes do Unicode e um emoji novo não pode dar 400 conforme a máquina.
+    CRLF vira LF. A regra é UMA só para o Proclamare (programacao.validar_texto): rejeita controle
+    (Cc), formato (Cf), substituto (Cs) e uso privado (Co), menos ZWJ/ZWNJ: texto invisível ou que
+    inverte a direção não deve ir para a fala nem para a tela. "Cn" (ainda não atribuído) PASSA: o
+    Python 3.10-3.13 conhece versões diferentes do Unicode e um emoji novo não pode dar 400.
     """
     quem = f"Mensagem {indice + 1}: "
-    if not isinstance(valor, str):
+    texto, motivo = programacao.validar_texto(valor, maximo, multilinha=multilinha)
+    if motivo == "tipo":
         raise ErroMensagem(f"{quem}{rotulo} inválido.", campo=campo, indice=indice)
-    texto = valor.replace("\r\n", "\n").strip()
-    if not 1 <= len(texto) <= maximo:
+    if motivo == "tamanho":
         raise ErroMensagem(f"{quem}{rotulo} precisa ter de 1 a {maximo} caracteres.",
                            campo=campo, indice=indice)
-    for ch in texto:
-        if (ch == "\n" and multilinha) or ch in _FORMATO_OK:
-            continue
-        if unicodedata.category(ch) in _CATEGORIAS_RECUSADAS:
-            raise ErroMensagem(f"{quem}{rotulo} tem um caractere que não é permitido.",
-                               campo=campo, indice=indice)
+    if motivo == "caractere":
+        raise ErroMensagem(f"{quem}{rotulo} tem um caractere que não é permitido.",
+                           campo=campo, indice=indice)
     return texto
 
 
@@ -5079,6 +5250,1071 @@ def mensagens_restaurar() -> Response:
 
 
 # ---------------------------------------------------------------------------
+# Listas de músicas (contrato v2.6)
+# Listas criadas NO PAINEL ("Nova lista"): nome + músicas do acervo, em ordem. Ficam em
+# listas.json AO LADO do config.json (não dentro dele): até 50 listas x 500 músicas passam de
+# 500 KB, e o config.json (segredos do Spotify, PIN) é regravado a cada renovação de token e
+# a cada ajuste de volume. Arquivo próprio = o config continua pequeno e sem dados da loja;
+# mesma gravação atômica (temporário + os.replace) e mesma DACL restrita. A "versão" não
+# fica no config: cada lista tem a sua (409 só quando OUTRO aparelho mexeu NA MESMA lista) e o
+# arquivo tem uma versão geral (muda a cada gravação) para o painel saber que algo mudou.
+# O cliente só conhece ids opacos (music_id do acervo e lista_id de 8 hex); nunca caminho.
+# Música que sumiu da pasta continua na lista como "indisponível" (guardamos um título curto só
+# para o dono saber qual foi) e é pulada ao tocar. Nada daqui vai para o log além de contagens.
+# ---------------------------------------------------------------------------
+LISTAS_ARQUIVO = "listas.json"
+LISTAS_MAX = 50                     # listas no total
+LISTA_NOME_MAX = 40                 # caracteres do nome
+LISTA_MUSICAS_MAX = 500             # músicas por lista
+LISTA_TITULO_GUARDADO_MAX = 60      # título guardado de cada música (só para exibir se ela sumir)
+LISTAS_ESCRITA_MAX_POR_MIN = 20     # POST de criar/salvar/apagar, por IP
+LISTAS_TOCAR_MAX_POR_10S = 6        # POST .../tocar, por IP
+LISTAS_CORPO_MAX = 32 * 1024        # 500 ids de 16 hex + aspas/vírgulas = ~10 KB; folga para o nome
+RE_LISTA_ID = re.compile(r"[0-9a-f]{8}")
+MSG_LISTA_VERSAO_MUDOU = "Outro aparelho mudou esta lista. Recarregue para ver a versão atual."
+MSG_LISTA_NAO_EXISTE = "Essa lista não existe mais."
+MSG_SEM_TOCADOR = "Nenhum tocador aberto. Abra o modo Tocador da loja primeiro."
+MSG_LENDO_PASTA = "O Proclamare está lendo a pasta de músicas. Tente de novo em instantes."
+_LISTA_CHAVES_CRIAR = frozenset({"nome", "musicas"})
+_LISTA_CHAVES_SALVAR = frozenset({"versao", "nome", "musicas"})
+
+
+class ErroLista(ErroMensagem):
+    """Erro de /api/listas: o mesmo formato do /api/mensagens ({ok, error, codigo?, campo?, indice?})."""
+
+
+def _listas_path() -> Path:
+    """listas.json na pasta do config.json (os testes trocam CONFIG_PATH e levam este junto)."""
+    return CONFIG_PATH.with_name(LISTAS_ARQUIVO)
+
+
+def _titulo_guardado(valor: Any) -> str:
+    """Título curto guardado junto do id (texto simples, sem controle, até 60 caracteres)."""
+    if not isinstance(valor, str):
+        return ""
+    return "".join(c for c in valor if c.isprintable())[:LISTA_TITULO_GUARDADO_MAX].strip()
+
+
+def _inteiro(valor: Any, minimo: int, maximo: int, padrao: int) -> int:
+    ok = isinstance(valor, int) and not isinstance(valor, bool) and minimo <= valor <= maximo
+    return valor if ok else padrao
+
+
+def _sanear_listas(bruto: Any) -> dict:
+    """
+    Revalida o que foi lido do disco. Um listas.json editado à mão perde só o item torto
+    (lista sem id/nome, id ou nome repetido, música com id inválido ou repetida); nunca derruba a rota.
+    """
+    doc: dict = {"versao": 0, "listas": []}
+    if not isinstance(bruto, dict):
+        return doc
+    doc["versao"] = _inteiro(bruto.get("versao"), 0, 2**31, 0)
+    brutas = bruto.get("listas")
+    ids_vistos: set[str] = set()
+    nomes_vistos: set[str] = set()
+    for lista in (brutas[:LISTAS_MAX] if isinstance(brutas, list) else []):
+        if not isinstance(lista, dict):
+            continue
+        ident, nome = lista.get("id"), lista.get("nome")
+        if (not isinstance(ident, str) or not RE_LISTA_ID.fullmatch(ident) or ident in ids_vistos):
+            continue
+        nome = programacao.texto_limpo(nome, LISTA_NOME_MAX, multilinha=False)   # a mesma regra do POST
+        if nome is None or nome.casefold() in nomes_vistos:
+            continue
+        faixas: list[dict[str, str]] = []
+        musicas_vistas: set[str] = set()
+        itens = lista.get("musicas")
+        for m in (itens[:LISTA_MUSICAS_MAX] if isinstance(itens, list) else []):
+            mid = m.get("id") if isinstance(m, dict) else None
+            if not isinstance(mid, str) or not musicas.RE_ID.fullmatch(mid) or mid in musicas_vistas:
+                continue
+            musicas_vistas.add(mid)
+            faixas.append({"id": mid, "titulo": _titulo_guardado(m.get("titulo"))})
+        ids_vistos.add(ident)
+        nomes_vistos.add(nome.casefold())
+        doc["listas"].append({
+            "id": ident, "nome": nome, "versao": _inteiro(lista.get("versao"), 1, 2**31, 1),
+            "atualizada_em": _inteiro(lista.get("atualizada_em"), 0, 2**40, 0), "musicas": faixas,
+        })
+    return doc
+
+
+# Armazém: o MESMO do programacao.json (programacao.ArquivoJson): cache validado por os.stat, gravação
+# atômica com DACL antes dos dados e cópia "<nome>.corrompido-*" se o arquivo ficar ilegível. Regra:
+# quem lê NÃO muda o que recebe; quem grava monta uma cópia (copy.deepcopy), grava e troca o cache.
+_listas_arquivo = programacao.ArquivoJson(
+    _listas_path, lambda: {"versao": 0, "listas": []}, lambda bruto: _sanear_listas(bruto),
+    lambda caminho: _restringir_acl_windows(caminho), rotulo=LISTAS_ARQUIVO, prefixo=".listas.")
+
+
+def listas_ler() -> dict:
+    """
+    Documento atual {"versao", "listas": [{id, nome, versao, atualizada_em, musicas: [{id, titulo}]}]}.
+    SOMENTE LEITURA (é o cache): quem quiser alterar usa copy.deepcopy. Relê o disco só quando o
+    arquivo mudou (um os.stat por chamada). Arquivo ilegível: mantém o último documento válido.
+    """
+    return _listas_arquivo.ler()
+
+
+def lista_obter(lista_id: Any) -> dict | None:
+    """A lista (registro do cache, SOMENTE LEITURA) ou None. Para a programação (etapa 2) também."""
+    if not isinstance(lista_id, str) or not RE_LISTA_ID.fullmatch(lista_id):
+        return None
+    return next((lista for lista in listas_ler()["listas"] if lista["id"] == lista_id), None)
+
+
+def _tocador_vivo() -> bool:
+    """True se a aba "Tocador da loja" mandou sinal nos últimos YOUTUBE_PLAYER_TIMEOUT segundos."""
+    with _yt_estado_lock:
+        beat = _yt_estado["last_heartbeat"]
+        return beat is not None and (time.monotonic() - beat) < YOUTUBE_PLAYER_TIMEOUT
+
+
+def _resumo_lista(lista: dict) -> dict[str, Any]:
+    """Visão de lista para o GET geral. `disponiveis` é None enquanto a pasta ainda não foi lida."""
+    pronto = ACERVO.pronto
+    return {
+        "id": lista["id"], "nome": lista["nome"], "versao": lista["versao"], "atualizada_em": lista["atualizada_em"],
+        "total": len(lista["musicas"]),
+        "disponiveis": sum(1 for m in lista["musicas"] if ACERVO.obter(m["id"]) is not None) if pronto else None,
+    }
+
+
+def _detalhe_lista(lista: dict) -> dict[str, Any]:
+    """Resumo + as músicas na ordem da lista. Indisponível = só o id e o título que foi guardado."""
+    pronto = ACERVO.pronto
+    itens: list[dict[str, Any]] = []
+    for e in lista["musicas"]:
+        m = ACERVO.obter(e["id"])
+        if m is not None:
+            itens.append({**m.publico(), "disponivel": True})
+        else:
+            itens.append({"id": e["id"], "titulo": e["titulo"] or None,
+                          "disponivel": False if pronto else None})
+    resumo = _resumo_lista(lista)
+    resumo["musicas"] = itens
+    return resumo
+
+
+def _limites_listas() -> dict[str, int]:
+    return {"listas": LISTAS_MAX, "nome": LISTA_NOME_MAX, "musicas": LISTA_MUSICAS_MAX}
+
+
+def _nome_de_lista(valor: Any) -> str:
+    """Nome: texto, strip, 1..40 caracteres, UMA linha, sem controle/formato/substituto/uso privado."""
+    nome, motivo = programacao.validar_texto(valor, LISTA_NOME_MAX, multilinha=False)
+    if motivo == "tipo":
+        raise ErroLista("O nome da lista é inválido.", campo="nome")
+    if motivo == "tamanho":
+        raise ErroLista(f"O nome da lista precisa ter de 1 a {LISTA_NOME_MAX} caracteres.", campo="nome")
+    if motivo == "caractere":
+        raise ErroLista("O nome da lista tem um caractere que não é permitido.", campo="nome")
+    return nome
+
+
+def _ids_de_musicas(valor: Any) -> list[str]:
+    """Lista de music_id: 0..500, formato do acervo, sem repetição (400 com o "indice" do problema)."""
+    if not isinstance(valor, list):
+        raise ErroLista("Campo 'musicas' inválido.", campo="musicas")
+    if len(valor) > LISTA_MUSICAS_MAX:
+        raise ErroLista(f"Cada lista pode ter no máximo {LISTA_MUSICAS_MAX} músicas.", campo="musicas")
+    vistos: set[str] = set()
+    for i, mid in enumerate(valor):
+        if not isinstance(mid, str) or not musicas.RE_ID.fullmatch(mid):
+            raise ErroLista(f"Música {i + 1} inválida.", campo="musicas", indice=i)
+        if mid in vistos:
+            raise ErroLista(f"A música {i + 1} já está na lista.", campo="musicas", indice=i)
+        vistos.add(mid)
+    return list(valor)
+
+
+def _faixas_da_lista(ids: list[str], anteriores: dict[str, str]) -> list[dict[str, str]]:
+    """
+    Monta as entradas {id, titulo}. Música presente no acervo: guarda o título atual. Fora do acervo:
+    só passa se JÁ estava na lista (re-salvar uma lista com indisponíveis) e conserva o título
+    antigo; senão 400 (id inventado ou de música removida). Pasta ainda não lida = 409 (não dá
+    para saber se a música existe; o painel tenta de novo).
+    """
+    faixas: list[dict[str, str]] = []
+    for i, mid in enumerate(ids):
+        m = ACERVO.obter(mid)
+        if m is not None:
+            faixas.append({"id": mid, "titulo": _titulo_guardado(m.titulo)})
+        elif mid in anteriores:
+            faixas.append({"id": mid, "titulo": anteriores[mid]})
+        elif not ACERVO.pronto:
+            raise ErroLista(MSG_LENDO_PASTA, 409, codigo="lendo_pasta")
+        else:
+            raise ErroLista(f"A música {i + 1} não está mais na pasta.", campo="musicas", indice=i)
+    return faixas
+
+
+def _limitar_escrita_listas() -> None:
+    if excedeu_limite("listas:" + (request.remote_addr or "?"), LISTAS_ESCRITA_MAX_POR_MIN, 60.0):
+        raise ErroLista("Muitas alterações seguidas. Aguarde um minuto.", 429)
+
+
+def _auditar_listas(acao: str, total: int) -> None:
+    """Quem (local/IP) e QUANTAS músicas. Nome da lista e ids nunca vão para o log."""
+    auditoria.info("acao=%s ip=%s origem=%s total=%d", acao, request.remote_addr or "?",
+                   "local" if _requisicao_local() else "remoto", total)
+
+
+def _versao_da_lista(corpo: dict) -> int:
+    v = corpo.get("versao")
+    if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 2**31:
+        raise ErroLista("Campo 'versao' inválido.", campo="versao")
+    return v
+
+
+def _lista_da_rota(lista_id: str) -> str:
+    """Formato do id na URL: id mal formado nem chega a procurar (404, como uma lista que não existe)."""
+    if not RE_LISTA_ID.fullmatch(lista_id):
+        raise ErroLista(MSG_LISTA_NAO_EXISTE, 404)
+    return lista_id
+
+
+def _nome_em_uso(doc: dict, nome: str, exceto: str | None = None) -> bool:
+    chave = nome.casefold()
+    return any(lista["nome"].casefold() == chave and lista["id"] != exceto for lista in doc["listas"])
+
+
+@app.get("/api/listas")
+def listas_listar() -> Response:
+    """Resumo de todas as listas (sem as músicas; para elas há GET /api/listas/<id>)."""
+    doc = listas_ler()
+    return jsonify({"ok": True, "versao": doc["versao"], "limites": _limites_listas(),
+                    "acervo_pronto": ACERVO.pronto,
+                    "listas": [_resumo_lista(lista) for lista in doc["listas"]]})
+
+
+@app.get("/api/listas/<lista_id>")
+def listas_detalhe(lista_id: str) -> Response:
+    """Uma lista com as músicas, na ordem. Músicas que sumiram: disponivel false."""
+    lista = lista_obter(_lista_da_rota(lista_id))
+    if lista is None:
+        raise ErroLista(MSG_LISTA_NAO_EXISTE, 404)
+    return jsonify({"ok": True, "limites": _limites_listas(), "lista": _detalhe_lista(lista)})
+
+
+@app.post("/api/listas")
+def listas_criar() -> tuple[Response, int]:
+    """Cria uma lista {nome, musicas?}. Ordem: 400, 429, 409 (limite / nome repetido)."""
+    request.max_content_length = LISTAS_CORPO_MAX
+    corpo = corpo_json()
+    if set(corpo) - _LISTA_CHAVES_CRIAR:
+        raise ErroLista("Campo desconhecido.", campo="chave")
+    nome = _nome_de_lista(corpo.get("nome"))
+    ids = _ids_de_musicas(corpo.get("musicas", []))
+    _limitar_escrita_listas()
+    with _listas_arquivo.lock:
+        doc = copy.deepcopy(listas_ler())
+        if len(doc["listas"]) >= LISTAS_MAX:
+            raise ErroLista(f"Você já tem {LISTAS_MAX} listas. Apague alguma para criar outra.", 409,
+                            codigo="limite_listas")
+        if _nome_em_uso(doc, nome):
+            raise ErroLista("Já existe uma lista com esse nome.", 409, codigo="nome_repetido", campo="nome")
+        faixas = _faixas_da_lista(ids, {})
+        usados = {lista["id"] for lista in doc["listas"]}
+        while True:
+            ident = secrets.token_hex(4)
+            if ident not in usados:
+                break
+        nova = {"id": ident, "nome": nome, "versao": 1, "atualizada_em": int(time.time()), "musicas": faixas}
+        doc["listas"].append(nova)
+        doc["versao"] += 1
+        _listas_arquivo.gravar(doc)
+    _auditar_listas("lista_criar", len(faixas))
+    return jsonify({"ok": True, "versao": doc["versao"], "lista": _detalhe_lista(nova)}), 201
+
+
+@app.post("/api/listas/<lista_id>")
+def listas_salvar(lista_id: str) -> Response:
+    """
+    Renomeia e/ou define as músicas (lista INTEIRA, na ordem). {versao, nome?, musicas?} com pelo
+    menos um dos dois. Ordem: 404 (id mal formado), 400, 429, 404 (lista), 409 (versão / nome).
+    """
+    _lista_da_rota(lista_id)
+    request.max_content_length = LISTAS_CORPO_MAX
+    corpo = corpo_json()
+    if set(corpo) - _LISTA_CHAVES_SALVAR:
+        raise ErroLista("Campo desconhecido.", campo="chave")
+    versao = _versao_da_lista(corpo)
+    if "nome" not in corpo and "musicas" not in corpo:
+        raise ErroLista("Informe o nome e/ou as músicas.", campo="chave")
+    nome = _nome_de_lista(corpo["nome"]) if "nome" in corpo else None
+    ids = _ids_de_musicas(corpo["musicas"]) if "musicas" in corpo else None
+    _limitar_escrita_listas()
+    with _listas_arquivo.lock:
+        doc = copy.deepcopy(listas_ler())
+        lista = next((x for x in doc["listas"] if x["id"] == lista_id), None)
+        if lista is None:
+            raise ErroLista(MSG_LISTA_NAO_EXISTE, 404)
+        if versao != lista["versao"]:
+            raise ErroLista(MSG_LISTA_VERSAO_MUDOU, 409, codigo="versao_mudou")
+        if nome is not None and _nome_em_uso(doc, nome, exceto=lista_id):
+            raise ErroLista("Já existe uma lista com esse nome.", 409, codigo="nome_repetido", campo="nome")
+        if ids is not None:
+            lista["musicas"] = _faixas_da_lista(ids, {e["id"]: e["titulo"] for e in lista["musicas"]})
+        if nome is not None:
+            lista["nome"] = nome
+        lista["versao"] += 1
+        lista["atualizada_em"] = int(time.time())
+        doc["versao"] += 1
+        _listas_arquivo.gravar(doc)
+    _auditar_listas("lista_salvar", len(lista["musicas"]))
+    return jsonify({"ok": True, "versao": doc["versao"], "lista": _detalhe_lista(lista)})
+
+
+@app.post("/api/listas/<lista_id>/apagar")
+def listas_apagar(lista_id: str) -> Response:
+    """Apaga a lista {versao}. As músicas continuam na pasta; só a lista some."""
+    _lista_da_rota(lista_id)
+    corpo = corpo_json()
+    if set(corpo) - {"versao"}:
+        raise ErroLista("Campo desconhecido.", campo="chave")
+    versao = _versao_da_lista(corpo)
+    _limitar_escrita_listas()
+    with _listas_arquivo.lock:
+        doc = copy.deepcopy(listas_ler())
+        lista = next((x for x in doc["listas"] if x["id"] == lista_id), None)
+        if lista is None:
+            raise ErroLista(MSG_LISTA_NAO_EXISTE, 404)
+        if versao != lista["versao"]:
+            raise ErroLista(MSG_LISTA_VERSAO_MUDOU, 409, codigo="versao_mudou")
+        doc["listas"].remove(lista)
+        doc["versao"] += 1
+        _listas_arquivo.gravar(doc)
+    _auditar_listas("lista_apagar", len(lista["musicas"]))
+    return jsonify({"ok": True, "versao": doc["versao"]})
+
+
+def tocar_lista(lista_id: str, embaralhar: bool = False) -> dict[str, Any]:
+    """
+    Toca uma lista no Tocador da loja: o MESMO mecanismo do "Tocar pasta" (fila esvaziada, músicas
+    entram, a primeira sai da fila e vai num comando "load" para a aba). Sem contexto de
+    requisição: a rota e a programação (etapa 2) chamam esta função.
+    Levanta ErroLista: 404 (lista não existe / nenhuma música dela está na pasta), 409 com "codigo"
+    "sem_tocador" (nenhuma aba Tocador viva; NADA é mexido na fila) ou "lendo_pasta".
+    Devolve {total, adicionados, indisponiveis, cortados, queue_version, primeiro, id}.
+    """
+    lista = lista_obter(lista_id)
+    if lista is None:
+        raise ErroLista(MSG_LISTA_NAO_EXISTE, 404)
+    if not ACERVO.pronto:
+        raise ErroLista(MSG_LENDO_PASTA, 409, codigo="lendo_pasta")
+    if not _tocador_vivo():   # aviso cedo e claro; é conferido de novo, sob o lock, antes de mexer na fila
+        raise ErroLista(MSG_SEM_TOCADOR, 409, codigo="sem_tocador")
+    achadas = [m for m in (ACERVO.obter(e["id"]) for e in lista["musicas"]) if m is not None]
+    if not achadas:
+        raise ErroLista("Nenhuma música dessa lista está na pasta.", 404, codigo="sem_musicas")
+    if embaralhar:
+        random.shuffle(achadas)
+    # Ordem de locks igual à do play_now: estado -> fila. O tocador precisa estar vivo ANTES de a
+    # fila antiga ser trocada (senão a lista ficaria na fila sem ninguém para tocá-la).
+    with _yt_estado_lock:
+        beat = _yt_estado["last_heartbeat"]
+        if beat is None or (time.monotonic() - beat) >= YOUTUBE_PLAYER_TIMEOUT:
+            raise ErroLista(MSG_SEM_TOCADOR, 409, codigo="sem_tocador")
+        novos, cortados, versao_fila, primeiro = _adicionar_arquivos(
+            achadas, posicao="fim", substituir=True, tirar_primeiro=True)
+    comando = youtube_enqueue("load", _params_load(primeiro)) if primeiro is not None else None
+    return {
+        "total": len(lista["musicas"]), "adicionados": len(novos),
+        "indisponiveis": len(lista["musicas"]) - len(achadas), "cortados": cortados,
+        "queue_version": versao_fila, "primeiro": _item_publico(primeiro) if primeiro else None,
+        "id": comando,
+    }
+
+
+@app.post("/api/listas/<lista_id>/tocar")
+def listas_tocar(lista_id: str) -> Response:
+    """Toca a lista {embaralhar?}. 404 (lista / sem músicas), 409 (sem Tocador vivo), 429."""
+    _lista_da_rota(lista_id)
+    corpo = corpo_json()
+    if set(corpo) - {"embaralhar"}:
+        raise ErroLista("Campo desconhecido.", campo="chave")
+    embaralhar = corpo.get("embaralhar", False)
+    if not isinstance(embaralhar, bool):
+        raise ErroLista("Campo 'embaralhar' inválido.", campo="embaralhar")
+    if excedeu_limite("listas-tocar:" + (request.remote_addr or "?"), LISTAS_TOCAR_MAX_POR_10S, 10.0):
+        raise ErroLista("Muitos pedidos seguidos. Aguarde um instante.", 429)
+    resultado = tocar_lista(lista_id, embaralhar)
+    _auditar_listas("lista_tocar", resultado["adicionados"])
+    return jsonify({"ok": True, **resultado})
+
+
+# ---------------------------------------------------------------------------
+# Programação de horários (contrato v2.6, etapa 2)
+# Toca no horário marcado: um áudio da pasta de músicas, uma lista ou um anúncio de texto.
+# O relógio, a validação, o dedupe e o histórico moram em programacao.py (sem áudio nem Flask); aqui
+# ficam o armazenamento, as rotas e a EXECUÇÃO, que reaproveita o caminho dos anúncios:
+#   * áudio e anúncio usam a trava `_anuncio_lock` (um som por vez; um anúncio manual recebe 409
+#     "Programação tocando: <nome>") e a thread de áudio única (executar_no_audio), pela saída fixada
+#     em "Som da loja" quando houver; funcionam com o navegador fechado;
+#   * no horário a música que estiver tocando (aba Tocador e Spotify) é PAUSADA e, no `finally`,
+#     retomada de onde parou, SÓ o que estava tocando e só se continua a mesma faixa;
+#   * lista = tocar_lista() (troca a música; precisa da aba Tocador aberta).
+# Dados em programacao.json ao lado do config.json (mesmo motivo das listas: o config guarda segredos
+# e é regravado o tempo todo). Nada de nome, texto ou id vai para o log ou para a auditoria.
+# ---------------------------------------------------------------------------
+PROGRAMACAO_ARQUIVO = "programacao.json"
+PROGRAMACAO_VISTO_ARQUIVO = "programacao.visto.json"
+PROG_CORPO_MAX = 60 * 1024               # 100 itens x ate 500 caracteres acentuados passam dos 16 KB globais
+PROG_ESCRITA_MAX_POR_MIN = 20            # POST /api/programacao, por IP
+PROG_TESTAR_MAX_POR_MIN = 6              # POST .../testar, por IP
+PROG_PARAR_MAX_POR_MIN = 20              # POST .../parar, por IP
+PROG_AUDIO_TETO_S = 600.0                # teto do ÁUDIO agendado (10 min); os anúncios continuam em 80 s
+PROG_AUDIO_MARGEM_S = 20.0               # folga do executor de áudio sobre o teto do laço de reprodução
+PROG_AUDIO_FOLGA_PROP = 1.15             # teto do laço = duração dos metadados x 1,15 + 10 s (mp3 VBR sem Xing)
+PROG_AUDIO_FOLGA_S = 10.0
+PROG_AUDIO_DIA_MAX_S = 3600.0            # soma dos áudios agendados ATIVOS por dia da semana (60 min)
+PROG_FORMATOS_AUDIO = frozenset({"mp3", "ogg", "wav", "flac"})   # os que o pygame toca; m4a/aac/opus não
+PROG_PAUSA_FOLGA_S = 0.4                 # dá tempo de a aba Tocador pausar antes de o som começar
+PROG_RETOMAR_TENTATIVAS = 3              # play do Spotify no fim (a API às vezes falha uma vez)
+PROG_RETOMAR_ESPERA_S = 1.5
+PROG_ESPERA_TOCADOR_S = 15.0             # lista agendada: quanto esperar a aba Tocador reconectar (religou há pouco)
+PROG_ESPERA_ACERVO_S = 10.0              # logo depois de ligar: quanto esperar a 1ª leitura da pasta de músicas
+MSG_PROG_NAO_EXISTE = "Esse horário não existe mais. Recarregue a programação."
+MSG_PROG_VERSAO_MUDOU = "Outro aparelho mudou a programação. Recarregue para ver a versão atual."
+MSG_SPOTIFY_NAO_PAUSOU = "A música do Spotify não pôde ser pausada durante a programação."
+MSG_SPOTIFY_NAO_VOLTOU = "O Spotify não voltou a tocar sozinho; toque em Play no painel."
+MSG_TOCADOR_SUMIU = "O Tocador da loja fechou durante a programação; a música não foi retomada."
+_prog_dormir = time.sleep                # os testes trocam por um relógio de mentira
+
+
+class ErroProg(ErroMensagem):
+    """Erro de /api/programacao: o mesmo formato do /api/mensagens ({ok, error, codigo?, campo?, indice?})."""
+
+
+@app.errorhandler(programacao.ErroValidacao)
+def _tratar_erro_validacao_prog(e: programacao.ErroValidacao) -> tuple[Response, int]:
+    corpo: dict[str, Any] = {"ok": False, "error": e.mensagem}
+    for chave, valor in (("codigo", e.codigo), ("campo", e.campo), ("indice", e.indice)):
+        if valor is not None:
+            corpo[chave] = valor
+    return jsonify(corpo), e.status
+
+
+def _prog_path() -> Path:
+    """programacao.json na pasta do config.json (os testes trocam CONFIG_PATH e levam este junto)."""
+    return CONFIG_PATH.with_name(PROGRAMACAO_ARQUIVO)
+
+
+def _prog_visto_path() -> Path:
+    return CONFIG_PATH.with_name(PROGRAMACAO_VISTO_ARQUIVO)
+
+
+_prog_arquivo = programacao.ArquivoJson(
+    _prog_path, lambda: {"versao": 0, "itens": []}, programacao.sanear_documento,
+    lambda caminho: _restringir_acl_windows(caminho))
+
+
+def _prog_nome(item: dict) -> str:
+    """Texto que identifica o item para o dono: o nome dele, senão o título/nome do alvo, senão a hora."""
+    if item.get("nome"):
+        return str(item["nome"])
+    if item.get("tipo") == "audio":
+        m = ACERVO.obter(item.get("alvo"))
+        return m.titulo if m is not None else f"Áudio das {item.get('hora')}"
+    if item.get("tipo") == "lista":
+        lista = lista_obter(item.get("alvo"))
+        return lista["nome"] if lista is not None else f"Lista das {item.get('hora')}"
+    return f"Anúncio das {item.get('hora')}"
+
+
+def _prog_auditar_execucao(registro: dict) -> None:
+    """Auditoria de cada execução: só tipo, origem e resultado (nunca nome, texto ou ids)."""
+    auditoria.info("acao=programacao_executar origem=%s tipo=%s status=%s motivo=%s",
+                   registro["origem"], registro["tipo"], registro["status"], registro["motivo"] or "-")
+
+
+def _msg_ocupado(padrao: str, sufixo: str = "") -> str:
+    """Mensagem do 409 de quem não conseguiu a trava de áudio: diz qual programação está tocando."""
+    t = PROGRAMACAO.tocando
+    return f"Programação tocando: {t['nome']}{sufixo}" if t else padrao
+
+
+# --- pausar e retomar a música --------------------------------------------------------------------
+def _estado_do_tocador() -> tuple[bool, bool, tuple]:
+    """(aba Tocador viva, está tocando, identidade da faixa = (source, video_id, music_id))."""
+    with _yt_estado_lock:
+        beat = _yt_estado["last_heartbeat"]
+        vivo = beat is not None and (time.monotonic() - beat) < YOUTUBE_PLAYER_TIMEOUT
+        return vivo, bool(_yt_estado["is_playing"]), (
+            _yt_estado["source"], _yt_estado["video_id"], _yt_estado["music_id"])
+
+
+def _retomar_musica(faixa_tocador: tuple | None, device_spotify: str | None, avisos: list[str]) -> None:
+    """Devolve a música que NÓS pausamos. Nunca levanta: o `finally` do áudio ainda precisa soltar a trava."""
+    if faixa_tocador is not None:
+        try:
+            vivo, _, faixa = _estado_do_tocador()
+            if not vivo:
+                avisos.append(MSG_TOCADOR_SUMIU)
+            elif faixa == faixa_tocador:   # outra faixa carregada nesse meio-tempo: não mexe
+                youtube_enqueue("play")
+                # A aba só avisa "estou tocando" no próximo sinal dela. Sem isto, o PRÓXIMO horário da fila
+                # (ex.: dois itens no mesmo minuto) ainda veria "pausado" e não pausaria a música.
+                with _yt_estado_lock:
+                    _yt_estado["is_playing"] = True
+        except Exception:  # noqa: BLE001
+            log.warning("Não foi possível retomar o Tocador da loja.", exc_info=True)
+    if device_spotify is not None:
+        voltou = False
+        for tentativa in range(PROG_RETOMAR_TENTATIVAS):
+            try:
+                status, _ = spotify_comando("PUT", "/me/player/play", params={"device_id": device_spotify},
+                                            json_body={}, critico=True)
+                if _sucesso(status):
+                    voltou = True
+                else:   # "restriction violated" quando já está tocando: confere no player
+                    dados = spotify_player_state(force=True)
+                    voltou = bool(dados and dados.get("is_playing"))
+            except Exception:  # noqa: BLE001
+                log.warning("Não foi possível retomar o Spotify.", exc_info=True)
+            if voltou:
+                break
+            if tentativa < PROG_RETOMAR_TENTATIVAS - 1:
+                _prog_dormir(PROG_RETOMAR_ESPERA_S)
+        if not voltou:
+            avisos.append(MSG_SPOTIFY_NAO_VOLTOU)
+
+
+def _pausar_spotify_se_tocando(avisos: list[str]) -> str | None:
+    """
+    Pausa o Spotify SÓ se estiver tocando. Devolve o device pausado (para quem for retomar) ou None
+    (não tocava, sem Spotify ou a pausa falhou: `avisos` recebe o motivo). Nunca levanta.
+    """
+    try:
+        device = spotify_active_device_id()
+        if not device:
+            return None
+        dados = spotify_player_state(force=True)
+        if dados and dados.get("is_playing"):
+            status, _ = spotify_comando("PUT", "/me/player/pause", params={"device_id": device},
+                                        critico=True)
+            if _sucesso(status):
+                return device
+            avisos.append(MSG_SPOTIFY_NAO_PAUSOU)
+    except Exception:  # noqa: BLE001
+        log.warning("Não foi possível pausar o Spotify.", exc_info=True)
+        avisos.append(MSG_SPOTIFY_NAO_PAUSOU)
+    return None
+
+
+@contextmanager
+def _musica_pausada(avisos: list[str] | None = None) -> Iterator[None]:
+    """
+    Pausa a música que estiver TOCANDO (aba Tocador e/ou Spotify) durante o bloco e, no `finally`,
+    retoma SÓ o que este bloco pausou. Quem não estava tocando não é tocado. `avisos` recebe os
+    textos do que deu errado (o histórico mostra).
+    """
+    avisos = avisos if avisos is not None else []
+    faixa_tocador: tuple | None = None
+    device_spotify: str | None = None
+    try:
+        vivo, tocando, faixa = _estado_do_tocador()
+        if vivo and tocando:
+            youtube_enqueue("pause")
+            faixa_tocador = faixa
+        device_spotify = _pausar_spotify_se_tocando(avisos)
+        if faixa_tocador is not None or device_spotify is not None:
+            _prog_dormir(PROG_PAUSA_FOLGA_S)
+        yield
+    finally:
+        _retomar_musica(faixa_tocador, device_spotify, avisos)
+
+
+# --- execução ---------------------------------------------------------------------------------------
+def _prog_aguardar_trava(ctx: programacao.Execucao) -> None:
+    """
+    Pega a trava de áudio. Com um anúncio manual tocando, tenta de novo a cada ~1 s até o prazo do
+    pedido (60 s depois do horário); passou disso, "não tocou". O desligamento corta a espera.
+    """
+    while True:
+        if _desligamento_agendado or _desligando.is_set():
+            raise programacao.NaoTocou("desligando", "O Proclamare estava sendo desligado.")
+        if _anuncio_lock.acquire(blocking=False):
+            return
+        restante = ctx.prazo_mono - ctx.monotonic()
+        if restante <= 0:
+            raise programacao.NaoTocou("ocupado", "Havia um anúncio tocando e não deu para esperar mais.")
+        if ctx.esperar(min(1.0, restante)):
+            raise programacao.NaoTocou("desligando", "O Proclamare estava sendo desligado.")
+
+
+def _prog_aguardar_tocador(ctx: programacao.Execucao) -> bool:
+    """
+    Logo depois de ligar o Proclamare, a aba Tocador (que já estava aberta) leva alguns segundos para
+    reconectar. Espera até PROG_ESPERA_TOCADOR_S (e nunca além do prazo do pedido) por um sinal dela.
+    """
+    fim = min(ctx.monotonic() + PROG_ESPERA_TOCADOR_S, ctx.prazo_mono)
+    while not _tocador_vivo():
+        if ctx.monotonic() >= fim or ctx.esperar(1.0):
+            return False
+    return True
+
+
+def _prog_executar_lista(item: dict, ctx: programacao.Execucao) -> dict:
+    """
+    Lista agendada = o "Tocar lista" (TROCA a música). Espera a 1ª leitura da pasta (recém-ligado) e a
+    aba Tocador reconectar; sem Tocador vivo: "não tocou". Se o Spotify estiver tocando ele é PAUSADO
+    e NÃO volta (a lista substitui a música); se a lista não chegar a tocar, o Spotify é devolvido.
+    """
+    _prog_aguardar_acervo(ctx)
+    if not _tocador_vivo() and not _prog_aguardar_tocador(ctx):
+        raise programacao.NaoTocou("tocador_fechado", "Tocador da loja fechado")
+    avisos: list[str] = []
+    device_spotify = _pausar_spotify_se_tocando(avisos)
+    tocou = False
+    try:
+        resultado = tocar_lista(item["alvo"], bool(item.get("embaralhar")))
+        tocou = True
+    except ErroLista as e:
+        if e.codigo == "sem_tocador":
+            raise programacao.NaoTocou("tocador_fechado", "Tocador da loja fechado") from None
+        if e.codigo == "lendo_pasta":
+            raise programacao.NaoTocou("lendo_pasta", "O Proclamare ainda estava lendo a pasta de músicas.") from None
+        if e.codigo == "sem_musicas":
+            raise programacao.NaoTocou("lista_sem_musicas", "Nenhuma música da lista está na pasta.") from None
+        if e.status == 404:
+            raise programacao.NaoTocou("lista_inexistente", "A lista não existe mais.") from None
+        raise
+    finally:
+        if not tocou and device_spotify is not None:   # a lista não tocou: a música que parou volta
+            _retomar_musica(None, device_spotify, [])
+    if resultado["cortados"]:
+        avisos.append(f"A fila do Tocador comporta {YOUTUBE_FILA_MAX} músicas; as {resultado['cortados']} "
+                      "últimas da lista não entraram.")
+    return {"aviso": " ".join(avisos) or None}
+
+
+def _prog_aguardar_acervo(ctx: programacao.Execucao) -> None:
+    """Logo depois de ligar, a 1ª leitura da pasta de músicas pode demorar: espera até 10 s por ela."""
+    fim = ctx.monotonic() + PROG_ESPERA_ACERVO_S
+    while not ACERVO.pronto:
+        if ctx.monotonic() >= fim or ctx.esperar(0.5):
+            raise programacao.NaoTocou("lendo_pasta", MSG_LENDO_PASTA)
+
+
+def _prog_musica_do_item(item: dict) -> "tuple[musicas.Musica, Path]":
+    """
+    O arquivo do item de áudio, conferido AGORA: existe, formato que o pygame toca, até 10 min e
+    (como o streaming) ainda dentro da pasta, arquivo comum, sem link/reparse. Devolve (música, caminho
+    real): quem toca usa o caminho real, nunca o registrado na última varredura.
+    """
+    m = ACERVO.obter(item["alvo"])
+    if m is None:
+        if not ACERVO.pronto:   # recém-ligado: "não achei" ainda não quer dizer "sumiu"
+            raise programacao.NaoTocou("lendo_pasta", MSG_LENDO_PASTA)
+        raise programacao.NaoTocou("sem_musica", "A música não está mais na pasta.")
+    if m.formato not in PROG_FORMATOS_AUDIO:
+        raise programacao.NaoTocou("formato", f"O formato .{m.formato} não toca em horário marcado.")
+    if m.duracao_s is not None and m.duracao_s > PROG_AUDIO_TETO_S:
+        raise programacao.NaoTocou("audio_longo", "O áudio passa de 10 minutos.")
+    real = ACERVO.caminho_seguro(m)
+    if real is None:   # trocado por link/arquivo de fora da pasta depois da varredura (TOCTOU)
+        raise programacao.NaoTocou("sem_musica", "A música não está mais na pasta.")
+    return m, real
+
+
+def _prog_teto_audio(m: "musicas.Musica") -> float:
+    """
+    Teto do laço de reprodução do áudio agendado. A duração dos metadados pode ficar abaixo da real (mp3
+    VBR sem cabeçalho Xing): folga de 15% + 10 s, sempre até 10 min. Sem duração: 10 min (o laço sai
+    quando a música acaba).
+    """
+    if m.duracao_s is None:
+        return PROG_AUDIO_TETO_S
+    return min(PROG_AUDIO_TETO_S, float(m.duracao_s) * PROG_AUDIO_FOLGA_PROP + PROG_AUDIO_FOLGA_S)
+
+
+def _prog_tocar_no_motor(caminho: Path, duracao: float | None, sinal: Any) -> bool:
+    """(Thread de áudio) Toca o arquivo da biblioteca pelo motor da saída fixada; teto próprio de 10 min."""
+    motor = SOM.motor
+    prazo = motor.agora() + PROG_AUDIO_TETO_S + PROG_AUDIO_MARGEM_S - 5.0   # antes do teto do executor
+    motor.tocar(caminho, prazo=prazo, duracao=duracao, parar=sinal, teto_s=PROG_AUDIO_TETO_S,
+                folga_proporcional=PROG_AUDIO_FOLGA_PROP - 1.0, margem_s=PROG_AUDIO_FOLGA_S)
+    return sinal.is_set()
+
+
+def _prog_tocar_arquivo(m: "musicas.Musica", real: Path, ctx: programacao.Execucao,
+                        som: dict | None) -> dict:
+    """
+    Áudio agendado: abre a saída ANTES de pausar a música, pausa, toca `real` (o caminho conferido; pelo
+    motor da saída fixada em "Som da loja" ou pelo mixer padrão), retoma. O arquivo da pasta NUNCA é apagado.
+    """
+    avisos: list[str] = []
+    teto = _prog_teto_audio(m)
+    espera_max = teto + PROG_AUDIO_MARGEM_S      # o laço de reprodução sempre sai antes do executor
+    try:
+        if som is not None:
+            _abrir_saida_som(SOM.candidatas_anuncio(som))
+        with _musica_pausada(avisos):
+            if som is not None:
+                cortado = executar_no_audio(_prog_tocar_no_motor, real, m.duracao_s, ctx.sinal,
+                                            timeout=espera_max)
+            else:
+                cortado = executar_no_audio(_reproduzir_legado, real, teto, ctx.sinal, timeout=espera_max)
+    except ErroSom as e:
+        raise programacao.NaoTocou(e.codigo or "sem_saida", e.mensagem, "erro") from None
+    except som_pkg.SaidaIndisponivel as e:
+        raise programacao.NaoTocou(e.codigo, e.mensagem, "erro") from None
+    except (som_pkg.ErroReproducao, TimeoutError) as e:
+        raise programacao.NaoTocou("falha_audio", str(e) or "A reprodução travou.", "erro") from None
+    except Exception as e:  # noqa: BLE001 - ex.: pygame.error "No file '<caminho>'": a mensagem traz o CAMINHO
+        log.error("Programação: falha ao tocar o áudio (%s).", type(e).__name__)
+        raise programacao.NaoTocou("falha_audio", "Não foi possível tocar o áudio.", "erro") from None
+    return {"interrompido": bool(cortado), "aviso": " ".join(avisos) or None}
+
+
+def _prog_falar(item: dict, ctx: programacao.Execucao, som: dict | None) -> dict:
+    """Anúncio de texto agendado: o fluxo de anúncio de sempre, PAUSANDO (não abaixando) a música."""
+    modo = item["motor"]
+    internet_ok = tem_internet()
+    if modo == "online" and not internet_ok:
+        raise programacao.NaoTocou("sem_internet", "Sem internet para o motor online.")
+    usar_online = internet_ok and modo != "offline"
+    try:
+        vozes = obter_vozes_offline()
+    except Exception:  # noqa: BLE001
+        vozes = None
+    voz_offline = vozes["default"] if vozes else None   # pt-BR quando houver
+    avisos: list[str] = []
+    contexto = functools.partial(_musica_pausada, avisos)
+    try:
+        if som is not None:
+            _, aviso, extra = _anunciar_na_saida(
+                item["alvo"], modo, VOZES_ONLINE[item["voz"]], item["velocidade"], voz_offline,
+                usar_online, som, contexto=contexto, parar=ctx.sinal)
+            if extra.get("aviso"):
+                avisos.append(extra["aviso"])
+        else:
+            _, aviso = _anunciar(item["alvo"], modo, VOZES_ONLINE[item["voz"]], item["velocidade"],
+                                 voz_offline, usar_online, contexto=contexto, parar=ctx.sinal)
+    except ErroSom as e:
+        raise programacao.NaoTocou(e.codigo or "sem_saida", e.mensagem, "erro") from None
+    except (som_pkg.ErroReproducao, TimeoutError) as e:
+        raise programacao.NaoTocou("falha_audio", str(e) or "A reprodução travou.", "erro") from None
+    if aviso:
+        avisos.append(aviso)
+    return {"interrompido": ctx.sinal.is_set(), "aviso": " ".join(avisos) or None}
+
+
+def _prog_executar_som(item: dict, ctx: programacao.Execucao) -> dict:
+    """Áudio ou anúncio: com a trava de áudio (a da requisição, no "Tocar agora", ou esperando por ela)."""
+    tem_trava = ctx.lock_tomado
+    try:
+        if not tem_trava:
+            _prog_aguardar_trava(ctx)
+            tem_trava = True
+        if _desligamento_agendado or _desligando.is_set():
+            raise programacao.NaoTocou("desligando", "O Proclamare estava sendo desligado.")
+        if item["tipo"] == "audio":
+            _prog_aguardar_acervo(ctx)
+        musica = _prog_musica_do_item(item) if item["tipo"] == "audio" else None   # (música, caminho real)
+        if not SOM.motor_ok:   # contaminado: o pygame ficou preso numa thread órfã
+            raise programacao.NaoTocou("motor_travado", "O áudio do Proclamare travou. Reinicie o Proclamare.",
+                                       "erro")
+        som = SOM.config_som()
+        if som is not None and som["saida_anuncio"] is None:
+            som = None   # sem saída fixada: o fluxo é o de sempre (mixer padrão do Windows)
+        ctx.comecou()
+        log.info("Programação: tocando um item (tipo=%s, origem=%s).", item["tipo"], ctx.origem)
+        if musica is not None:
+            return _prog_tocar_arquivo(musica[0], musica[1], ctx, som)
+        return _prog_falar(item, ctx, som)
+    finally:
+        if tem_trava:
+            _anuncio_lock.release()
+
+
+def _prog_executar(item: dict, ctx: programacao.Execucao) -> dict | None:
+    """O que o agendador chama (thread própria): despacha por tipo. Levanta NaoTocou ou Exception."""
+    if item["tipo"] == "lista":
+        if _desligamento_agendado or _desligando.is_set():
+            raise programacao.NaoTocou("desligando", "O Proclamare estava sendo desligado.")
+        return _prog_executar_lista(item, ctx)
+    return _prog_executar_som(item, ctx)
+
+
+def _prog_criar_servico(**ajustes: Any) -> programacao.Programacao:
+    """O agendador ligado ao armazenamento e à execução deste servidor (os testes passam relógios falsos)."""
+    padrao: dict[str, Any] = dict(
+        itens=lambda: _prog_arquivo.ler()["itens"],
+        executar=_prog_executar,
+        nome_do_item=_prog_nome,
+        ler_visto=lambda: programacao.ler_visto_arquivo(_prog_visto_path()),
+        gravar_visto=lambda quando: programacao.gravar_visto_arquivo(_prog_visto_path(), quando),
+        auditar=_prog_auditar_execucao,
+    )
+    padrao.update(ajustes)
+    return programacao.Programacao(**padrao)
+
+
+PROGRAMACAO = _prog_criar_servico()   # as threads só ligam no main() (PROGRAMACAO.iniciar())
+
+
+# --- rotas --------------------------------------------------------------------------------------------
+def _prog_limites() -> dict[str, Any]:
+    return {"itens": programacao.ITENS_MAX, "nome": programacao.NOME_MAX, "texto": programacao.TEXTO_MAX,
+            "texto_total": programacao.TEXTO_TOTAL_MAX, "historico": programacao.HISTORICO_MAX,
+            "audio_max_s": int(PROG_AUDIO_TETO_S), "audio_dia_max_s": int(PROG_AUDIO_DIA_MAX_S),
+            "formatos_audio": sorted(PROG_FORMATOS_AUDIO)}
+
+
+def _prog_alvo_info(item: dict) -> tuple[str | None, bool | None, str | None]:
+    """
+    (nome do alvo, alvo_ok, alvo_motivo). ok=None enquanto a pasta de músicas não foi lida. `motivo`
+    (só quando ok é False): "sem_musica" | "formato" | "audio_longo" | "lista_inexistente".
+    """
+    if item["tipo"] == "audio":
+        m = ACERVO.obter(item["alvo"])
+        if m is None:
+            return None, (False if ACERVO.pronto else None), ("sem_musica" if ACERVO.pronto else None)
+        if m.formato not in PROG_FORMATOS_AUDIO:
+            return m.titulo, False, "formato"
+        if m.duracao_s is not None and m.duracao_s > PROG_AUDIO_TETO_S:
+            return m.titulo, False, "audio_longo"   # o arquivo cresceu depois de agendado
+        return m.titulo, True, None
+    if item["tipo"] == "lista":
+        lista = lista_obter(item["alvo"])
+        return (lista["nome"], True, None) if lista is not None else (None, False, "lista_inexistente")
+    return None, True, None
+
+
+def _prog_item_publico(item: dict, agora: datetime) -> dict[str, Any]:
+    alvo_nome, alvo_ok, alvo_motivo = _prog_alvo_info(item)
+    proxima = programacao.proxima_ocorrencia(item, agora) if item["ativo"] else None
+    return {**item, "rotulo": _prog_nome(item), "alvo_nome": alvo_nome, "alvo_ok": alvo_ok,
+            "alvo_motivo": alvo_motivo,
+            "proxima": proxima.isoformat(timespec="seconds") if proxima else None}
+
+
+def _prog_agora_json(agora: datetime) -> dict[str, Any]:
+    try:
+        deslocamento = agora.astimezone().strftime("%z")
+        fuso = f"{deslocamento[:3]}:{deslocamento[3:]}" if len(deslocamento) == 5 else None
+    except (ValueError, OSError, OverflowError):
+        fuso = None
+    return {"iso": agora.isoformat(timespec="seconds"), "data": agora.date().isoformat(),
+            "hora": agora.strftime("%H:%M"), "dia_semana": programacao.dia_da_semana(agora.date()),
+            "fuso": fuso}
+
+
+def _prog_resposta() -> Response:
+    """Formato único do GET e do POST: {ok, versao, agora, limites, itens, proximas, historico, tocando}."""
+    doc = _prog_arquivo.ler()
+    agora = PROGRAMACAO.agora()
+    itens = [_prog_item_publico(i, agora) for i in doc["itens"]]
+    por_id = {i["id"]: i for i in itens}
+    proximas = [{**p, "tipo": por_id[p["id"]]["tipo"], "rotulo": por_id[p["id"]]["rotulo"],
+                 "hora": por_id[p["id"]]["hora"]}
+                for p in PROGRAMACAO.proximas(agora) if p["id"] in por_id]
+    return jsonify({"ok": True, "versao": doc["versao"], "agora": _prog_agora_json(agora),
+                    "limites": _prog_limites(), "acervo_pronto": ACERVO.pronto,
+                    "tocador_vivo": _tocador_vivo(), "itens": itens, "proximas": proximas,
+                    "historico": PROGRAMACAO.historico(), "tocando": PROGRAMACAO.tocando})
+
+
+def _prog_checar_alvo(tipo: str, alvo: str, ja_existia: bool, indice: int) -> None:
+    """Parte da validação que só o servidor sabe: a música/lista existem; o áudio é de um formato e tamanho que tocam."""
+    n = indice + 1
+    if tipo == "audio":
+        if ja_existia:
+            # Re-salvar a lista inteira não pode falhar por um item que NÃO mudou: música que sumiu,
+            # trocada por um formato que não toca ou que ficou longa demais. O aviso fica na etiqueta
+            # do item (alvo_ok) e no histórico ("não tocou"), que é onde o dono olha.
+            return
+        m = ACERVO.obter(alvo)
+        if m is None:
+            if not ACERVO.pronto:
+                raise programacao.ErroValidacao(MSG_LENDO_PASTA, 409, campo="alvo", indice=indice,
+                                                codigo="lendo_pasta")
+            raise programacao.ErroValidacao(f"Horário {n}: a música não está mais na pasta.",
+                                            campo="alvo", indice=indice, codigo="musica_inexistente")
+        if m.formato not in PROG_FORMATOS_AUDIO:
+            raise programacao.ErroValidacao(
+                f"Horário {n}: arquivos .{m.formato} não tocam em horário marcado. Use mp3, ogg, wav ou "
+                "flac (converta o arquivo).", campo="alvo", indice=indice, codigo="formato_nao_suportado")
+        if m.duracao_s is not None and m.duracao_s > PROG_AUDIO_TETO_S:
+            raise programacao.ErroValidacao(
+                f"Horário {n}: o áudio passa de {int(PROG_AUDIO_TETO_S // 60)} minutos.",
+                campo="alvo", indice=indice, codigo="audio_longo")
+    elif tipo == "lista" and not ja_existia and lista_obter(alvo) is None:
+        raise programacao.ErroValidacao(f"Horário {n}: essa lista não existe.", campo="alvo", indice=indice,
+                                        codigo="lista_inexistente")
+
+
+_NOMES_DIAS = ("domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado")
+
+
+def _prog_audio_por_dia(itens: list[dict]) -> list[float]:
+    """
+    Segundos de ÁUDIO agendado ATIVO por dia da semana (0 = domingo). Item de data única conta no dia da
+    semana dessa data; áudio sem duração conhecida conta o teto de 10 min; música que sumiu não toca (0).
+    """
+    por_dia = [0.0] * 7
+    for item in itens:
+        if item["tipo"] != "audio" or not item.get("ativo"):
+            continue
+        m = ACERVO.obter(item["alvo"])
+        if m is None:
+            continue
+        duracao = float(m.duracao_s) if m.duracao_s is not None else PROG_AUDIO_TETO_S
+        dias = item.get("dias") or [programacao.dia_da_semana(date.fromisoformat(item["data"]))]
+        for dia in dias:
+            por_dia[dia] += duracao
+    return por_dia
+
+
+def _prog_checar_limite_diario(novos: list[dict], atuais: list[dict]) -> None:
+    """
+    Teto de áudio agendado por dia (PROG_AUDIO_DIA_MAX_S): um aparelho com o PIN não pode deixar o
+    PC da loja tocando horas de áudio por dia, todo dia. Só recusa o que PIORA um dia que passou do
+    limite (uma programação já grande não impede de desativar ou apagar horários).
+    """
+    depois, antes = _prog_audio_por_dia(novos), _prog_audio_por_dia(atuais)
+    for dia in range(7):
+        if depois[dia] > PROG_AUDIO_DIA_MAX_S and depois[dia] > antes[dia]:
+            raise ErroProg(
+                f"Os áudios agendados somam mais de {int(PROG_AUDIO_DIA_MAX_S // 60)} minutos por dia "
+                f"({_NOMES_DIAS[dia]}). Desative ou remova algum horário de áudio.",
+                codigo="limite_diario", campo="alvo")
+
+
+def _prog_sem_origem(item: dict) -> dict:
+    return {k: v for k, v in item.items() if k != "origem"}
+
+
+def _prog_marcar_origem(final: list[dict], atuais: list[dict]) -> None:
+    """
+    "origem" ("local" | "remoto") = de onde veio a última criação/alteração do item. É o SERVIDOR que
+    decide (o cliente não pode mandar o campo): item novo ou alterado leva a origem desta requisição;
+    item que não mudou conserva a que já tinha.
+    """
+    origem = "local" if _requisicao_local() else "remoto"
+    antigos = {i["id"]: i for i in atuais}
+    for item in final:
+        antigo = antigos.get(item["id"])
+        if antigo is not None and _prog_sem_origem(antigo) == _prog_sem_origem(item):
+            if antigo.get("origem") in programacao.ORIGENS_ITEM:
+                item["origem"] = antigo["origem"]
+        else:
+            item["origem"] = origem
+
+
+def _prog_contar_remotos() -> int:
+    """Quantos horários foram criados/alterados por aparelhos remotos (para o aviso ao trocar o PIN)."""
+    return sum(1 for i in _prog_arquivo.ler()["itens"] if i.get("origem") == "remoto")
+
+
+def _auditar_programacao(acao: str, total: int) -> None:
+    """Quem (local/IP) e QUANTOS horários. Nome, texto e ids nunca vão para o log."""
+    auditoria.info("acao=%s ip=%s origem=%s total=%d", acao, request.remote_addr or "?",
+                   "local" if _requisicao_local() else "remoto", total)
+
+
+@app.get("/api/programacao")
+def programacao_listar() -> Response:
+    return _prog_resposta()
+
+
+@app.post("/api/programacao")
+def programacao_salvar() -> Response:
+    """
+    Substitui a programação INTEIRA {versao, itens}. Ordem: 400, 429, 409 (versão / pasta sendo lida).
+    O corpo é validado antes de gastar a cota de gravações (um 400 não conta).
+    """
+    request.max_content_length = PROG_CORPO_MAX   # só nesta rota; antes de ler o corpo
+    corpo = corpo_json()
+    atuais = {i["id"]: i for i in _prog_arquivo.ler()["itens"]}
+    versao, novos = programacao.validar_corpo(
+        corpo, atuais=atuais, hoje=PROGRAMACAO.agora().date(), checar_alvo=_prog_checar_alvo)
+    _prog_checar_limite_diario(novos, list(atuais.values()))
+    if excedeu_limite("programacao:" + (request.remote_addr or "?"), PROG_ESCRITA_MAX_POR_MIN, 60.0):
+        raise ErroProg("Muitas alterações seguidas. Aguarde um minuto.", 429)
+    with _prog_arquivo.lock:
+        doc = copy.deepcopy(_prog_arquivo.ler())
+        if versao != doc["versao"]:
+            raise ErroProg(MSG_PROG_VERSAO_MUDOU, 409, codigo="versao_mudou")
+        existentes = {i["id"] for i in doc["itens"]}
+        usados = existentes | {i["id"] for i in novos if "id" in i}
+        final: list[dict] = []
+        for indice, item in enumerate(novos):
+            if "id" not in item:
+                item = {"id": programacao.novo_id(usados), **item}
+                usados.add(item["id"])
+            elif item["id"] not in existentes:   # só acontece se o arquivo foi editado à mão entre a leitura e o lock
+                raise ErroProg(MSG_PROG_NAO_EXISTE, campo="id", indice=indice)
+            final.append({"id": item["id"], **{k: v for k, v in item.items() if k != "id"}})
+        _prog_marcar_origem(final, doc["itens"])
+        doc["itens"] = final
+        doc["versao"] += 1
+        _prog_arquivo.gravar(doc)
+    _auditar_programacao("programacao_salvar", len(final))
+    return _prog_resposta()
+
+
+@app.post("/api/programacao/<item_id>/testar")
+def programacao_testar(item_id: str) -> tuple[Response, int]:
+    """
+    "Tocar agora": executa o item já (mesmo pausar/retomar), mesmo inativo. Responde 202 e toca em segundo
+    plano. Ordem: 404 (id/horário), 400, 429, 409 (anúncio ou programação tocando / sem Tocador).
+    """
+    if not programacao.RE_ITEM_ID.fullmatch(item_id):
+        raise ErroProg(MSG_PROG_NAO_EXISTE, 404)
+    if corpo_json():
+        raise ErroProg("Campo desconhecido.", campo="chave")
+    item = next((i for i in _prog_arquivo.ler()["itens"] if i["id"] == item_id), None)
+    if item is None:
+        raise ErroProg(MSG_PROG_NAO_EXISTE, 404)
+    if excedeu_limite("prog-testar:" + (request.remote_addr or "?"), PROG_TESTAR_MAX_POR_MIN, 60.0):
+        raise ErroProg("Muitos pedidos seguidos. Aguarde um instante.", 429)
+    if _desligamento_agendado:
+        raise ErroProg("O Proclamare está sendo desligado.", 409, codigo="desligando")
+    if item["tipo"] == "lista":
+        if PROGRAMACAO.tocando is not None:
+            raise ErroProg(_msg_ocupado(""), 409, codigo="ocupado")
+        if not _tocador_vivo():
+            raise ErroProg(MSG_SEM_TOCADOR, 409, codigo="sem_tocador")
+        PROGRAMACAO.solicitar(item, lock_tomado=False)
+    else:
+        if item["tipo"] == "audio":   # erros que não dependem da trava: respondidos antes de tomá-la
+            try:
+                _prog_musica_do_item(item)
+            except programacao.NaoTocou as e:
+                raise ErroProg(e.texto, 404 if e.motivo == "sem_musica" else 409, codigo=e.motivo) from None
+        if not _anuncio_lock.acquire(blocking=False):
+            raise ErroProg(_msg_ocupado("Já existe um anúncio tocando. Aguarde terminar."), 409, codigo="ocupado")
+        try:
+            PROGRAMACAO.solicitar(item, lock_tomado=True)   # o executar libera a trava ao terminar
+        except BaseException:
+            _anuncio_lock.release()
+            raise
+    _auditar_programacao("programacao_testar", 1)
+    return jsonify({"ok": True, "execucao": {"id": item["id"], "tipo": item["tipo"],
+                                               "nome": _prog_nome(item)}}), 202
+
+
+@app.post("/api/programacao/parar")
+def programacao_parar() -> Response:
+    """Interrompe o ÁUDIO ou ANÚNCIO agendado que está tocando. 409 se nada da programação toca."""
+    if corpo_json():
+        raise ErroProg("Campo desconhecido.", campo="chave")
+    if excedeu_limite("prog-parar:" + (request.remote_addr or "?"), PROG_PARAR_MAX_POR_MIN, 60.0):
+        raise ErroProg("Muitos pedidos seguidos. Aguarde um instante.", 429)
+    resultado = PROGRAMACAO.parar_execucao()
+    if resultado == "nada":
+        raise ErroProg("Não há nada tocando pela programação.", 409, codigo="nada_tocando")
+    _auditar_programacao("programacao_parar", 1)
+    return jsonify({"ok": True, "parando": resultado == "parando",
+                    "aviso": None if resultado == "parando" else
+                    "Esta voz não pode ser interrompida; ela termina em instantes."})
+
+
+# ---------------------------------------------------------------------------
 # Desligar pelo painel (contrato v2.5) — SÓ no PC da loja
 # A rota responde 202 e, numa thread, ~0,5 s depois, pede ao laço do servidor (thread principal)
 # que saia pelo MESMO caminho do Ctrl+C/SIGTERM (main() fecha a porta, para os serviços e
@@ -5145,7 +6381,8 @@ def sistema_desligar() -> tuple[Response, int]:
             raise ErroApi("Há músicas sendo enviadas. Espere terminar.", 409)
         # Segura o lock dos anúncios: nenhum anúncio novo começa e nenhum tocando é cortado.
         if not _anuncio_lock.acquire(blocking=False):
-            raise ErroApi("Espere o anúncio terminar.", 409)
+            # v2.6: com um áudio/anúncio da programação tocando, a mensagem diz qual (e que dá para parar)
+            raise ErroApi(_msg_ocupado("Espere o anúncio terminar.", ". Toque em Parar ou espere terminar."), 409)
         _desligamento_agendado = True
     log.info("Desligado pelo painel (PC local).")
     # A aba "Tocador da loja" pode estar em OUTRA aba ou aparelho: manda uma pausa agora, para ela
@@ -5406,6 +6643,8 @@ def main() -> None:
     SOM.iniciar()  # primeira varredura LOCAL em segundo plano (só lê; não toca som)
     atexit.register(ACERVO.parar)
     ACERVO.iniciar()  # cria a pasta de músicas e varre em segundo plano (thread "musicas-varredura")
+    atexit.register(lambda: PROGRAMACAO.parar())
+    PROGRAMACAO.iniciar()  # v2.6: relógio da programação + thread de execução (só tocam o que o dono marcou)
     caminho_pid = _caminho_pid_file()
     if caminho_pid is not None and not _gravar_pid_file(caminho_pid, PORT):
         log.error("Seguindo sem arquivo de PID (já registrado acima); o lançador pode não "
@@ -5429,6 +6668,7 @@ def _encerrar_servicos(servidor: Any) -> None:
     pool = _yt_titulos_pool
     passos: list[Callable[[], Any]] = [
         close if callable(close) else (lambda: None),
+        lambda: PROGRAMACAO.parar(),   # v2.6: para o relógio, corta o que tocava e grava o "visto"
         SOM.parar,   # desregistra o callback do Windows (também registrado no atexit)
         ACERVO.parar,
         (lambda: pool.shutdown(wait=False, cancel_futures=True)) if pool is not None else (lambda: None),

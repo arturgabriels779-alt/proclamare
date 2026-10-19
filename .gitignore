@@ -7,6 +7,12 @@ config.json
 # cópias de segurança de um config.json ilegível também guardam segredos (Client Secret, hash/chave do PIN)
 config.json*
 **/config.json*
+# listas de músicas da loja (dados locais; cópias de um listas.json ilegível também)
+listas.json*
+**/listas.json*
+# programação de horários (dados da loja e o instante em que o servidor foi visto pela última vez)
+programacao*.json*
+**/programacao*.json*
 *.tmp
 
 # Artefatos de execução

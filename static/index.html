@@ -65,6 +65,11 @@
     <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></symbol>
     <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 2.5v9"/><path d="M6.6 6.1a8 8 0 1 0 10.8 0"/></symbol>
     <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19.5 8.5a2.1 2.1 0 0 0-3-3L5 17l-1 3z"/><path d="M14.5 7.5l3 3"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+    <symbol id="i-megaphone" viewBox="0 0 24 24"><path d="M3 11v2a1 1 0 0 0 1 1h2l8 4V6L6 10H4a1 1 0 0 0-1 1z"/><path d="M18 9a4 4 0 0 1 0 6"/><path d="M7 14l1 5h2.5l-1-4.5"/></symbol>
+    <symbol id="i-list-plus" viewBox="0 0 24 24"><path d="M3 6h12M3 12h8M3 18h8"/><path d="M17 14.5v7M13.5 18h7"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 10h18M8 2v4M16 2v4"/></symbol>
   </defs>
 </svg>
 
@@ -303,6 +308,64 @@
         <ol class="history__list" id="history-list" aria-labelledby="label-history"></ol>
       </div>
 
+    </section>
+
+    <!-- ===================== COLUNA: PROGRAMAÇÃO (v2.6) =====================
+         Tocar no horário marcado. No celular é a 3ª aba ("Horários"); no computador fica
+         abaixo do Anúncio. As linhas são montadas pelo app.js (createElement/textContent). -->
+    <section class="panel bento-col bento-col--prog" id="panel-prog" aria-labelledby="title-prog" data-active="false">
+      <div class="tile tile--prog" id="tile-prog">
+        <div class="tile__head tile__head--wrap">
+          <div class="tile__heading">
+            <div class="lib__titlerow">
+              <svg class="icon tile__icon" aria-hidden="true"><use href="#i-clock"/></svg>
+              <h2 class="tile__title" id="title-prog">Programação</h2>
+              <span class="ytq__count" id="prog-count" hidden></span>
+            </div>
+            <p class="tile__caption prog__clock" id="prog-clock-line" hidden>Horário do PC da loja: <time id="prog-clock">--:--</time></p>
+          </div>
+          <button type="button" class="btn btn--primary btn--sm tile__action" id="btn-prog-new" aria-haspopup="dialog">
+            <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+            <span>Novo horário</span>
+          </button>
+        </div>
+        <p class="hint prog__help">Áudios e anúncios tocam nos horários marcados mesmo com o navegador fechado. Listas precisam da aba <b>Tocador da loja</b> aberta. Isto substitui o Agendador do Windows.</p>
+
+        <!-- Avisos: "Tocando agora [Parar]", lista que não tocou, Tocador fechado… (montados pelo app.js) -->
+        <div class="prog__alerts" id="prog-alerts" role="status" aria-live="polite"></div>
+
+        <div class="prog__next" id="prog-next" hidden>
+          <h3 class="ytq__heading">Próximos horários</h3>
+          <ul class="prog__next-list" id="prog-next-list" aria-label="Próximos horários"></ul>
+        </div>
+
+        <p class="lib__status" id="prog-status" role="status">
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="prog-status-text">Carregando a programação…</span>
+        </p>
+        <ul class="prog__list" id="prog-list" aria-label="Horários programados"></ul>
+
+        <div class="lib__empty" id="prog-empty" hidden>
+          <span class="callout__icon" aria-hidden="true"><svg class="icon"><use href="#i-clock"/></svg></span>
+          <h3 class="callout__title">Nenhum horário marcado</h3>
+          <p class="callout__text">Marque a hora para tocar uma música, uma lista ou um anúncio sozinho. Por exemplo: a Ave Maria todo dia às 18h.</p>
+          <div class="actions actions--center">
+            <button type="button" class="btn btn--ghost" id="btn-prog-empty-new">Marcar o primeiro horário</button>
+          </div>
+        </div>
+        <div class="lib__empty" id="prog-failed" hidden>
+          <h3 class="callout__title">Não consegui carregar a programação</h3>
+          <p class="callout__text">Confira a conexão com o computador da loja e tente de novo.</p>
+          <div class="actions actions--center">
+            <button type="button" class="btn btn--ghost" id="btn-prog-retry">Tentar de novo</button>
+          </div>
+        </div>
+
+        <details class="prog__hist" id="prog-hist" hidden>
+          <summary class="prog__hist-sum"><span>Últimas execuções</span> <span class="ytq__count" id="prog-hist-count"></span></summary>
+          <ol class="prog__hist-list" id="prog-hist-list" aria-label="Últimas execuções da programação"></ol>
+        </details>
+      </div>
     </section>
 
     <!-- ======================= COLUNA: MÚSICA ======================== -->
@@ -586,6 +649,21 @@
                 <button type="button" class="btn btn--ghost btn--sm lib__banner-btn" id="btn-lib-use-here" hidden>Usar este computador</button>
               </div>
 
+              <!-- Listas (v2.6): criadas no painel; tocam em ordem ou embaralhadas -->
+              <section class="lists" id="lists" aria-labelledby="lists-title">
+                <div class="lists__head">
+                  <h3 class="lists__title" id="lists-title">Listas</h3>
+                  <span class="ytq__count" id="lists-count" hidden></span>
+                  <button type="button" class="btn btn--ghost btn--sm lists__new" id="btn-list-new" aria-haspopup="dialog">
+                    <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+                    <span>Nova lista</span>
+                  </button>
+                </div>
+                <p class="hint lists__empty" id="lists-empty" hidden>Monte listas com as suas músicas e toque em ordem ou embaralhadas. Dá para marcar a hora de uma lista na aba Horários.</p>
+                <p class="hint lists__note" id="lists-note" role="status" hidden></p>
+                <ul class="lists__grid" id="lists-grid" aria-label="Suas listas"></ul>
+              </section>
+
               <!-- Enviar da galeria do celular (ou do computador) -->
               <div class="lib__send">
                 <input type="file" id="lib-file" multiple hidden aria-label="Escolher músicas para enviar" accept="audio/*,.mp3,.m4a,.aac,.ogg,.opus,.wav,.flac">
@@ -721,6 +799,11 @@
   <button type="button" class="tabbar__tab" id="tab-music" role="tab" aria-controls="panel-music" aria-selected="false" data-value="music">
     <svg class="icon" aria-hidden="true"><use href="#i-music"/></svg>
     <span>Música</span>
+  </button>
+  <button type="button" class="tabbar__tab" id="tab-prog" role="tab" aria-controls="panel-prog" aria-selected="false" data-value="prog">
+    <svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg>
+    <span>Horários</span>
+    <span class="tabbar__dot" id="tab-prog-dot" aria-hidden="true" hidden></span>
   </button>
 </div>
 
@@ -1072,6 +1155,253 @@
         <span class="spinner" aria-hidden="true"></span>
         <span>Desligar</span>
       </button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ====================== NOVO / EDITAR HORÁRIO (v2.6) ======================
+     Um horário = o que tocar (áudio da biblioteca, lista ou texto falado) + hora + repetição.
+     Os resultados da busca são montados pelo app.js (createElement/textContent). -->
+<dialog id="prog-dialog" class="dialog--wide" aria-labelledby="prog-dlg-title">
+  <form class="sheet formsheet" id="prog-form" novalidate>
+    <div class="formsheet__body">
+      <div class="formsheet__head">
+        <h2 class="sheet__title" id="prog-dlg-title">Novo horário</h2>
+        <p class="hint">Escolha o que tocar, a hora e os dias. O Proclamare faz o resto.</p>
+      </div>
+
+      <div class="field">
+        <span class="label" id="prog-tipo-label">O que tocar</span>
+        <div class="seg" id="prog-tipo" role="radiogroup" aria-labelledby="prog-tipo-label">
+          <button type="button" class="seg__opt" data-value="audio" role="radio" aria-checked="true">Áudio</button>
+          <button type="button" class="seg__opt" data-value="lista" role="radio" aria-checked="false">Lista</button>
+          <button type="button" class="seg__opt" data-value="anuncio" role="radio" aria-checked="false">Anúncio</button>
+        </div>
+        <p class="hint" id="prog-tipo-hint"></p>
+      </div>
+
+      <!-- Áudio: uma música da biblioteca -->
+      <div class="field" id="prog-alvo-audio">
+        <span class="label" id="prog-audio-label">Música ou áudio</span>
+        <div class="progf__picked" id="prog-audio-picked" hidden>
+          <span class="thumb thumb--lib" id="prog-audio-thumb"><svg class="icon" aria-hidden="true"><use href="#i-music"/></svg></span>
+          <span class="progf__picked-text">
+            <span class="progf__picked-title" id="prog-audio-title"></span>
+            <span class="progf__picked-sub" id="prog-audio-sub"></span>
+          </span>
+          <button type="button" class="btn btn--ghost btn--sm" id="btn-prog-audio-change">Trocar</button>
+        </div>
+        <div class="progf__finder" id="prog-audio-finder">
+          <div class="input input--search">
+            <svg class="icon input__icon" aria-hidden="true"><use href="#i-search"/></svg>
+            <input type="search" id="prog-audio-q" maxlength="100" autocomplete="off" enterkeyhint="search" aria-labelledby="prog-audio-label" placeholder="Buscar na biblioteca (título, artista, pasta)…">
+          </div>
+          <p class="hint" id="prog-audio-note" role="status"></p>
+          <ul class="progf__results" id="prog-audio-results" aria-label="Resultados da busca"></ul>
+        </div>
+      </div>
+
+      <!-- Lista -->
+      <div class="field" id="prog-alvo-lista" hidden>
+        <label class="label" for="prog-lista-sel">Lista</label>
+        <div class="select"><select id="prog-lista-sel"></select></div>
+        <p class="hint" id="prog-lista-hint"></p>
+        <label class="switch">
+          <input type="checkbox" role="switch" class="switch__input" id="prog-embaralhar">
+          <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+          <span class="switch__text">Tocar embaralhada</span>
+        </label>
+        <p class="hint">No horário, a lista <b>troca a música atual</b>. Precisa da aba Tocador da loja aberta.</p>
+      </div>
+
+      <!-- Anúncio de texto falado -->
+      <div class="field" id="prog-alvo-anuncio" hidden>
+        <div class="label label--split">
+          <label for="prog-texto">Texto do anúncio</label>
+          <span class="msg-card__counter" id="prog-texto-count" aria-hidden="true">0/500</span>
+        </div>
+        <textarea id="prog-texto" class="progf__text" rows="3" maxlength="500" placeholder="O que será falado nas caixas de som"></textarea>
+        <div class="progf__msgs" id="prog-msgs-box" hidden>
+          <span class="label" id="prog-msgs-label">Ou use uma mensagem pronta</span>
+          <div class="chips chips--sm" id="prog-msgs" role="group" aria-labelledby="prog-msgs-label"></div>
+        </div>
+        <details class="progf__voz">
+          <summary class="progf__voz-sum">Voz do anúncio</summary>
+          <div class="progf__voz-body">
+            <div class="field">
+              <label class="label" for="prog-voz">Voz</label>
+              <div class="select"><select id="prog-voz">
+                <option value="francisca">Francisca (feminina)</option>
+                <option value="antonio">Antonio (masculina)</option>
+              </select></div>
+            </div>
+            <div class="field">
+              <label class="label" for="prog-motor">Motor de voz</label>
+              <div class="select"><select id="prog-motor">
+                <option value="auto">Auto (online, ou offline sem internet)</option>
+                <option value="online">Online</option>
+                <option value="offline">Offline</option>
+              </select></div>
+            </div>
+            <div class="field">
+              <label class="label label--split" for="prog-vel">Velocidade <output class="label__value" id="prog-vel-out" for="prog-vel">0%</output></label>
+              <input type="range" id="prog-vel" class="range range--bipolar" min="-50" max="50" step="5" value="0">
+            </div>
+          </div>
+        </details>
+        <p class="hint">Fala nas caixas da loja, mesmo com o navegador fechado. A música <b>pausa</b> e continua de onde parou.</p>
+      </div>
+
+      <div class="progf__pair">
+        <div class="field">
+          <label class="label" for="prog-nome">Nome (opcional)</label>
+          <div class="input"><input type="text" id="prog-nome" maxlength="40" autocomplete="off" placeholder="ex.: Ave Maria"></div>
+        </div>
+        <div class="field">
+          <label class="label" for="prog-hora">Hora</label>
+          <div class="input input--time"><input type="time" id="prog-hora" step="60" required></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="label" id="prog-rep-label">Repetir</span>
+        <div class="lib__chips progf__reps" id="prog-rep" role="radiogroup" aria-labelledby="prog-rep-label">
+          <button type="button" class="lib__chip" role="radio" aria-checked="true" data-value="todos"><span class="lib__chip-name">Todos os dias</span></button>
+          <button type="button" class="lib__chip" role="radio" aria-checked="false" data-value="uteis"><span class="lib__chip-name">Dias úteis</span></button>
+          <button type="button" class="lib__chip" role="radio" aria-checked="false" data-value="fds"><span class="lib__chip-name">Fim de semana</span></button>
+          <button type="button" class="lib__chip" role="radio" aria-checked="false" data-value="dias"><span class="lib__chip-name">Escolher dias</span></button>
+          <button type="button" class="lib__chip" role="radio" aria-checked="false" data-value="data"><span class="lib__chip-name">Uma data</span></button>
+        </div>
+        <div class="progf__days" id="prog-dias" role="group" aria-label="Dias da semana" hidden>
+          <button type="button" class="daybtn" role="checkbox" aria-checked="false" data-dia="0" aria-label="Domingo">D</button>
+          <button type="button" class="daybtn" role="checkbox" aria-checked="false" data-dia="1" aria-label="Segunda-feira">S</button>
+          <button type="button" class="daybtn" role="checkbox" aria-checked="false" data-dia="2" aria-label="Terça-feira">T</button>
+          <button type="button" class="daybtn" role="checkbox" aria-checked="false" data-dia="3" aria-label="Quarta-feira">Q</button>
+          <button type="button" class="daybtn" role="checkbox" aria-checked="false" data-dia="4" aria-label="Quinta-feira">Q</button>
+          <button type="button" class="daybtn" role="checkbox" aria-checked="false" data-dia="5" aria-label="Sexta-feira">S</button>
+          <button type="button" class="daybtn" role="checkbox" aria-checked="false" data-dia="6" aria-label="Sábado">S</button>
+        </div>
+        <div class="input" id="prog-data-box" hidden>
+          <input type="date" id="prog-data" aria-label="Data do horário">
+        </div>
+        <p class="hint" id="prog-rep-hint"></p>
+      </div>
+
+      <div class="net__confirm" id="prog-confirm" role="group" aria-labelledby="prog-confirm-title" hidden>
+        <p class="net__confirm-title" id="prog-confirm-title">Descartar as alterações?</p>
+        <p class="hint">O que você mudou ainda não foi salvo.</p>
+        <div class="actions">
+          <button type="button" class="btn btn--danger-solid" id="btn-prog-confirm-yes">Descartar</button>
+          <button type="button" class="btn btn--ghost" id="btn-prog-confirm-no">Continuar editando</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="formsheet__foot actions actions--end">
+      <p class="form-error formsheet__error" id="prog-error" role="alert" hidden></p>
+      <button type="button" class="btn btn--ghost" id="btn-prog-cancel">Cancelar</button>
+      <button type="submit" class="btn btn--primary" id="btn-prog-save">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Salvar horário</span>
+      </button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ====================== NOVA / EDITAR LISTA (v2.6) ====================== -->
+<dialog id="list-dialog" class="dialog--wide" aria-labelledby="list-dlg-title">
+  <form class="sheet formsheet" id="list-form" novalidate>
+    <div class="formsheet__body">
+      <div class="formsheet__head">
+        <h2 class="sheet__title" id="list-dlg-title">Nova lista</h2>
+        <p class="hint">Escolha as músicas e a ordem. Na hora de tocar, dá para seguir a ordem ou embaralhar.</p>
+      </div>
+
+      <div class="field">
+        <div class="label label--split">
+          <label for="list-nome">Nome da lista</label>
+          <span class="msg-card__counter" id="list-nome-count" aria-hidden="true">0/40</span>
+        </div>
+        <div class="input"><input type="text" id="list-nome" maxlength="40" autocomplete="off" placeholder="ex.: Manhã calma" aria-describedby="list-nome-erro"></div>
+        <p class="msg-card__error" id="list-nome-erro" hidden></p>
+      </div>
+
+      <div class="field">
+        <div class="label label--split">
+          <span id="list-songs-label">Músicas da lista</span>
+          <span class="msg-card__counter" id="list-songs-count"></span>
+        </div>
+        <ol class="listed" id="list-songs" aria-labelledby="list-songs-label"></ol>
+        <p class="hint listed__empty" id="list-songs-empty">Nenhuma música ainda. Toque em “Adicionar músicas”.</p>
+        <div class="msgs__undo" id="list-undo" role="status" hidden>
+          <span class="msgs__undo-text" id="list-undo-text"></span>
+          <button type="button" class="btn btn--text btn--sm" id="btn-list-undo">Desfazer</button>
+        </div>
+      </div>
+
+      <div>
+        <button type="button" class="btn btn--ghost" id="btn-list-addsongs" aria-expanded="false" aria-controls="list-picker">
+          <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+          <span>Adicionar músicas</span>
+        </button>
+      </div>
+
+      <div class="listpick" id="list-picker" hidden>
+        <div class="field">
+          <label class="sr-only" for="list-pick-q">Buscar músicas para a lista</label>
+          <div class="input input--search">
+            <svg class="icon input__icon" aria-hidden="true"><use href="#i-search"/></svg>
+            <input type="search" id="list-pick-q" maxlength="100" autocomplete="off" enterkeyhint="search" placeholder="Buscar por título, artista ou pasta…">
+          </div>
+        </div>
+        <div class="field" id="list-pick-folder-box" hidden>
+          <label class="label" for="list-pick-folder">Pasta</label>
+          <div class="select"><select id="list-pick-folder"></select></div>
+        </div>
+        <p class="hint" id="list-pick-note" role="status"></p>
+        <ul class="progf__results" id="list-pick-results" aria-label="Músicas encontradas"></ul>
+        <div class="actions listpick__tools">
+          <button type="button" class="btn btn--ghost btn--sm" id="btn-list-pick-more" hidden>Carregar mais</button>
+          <button type="button" class="btn btn--ghost btn--sm" id="btn-list-pick-all" hidden>Adicionar todas</button>
+        </div>
+      </div>
+
+      <div class="net__confirm" id="list-confirm" role="group" aria-labelledby="list-confirm-title" hidden>
+        <p class="net__confirm-title" id="list-confirm-title">Descartar as alterações?</p>
+        <p class="hint">O que você mudou ainda não foi salvo.</p>
+        <div class="actions">
+          <button type="button" class="btn btn--danger-solid" id="btn-list-confirm-yes">Descartar</button>
+          <button type="button" class="btn btn--ghost" id="btn-list-confirm-no">Continuar editando</button>
+        </div>
+      </div>
+      <p class="sr-only" id="list-live" role="status" aria-live="polite"></p>
+    </div>
+
+    <div class="formsheet__foot actions actions--end">
+      <p class="form-error formsheet__error" id="list-error" role="alert" hidden></p>
+      <button type="button" class="btn btn--ghost" id="btn-list-cancel">Cancelar</button>
+      <button type="submit" class="btn btn--primary" id="btn-list-save">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Salvar lista</span>
+      </button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ====================== "+ LISTA" DE UMA MÚSICA (v2.6) ====================== -->
+<dialog id="addlist-dialog" class="dialog--narrow" aria-labelledby="addlist-title" aria-describedby="addlist-track">
+  <div class="sheet sheet--addlist">
+    <h2 class="sheet__title" id="addlist-title">Adicionar a uma lista</h2>
+    <p class="hint addlist__track" id="addlist-track"></p>
+    <ul class="addlist__list" id="addlist-list" aria-label="Suas listas"></ul>
+    <p class="hint" id="addlist-empty" hidden>Você ainda não tem listas.</p>
+    <button type="button" class="btn btn--ghost" id="btn-addlist-new">
+      <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+      <span>Nova lista com esta música</span>
+    </button>
+    <p class="form-error" id="addlist-error" role="alert" hidden></p>
+    <div class="actions actions--end">
+      <button type="button" class="btn btn--ghost" id="btn-addlist-close">Fechar</button>
     </div>
   </div>
 </dialog>

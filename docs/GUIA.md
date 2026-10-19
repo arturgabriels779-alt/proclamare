@@ -618,6 +618,23 @@ mesma aba do YouTube (seção 4). Por isso:
   (normalmente o som padrão do Windows) — a mesma do YouTube. A saída escolhida em
   *Som da loja* vale só para os anúncios por voz.
 
+### Listas de músicas
+
+Além das subpastas do Windows (que continuam funcionando como filtro), dá para montar **listas** no próprio painel, sem
+mexer em arquivos. Elas aparecem em *Música → Minhas músicas*, na seção **Listas**.
+
+- **Nova lista**: dê um nome (até 40 letras), toque em **Adicionar músicas**, busque (por título, artista ou pasta) e
+  toque nas músicas. Em cada uma use **▲ ▼** para mudar a ordem e a lixeira para tirar (dá para **Desfazer**). Uma lista
+  tem até 500 músicas e você pode ter até 50 listas.
+- **＋ Lista** em cada música da biblioteca: coloca aquela música numa lista que já existe, ou cria uma lista nova com ela.
+- **Tocar** toca a lista na ordem; **Embaralhar** toca em ordem aleatória. Tocar uma lista **troca a música e a fila**
+  (se algo estiver tocando, o painel pede um segundo toque). A fila comporta 200 músicas por vez.
+- **Editar** muda o nome, as músicas e a ordem; **Apagar** pede um segundo toque e **não apaga os arquivos**, só a lista.
+- Se um arquivo sair da pasta, ele continua na lista marcado como **Indisponível** e é pulado ao tocar.
+- Se outro aparelho mexer na mesma lista ao mesmo tempo, o painel avisa e pede para salvar de novo.
+- Como as músicas, as listas tocam no **Tocador da loja** (aba aberta no computador das caixas). Os dados ficam em
+  `listas.json`, ao lado do `config.json`.
+
 ### Remover uma música
 
 No computador da loja, cada linha tem uma lixeira (toque duas vezes para
@@ -657,6 +674,65 @@ dá para remover (só enviar).
 > Brasil, pelo **ECAD** (veja a seção 5).
 
 ---
+
+## 4c. Programação (tocar em horários)
+
+Em vez do Agendador de Tarefas do Windows, o próprio Proclamare toca na hora marcada. Cada horário tem **o que
+tocar**, **a hora** (relógio do computador da loja) e **quando repete** (todos os dias, dias úteis, fim de semana,
+dias escolhidos ou uma data só). São até 100 horários.
+
+**Como marcar um horário no painel.** No computador, o bloco **Programação** fica abaixo do Anúncio; no celular é a aba
+**Horários**. Ele mostra o *Horário do PC da loja*, os próximos horários, a lista dos seus horários e as últimas execuções.
+
+1. Toque em **Novo horário** e escolha **Áudio**, **Lista** ou **Anúncio**.
+2. Escolha o alvo: busque a música na biblioteca (os formatos que não tocam em horário aparecem desativados), escolha uma
+   lista, ou escreva o texto do anúncio (ou toque numa das *Mensagens prontas*; em *Voz do anúncio* dá para mudar a voz).
+3. Marque a **hora** e a repetição: *Todos os dias*, *Dias úteis*, *Fim de semana*, *Escolher dias* (D S T Q Q S S) ou *Uma data*.
+4. Salve. Cada horário tem um **interruptor** (ativo/desativado), **Tocar agora** (pede um segundo toque, porque interrompe a
+   música da loja), **Editar** e **Remover**.
+
+Quando algo toca, o painel mostra **Tocando agora: …** com o botão **Parar**. Se uma lista não tocou porque o Tocador da loja
+estava fechado (ou qualquer outro motivo), aparece um aviso, por exemplo *"Lista não tocou: Tocador da loja fechado"*, com o
+que fazer; o botão **Entendi** dispensa o aviso. Em **Últimas execuções** ficam as 50 mais recentes (tocou, não tocou, perdido
+ou erro, com o motivo); o histórico fica na memória e some se o Proclamare for reiniciado.
+
+> **Dica:** isto substitui o **Agendador do Windows** que muita loja usa para tocar um MP3 em certos horários (por exemplo, a
+> Ave Maria às 18:00): o horário agora fica no painel, vale também pelo celular e não depende de um player aberto.
+
+| O que tocar | Como funciona |
+|---|---|
+| **Áudio** (uma música da pasta, ex.: *Ave Maria* às 18:00) | Toca pelo mesmo caminho dos anúncios (a saída fixada em "Som da loja"), **mesmo com o navegador fechado**. Só MP3, OGG, WAV e FLAC, até 10 minutos. Arquivos M4A/AAC/OPUS não tocam em horário marcado: converta para MP3. |
+| **Anúncio de texto** (até 500 caracteres, ex.: aviso de fechamento às 21:45) | Fala com a voz e o motor que você escolheu no horário, **mesmo com o navegador fechado**. |
+| **Lista** (ex.: *Manhã calma* de segunda a sexta às 8:00) | **Troca** a música atual pela lista. Precisa da aba **Tocador da loja** aberta; se estiver fechada, o painel avisa "não tocou: Tocador da loja fechado". |
+
+**O que acontece com a música que estava tocando.** No horário de um áudio ou anúncio, o Proclamare **pausa** a música
+(a da aba Tocador e a do Spotify), toca, e **retoma de onde parou** — só o que estava tocando; o que já estava pausado
+continua pausado. Isso vale mesmo se der erro no meio. Se o Spotify não obedecer, o histórico mostra um aviso.
+
+**Horário de uma lista com o Spotify tocando.** A lista **troca** a música: se o Spotify estiver tocando, ele é
+**pausado** e **não volta sozinho** (a lista toma o lugar dele). Se a lista não chegar a tocar (por exemplo, a aba
+Tocador está fechada), o Spotify continua como estava. Quem preferir outro comportamento deve avisar o desenvolvedor.
+
+**Dois horários no mesmo minuto.** Tocam um depois do outro (uma coisa por vez nas caixas). O segundo espera o primeiro
+terminar; só é descartado ("atrasado") se, depois disso, ainda ficar mais de 1 minuto esperando ou se já passaram mais
+de 12 minutos do horário dele.
+
+**Limite de áudio por dia.** A soma dos áudios **ativos** não pode passar de **60 minutos** em um mesmo dia da semana
+(o painel avisa ao salvar; desativar ou apagar horários sempre funciona). Isso evita que um celular com o PIN deixe
+áudio tocando horas nas caixas. Horários criados ou alterados por um celular aparecem com a etiqueta **Criado pelo
+celular**; ao trocar o PIN ou desconectar os aparelhos, o painel lembra de revisar a Programação, porque os horários
+continuam valendo.
+
+**Parar e testar.** *Tocar agora* executa o horário na hora (mesmo desligado). Durante um áudio agendado, **Parar**
+interrompe o áudio e a música volta. A voz do Windows falando sem internet não pode ser cortada no meio; ela termina
+em instantes. Enquanto a programação toca, um anúncio digitado recebe "Programação tocando: ..." e o botão de
+desligar pede para parar antes.
+
+**Se o computador estava desligado.** O Proclamare não toca horários que já passaram: eles aparecem no histórico
+como **perdido**. Se o horário passou há menos de 1 minuto, ainda toca. Mudou o relógio do computador (horário de verão,
+ajuste manual)? Nada toca em dobro, e horários que o relógio "pulou" ficam como *perdido*.
+
+Os dados ficam em `programacao.json`, ao lado do `config.json` (não vão para o GitHub).
 
 ## 5. Sobre direitos autorais (ECAD e termos do Spotify) — leia antes de usar em loja
 

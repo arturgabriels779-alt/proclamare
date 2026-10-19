@@ -123,6 +123,12 @@ class BaseMusicas(unittest.TestCase):
         caminho = self.pasta / rel
         caminho.parent.mkdir(parents=True, exist_ok=True)
         caminho.write_bytes(am.mp3_bytes() if dados is None else dados)
+        # No Windows o mtime recém-gravado pode ficar alguns ms À FRENTE do time.time() da varredura; o
+        # acervo trata "data no futuro" como cópia em andamento e o arquivo só entraria na varredura
+        # seguinte (teste intermitente). Data 10 s no passado: nunca à frente do relógio e ainda "recente"
+        # para os testes de estabilidade de 60 s.
+        passado = time.time() - 10
+        os.utime(caminho, (passado, passado))
         return caminho
 
     def varrer(self) -> list[musicas.Musica]:

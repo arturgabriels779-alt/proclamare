@@ -1,4 +1,4 @@
-/* Proclamare — interface do painel de controle (contrato v2.5 "Mensagens e Desligar"; base v2.4.2: Spotify; v2.4.1: tempo da música)
+/* Proclamare — interface do painel de controle (contrato v2.6 "Listas e Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2: Spotify; v2.4.1: tempo da música)
    -----------------------------------------------------------------------
    Sem frameworks e sem build: um único IIFE.
 
@@ -45,6 +45,25 @@
    no aplicativo Spotify.
    No 202 esta aba para o <audio>, o player do YouTube, o long-poll e todos os polls (stopAll) e mostra a tela
    "Proclamare desligado"; não tenta reconectar.
+
+   Listas (v2.6): "Minhas músicas" ganha a seção "Listas" (cartões com Tocar, Embaralhar, Editar e Apagar) e o botão
+   "+ Lista" em cada música. GET /api/listas (resumos), GET /api/listas/<id> (músicas na ordem; as que saíram da pasta
+   vêm "disponivel": false), POST /api/listas (criar), POST /api/listas/<id> {versao, nome?, musicas?} (a lista INTEIRA, na
+   ordem), /apagar {versao} e /tocar {embaralhar?} (= "Tocar pasta": troca fila e música; 409 "sem_tocador" se não há
+   aba Tocador). Só ids opacos; 409 "versao_mudou" = outro aparelho mexeu na mesma lista (o editor guarda o que foi
+   montado e pede para salvar de novo). Nomes e títulos entram no DOM só por textContent.
+
+   Programação (v2.6): bloco "Programação" (3ª aba "Horários" no celular; abaixo do Anúncio no computador).
+   GET /api/programacao -> {versao, agora (hora do PC da loja), itens, proximas, historico, tocando, tocador_vivo};
+   POST /api/programacao {versao, itens} SUBSTITUI a lista inteira (cada mudança do painel reaplica só a sua alteração
+   sobre a lista atual se houver 409 "versao_mudou"); POST /api/programacao/<id>/testar ("Tocar agora", 202) e
+   /parar. Cada item traz "origem" (local|remoto, só leitura: o painel mostra "Criado pelo celular" e nunca a devolve no POST);
+   mais de 60 min de áudio num mesmo dia da semana = 400 "limite_diario" (a mensagem do servidor vai ao toast); POST
+   /api/auth/pin e /revogar devolvem "programacao_remota" (quantos horários vieram de aparelhos remotos) e o painel avisa.
+   Áudio (mp3/ogg/wav/flac, até 10 min) e anúncio de texto tocam pelo servidor, com o navegador fechado, e PAUSAM a
+   música; lista troca a música e precisa da aba Tocador. Os avisos do histórico são mapeados pelo "motivo" (tocador_fechado,
+   ocupado, atrasado…), nunca pelo texto. Durante um áudio agendado, /api/announce responde 409 e o painel mostra a
+   mensagem do servidor ("Programação tocando: <nome>").
 
    Regras de segurança deste arquivo (CSP do servidor):
    - nada de innerHTML/eval com dados de API ou do usuário (só textContent
@@ -625,6 +644,7 @@
   const tabbar = $("tabbar");
   const panelAnnounce = $("panel-announce");
   const panelMusic = $("panel-music");
+  const panelProg = $("panel-prog");
   // anúncio
   const engineSwitch = $("engine-switch");
   const voiceSelect = $("voice-select");
@@ -793,7 +813,7 @@
 
   /** role=tabpanel só vale quando a barra de abas está visível (celular/tablet). */
   function syncTabSemantics() {
-    const tabs = [[panelAnnounce, "tab-announce", "title-announce"], [panelMusic, "tab-music", "title-music"]];
+    const tabs = [[panelAnnounce, "tab-announce", "title-announce"], [panelMusic, "tab-music", "title-music"], [panelProg, "tab-prog", "title-prog"]];
     tabs.forEach(([panel, tabId, titleId]) => {
       if (tabModeMQ.matches) {
         panel.setAttribute("role", "tabpanel");
@@ -808,14 +828,14 @@
   tabModeMQ.addEventListener("change", syncTabSemantics);
 
   function setTab(name) {
-    const next = name === "music" ? "music" : "announce";
+    const next = name === "music" || name === "prog" ? name : "announce";
     activeTab = next;
+    const panels = { announce: panelAnnounce, music: panelMusic, prog: panelProg };
     const apply = () => {
-      panelAnnounce.dataset.active = String(next === "announce");
-      panelMusic.dataset.active = String(next === "music");
+      for (const key of Object.keys(panels)) panels[key].dataset.active = String(key === next);
       window.scrollTo({ top: 0, behavior: "auto" });
     };
-    withTransition("tab", apply, () => playEnter(next === "music" ? panelMusic : panelAnnounce));
+    withTransition("tab", apply, () => playEnter(panels[next]));
     scheduler.refresh();
     scheduler.wake();
     ensureProgressLoop();
@@ -1659,7 +1679,8 @@
         if (typeof data.aviso === "string" && data.aviso) toast(data.aviso, "warn", { duration: 9000 });
         if (!isTest) addHistory(text);
       } else if (status === 409) {
-        const msg = "Já existe um anúncio tocando. Aguarde terminar e tente de novo.";
+        // v2.6: durante um áudio agendado a mensagem do servidor diz qual ("Programação tocando: <nome>")
+        const msg = typeof data.error === "string" && data.error ? data.error : "Já existe um anúncio tocando. Aguarde terminar e tente de novo.";
         setStatus(msg, "warn");
         toast(msg, "info", { silent: true });
       } else {
@@ -4716,7 +4737,7 @@
     const items = [];
     for (const it of data.itens.slice(0, 100)) {
       const t = trackFromLib(it);
-      if (t) items.push(Object.assign({}, t, { pasta: str(it.pasta, 300) }));
+      if (t) items.push(Object.assign({}, t, { pasta: str(it.pasta, 300), formato: str(it.formato, 8).toLowerCase() }));
     }
     const pastas = [];
     if (Array.isArray(data.pastas)) {
@@ -4916,7 +4937,12 @@
     addText.className = "lib__add-t";
     addText.textContent = "Fila";
     add.appendChild(addText);
-    acts.append(play, add);
+    const addList = makeLibButton("addlist", "btn btn--chip lib__add", "list-plus"); // v2.6: "+ Lista"
+    const addListText = document.createElement("span");
+    addListText.className = "lib__add-t";
+    addListText.textContent = "Lista";
+    addList.appendChild(addListText);
+    acts.append(play, add, addList);
     const rm = makeLibButton("remove", "btn btn--icon lib__rm", "trash");
     const rmText = document.createElement("span");
     rmText.className = "lib__rm-t";
@@ -4926,7 +4952,7 @@
     acts.appendChild(rm);
     row.append(thumb, text, acts);
     li.appendChild(row);
-    li._lib = { thumb, title, sub, play, add, rm };
+    li._lib = { thumb, title, sub, play, add, addList, rm };
     return li;
   }
 
@@ -4939,7 +4965,7 @@
     setText(r.sub, sub);
     r.sub.hidden = !sub;
     setThumbArt(r.thumb, { file: t.id, capa: t.tem_capa });
-    const labels = [[r.play, "Tocar agora: "], [r.add, "Adicionar à fila: "], [r.rm, "Remover da lista: "]];
+    const labels = [[r.play, "Tocar agora: "], [r.add, "Adicionar à fila: "], [r.addList, "Adicionar a uma lista: "], [r.rm, "Remover da lista: "]];
     for (const [b, prefix] of labels) {
       const label = prefix + name;
       if (b.getAttribute("aria-label") !== label && !b.classList.contains("is-confirm")) {
@@ -5289,6 +5315,7 @@
     const act = btn.dataset.act;
     if (act === "play") libPlayNow(t);
     else if (act === "add") libAddOne(t, btn);
+    else if (act === "addlist") openAddToList(t, btn);
     else if (act === "remove" && !isRemote()) libRemove(t, btn);
   });
 
@@ -5704,6 +5731,2132 @@
   libLoadPrefs();
 
   // ======================================================================
+  // 16d. Listas de músicas e Programação de horários (contrato v2.6)
+  // ======================================================================
+  // Listas (criadas no painel): GET /api/listas, GET/POST /api/listas/<id>, /apagar, /tocar.
+  //   O navegador só conhece ids opacos (lista_id de 8 hex, music_id de 16 hex). Nomes e títulos
+  //   são dados de terceiros e entram no DOM só por textContent.
+  // Programação: GET/POST /api/programacao (substitui a lista inteira, com versão), POST
+  //   /api/programacao/<id>/testar ("Tocar agora") e /parar. Mensagens de erro do servidor vêm prontas
+  //   em "error"; os motivos do histórico são mapeados por "motivo" (nunca pelo texto).
+  const LISTA_ID_RE = /^[0-9a-f]{8}$/;
+  const ITEM_ID_RE = /^[0-9a-f]{8}$/;
+  const HORA_RE = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+  const DATA_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+  const ISO_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?/;
+  const LISTAS_MAX = 50; // iguais ao servidor
+  const LISTA_NOME_MAX = 40;
+  const LISTA_MUSICAS_MAX = 500;
+  const PROG_NOME_MAX = 40;
+  const PROG_POLL_MS = 5000;
+  const PROG_BG_POLL_MS = 30000;
+  const PROG_PROBLEMA_JANELA_MS = 12 * 3600 * 1000; // avisos de "não tocou" valem por 12 h
+  const LS_PROG_OK = "proclamare_prog_ok"; // avisos que este aparelho já dispensou
+  const DIAS_CURTO = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
+  const DIAS_LETRA = ["D", "S", "T", "Q", "Q", "S", "S"];
+  const DIAS_NOME = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
+  const PROG_TIPOS = {
+    audio: { label: "Áudio", icon: "bell" },
+    lista: { label: "Lista", icon: "music" },
+    anuncio: { label: "Anúncio", icon: "megaphone" },
+  };
+  // motivo do histórico -> [frase curta (cabe depois de "não tocou:"), o que fazer]
+  const PROG_MOTIVO = {
+    tocador_fechado: ["Tocador da loja fechado", "Abra o Proclamare no computador das caixas e escolha “Tocador da loja”. Sem isso as listas não tocam."],
+    ocupado: ["havia outro som tocando", "Um anúncio ocupava as caixas na hora e o horário esperou até o limite."],
+    atrasado: ["o horário passou", "O item anterior ainda estava tocando quando chegou a vez deste."],
+    desligando: ["o Proclamare estava sendo desligado", ""],
+    sem_musica: ["a música não está mais na pasta", "Coloque o arquivo de volta na pasta de músicas ou escolha outra música neste horário."],
+    formato: ["formato de áudio que não toca em horário", "Use mp3, ogg, wav ou flac."],
+    audio_longo: ["áudio longo demais", "Em horário marcado o áudio pode ter até 10 minutos."],
+    lista_sem_musicas: ["a lista não tem músicas disponíveis", "Abra a lista e acrescente músicas que estejam na pasta."],
+    lista_inexistente: ["a lista foi apagada", "Escolha outra lista neste horário."],
+    lendo_pasta: ["o Proclamare ainda lia a pasta de músicas", "Isso acontece logo depois de ligar. No próximo horário deve funcionar."],
+    sem_internet: ["sem internet para a voz online", "Na voz do anúncio, escolha o motor Auto ou Offline."],
+    sem_saida: ["a saída de som não estava disponível", "Confira a caixa ou o cabo e a saída escolhida em “Minhas saídas de som”."],
+    ausente: ["a saída de som não estava disponível", "Confira a caixa ou o cabo e a saída escolhida em “Minhas saídas de som”."],
+    em_uso_exclusivo: ["outro programa usava a saída de som", "Desligue o modo exclusivo do outro programa (por exemplo, o Spotify)."],
+    motor_contaminado: ["o áudio do Proclamare travou", "Reinicie o Proclamare."],
+    motor_travado: ["o áudio do Proclamare travou", "Reinicie o Proclamare."],
+    falha_audio: ["o áudio falhou", "Use “Tocar agora” para conferir o som."],
+    falha: ["erro inesperado", "Veja o registro do Proclamare no computador da loja."],
+    servidor_desligado: ["o Proclamare estava desligado", "O Proclamare ou o computador estava desligado nesse horário."],
+    relogio: ["o relógio do computador foi ajustado", "O horário foi pulado quando a hora do PC mudou."],
+  };
+  const PROG_STATUS = {
+    ok: ["Tocou", "badge--ok"],
+    nao_tocou: ["Não tocou", "badge--warn"],
+    perdido: ["Perdido", "badge--warn"],
+    erro: ["Erro", "badge--bad"],
+  };
+
+  // ---- Pequenos ajudantes ----
+  /** createElement curto (o texto SEMPRE por textContent). */
+  function mk(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  /** Botão com ícone e/ou texto; `act` vira data-act (delegação de eventos). */
+  function mkBtn(cls, act, icon, label, text) {
+    const b = mk("button", cls);
+    b.type = "button";
+    if (act) b.dataset.act = act;
+    if (icon) b.appendChild(makeIcon(icon));
+    if (text) b.appendChild(mk("span", "", text));
+    if (label) b.setAttribute("aria-label", label);
+    return b;
+  }
+
+  const plural = (n, um, mais) => n + " " + (n === 1 ? um : mais);
+  const upFirst = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+  const brDate = (iso) => iso.slice(8, 10) + "/" + iso.slice(5, 7) + "/" + iso.slice(0, 4);
+  const isoToDate = (iso) => new Date(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8, 10)));
+
+  /** Radiogroup de botões (chips): setas/Home/End, aria-checked e tabindex móvel. */
+  function bindChipRadio(container, onSelect) {
+    const radios = () => Array.from(container.querySelectorAll('[role="radio"]'));
+    let current = null;
+    function set(value, silent) {
+      const all = radios();
+      const hit = all.find((b) => b.dataset.value === value) || all[0];
+      for (const b of all) {
+        b.setAttribute("aria-checked", String(b === hit));
+        b.tabIndex = b === hit ? 0 : -1;
+      }
+      const v = hit ? hit.dataset.value : null;
+      const changed = current !== v;
+      current = v;
+      if (changed && !silent && onSelect) onSelect(v);
+    }
+    container.addEventListener("click", (e) => {
+      const b = e.target instanceof Element ? e.target.closest('[role="radio"]') : null;
+      if (b && container.contains(b)) set(b.dataset.value);
+    });
+    container.addEventListener("keydown", (e) => {
+      const all = radios();
+      const i = all.indexOf(document.activeElement);
+      if (i < 0) return;
+      let to = -1;
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") to = (i + 1) % all.length;
+      else if (e.key === "ArrowLeft" || e.key === "ArrowUp") to = (i - 1 + all.length) % all.length;
+      else if (e.key === "Home") to = 0;
+      else if (e.key === "End") to = all.length - 1;
+      if (to < 0) return;
+      e.preventDefault();
+      all[to].focus();
+      set(all[to].dataset.value);
+    });
+    return { set, get value() { return current; } };
+  }
+
+  /**
+   * Cancelar / Esc / clique no fundo de um diálogo de formulário: se algo foi alterado, pergunta antes
+   * de descartar (bloco `box` dentro do diálogo; o foco vai para "Continuar editando").
+   */
+  function bindDiscardGuard(dlg, box, btnYes, btnNo, isDirty, isBusy) {
+    function request() {
+      if (!dlg.open || isBusy()) return;
+      if (!isDirty()) { closeDialogAnimated(dlg); return; }
+      box.hidden = false;
+      playEnter(box);
+      box.scrollIntoView({ block: "nearest" });
+      btnNo.focus({ preventScroll: true });
+    }
+    btnYes.addEventListener("click", () => { box.hidden = true; closeDialogAnimated(dlg); });
+    btnNo.addEventListener("click", () => { box.hidden = true; });
+    dlg.addEventListener("cancel", (e) => { e.preventDefault(); request(); });
+    onBackdropClick(dlg, request);
+    return { request, hide() { box.hidden = true; } };
+  }
+
+  /** Confirmação em 2 toques (igual ao "Remover" das músicas): o 1º arma o botão, o 2º executa. */
+  const armed = { btn: null, timer: 0, restore: null };
+  function disarm() {
+    if (!armed.btn) return;
+    clearTimeout(armed.timer);
+    armed.btn.classList.remove("is-confirm");
+    if (armed.restore) armed.restore();
+    armed.btn = null;
+    armed.restore = null;
+  }
+  function arm(btn, restore, ms) {
+    disarm();
+    btn.classList.add("is-confirm");
+    armed.btn = btn;
+    armed.restore = restore;
+    armed.timer = setTimeout(disarm, ms || 4500);
+  }
+
+  /** Busca músicas da biblioteca (mesma rota da lista de Minhas músicas). */
+  async function musicSearch(o) {
+    const p = new URLSearchParams();
+    if (o.q) p.set("q", o.q);
+    if (o.pasta) p.set("pasta", o.pasta);
+    p.set("ordem", o.ordem || "titulo");
+    p.set("offset", String(o.offset || 0));
+    p.set("limit", String(o.limit || 30));
+    const { ok, data } = await getJSON("/api/musicas?" + p.toString(), { signal: o.signal, timeout: 12000 });
+    return ok ? libParse(data) : null;
+  }
+
+  /** Música (da biblioteca ou de uma lista) pronta para a linha do editor. */
+  const songFrom = (t, disp) => ({
+    id: t.id, title: t.title || null, artista: t.artista || null, duracao_s: isNum(t.duracao_s) ? t.duracao_s : null,
+    tem_capa: t.tem_capa === true, disp,
+  });
+
+  // ======================================================================
+  // 16d-1. Listas: seção em "Minhas músicas"
+  // ======================================================================
+  const listsCount = $("lists-count");
+  const btnListNew = $("btn-list-new");
+  const listsEmpty = $("lists-empty");
+  const listsNote = $("lists-note");
+  const listsGrid = $("lists-grid");
+
+  const lists = { loaded: false, failed: false, loading: false, versao: -1, items: [], acervoPronto: true, busyId: "", sig: "" };
+
+  function listsParse(data) {
+    if (!data || data.ok !== true || !Array.isArray(data.listas)) return null;
+    const items = [];
+    for (const l of data.listas.slice(0, LISTAS_MAX)) {
+      if (!l || typeof l.id !== "string" || !LISTA_ID_RE.test(l.id) || typeof l.nome !== "string") continue;
+      items.push({
+        id: l.id,
+        nome: l.nome.slice(0, LISTA_NOME_MAX),
+        versao: Number.isInteger(l.versao) ? l.versao : 1,
+        total: Number.isInteger(l.total) && l.total >= 0 ? l.total : 0,
+        disponiveis: Number.isInteger(l.disponiveis) && l.disponiveis >= 0 ? l.disponiveis : null, // null: pasta ainda sendo lida
+      });
+    }
+    return { versao: Number.isInteger(data.versao) ? data.versao : 0, acervoPronto: data.acervo_pronto !== false, items };
+  }
+
+  /** GET /api/listas/<id>: {id, nome, versao, songs:[{id,title,artista,duracao_s,tem_capa,disp}]}. */
+  function listDetailParse(data) {
+    const l = data && data.ok === true && data.lista && typeof data.lista === "object" ? data.lista : null;
+    if (!l || typeof l.id !== "string" || !LISTA_ID_RE.test(l.id) || typeof l.nome !== "string") return null;
+    const songs = [];
+    for (const m of Array.isArray(l.musicas) ? l.musicas.slice(0, LISTA_MUSICAS_MAX) : []) {
+      if (!m || typeof m.id !== "string" || !MUSIC_ID_RE.test(m.id)) continue;
+      if (m.disponivel === true) {
+        const t = trackFromLib(m);
+        songs.push(songFrom(t || { id: m.id }, true));
+      } else {
+        songs.push({ id: m.id, title: typeof m.titulo === "string" && m.titulo ? m.titulo.slice(0, 200) : null, artista: null, duracao_s: null, tem_capa: false, disp: m.disponivel === false ? false : null });
+      }
+    }
+    return { id: l.id, nome: l.nome.slice(0, LISTA_NOME_MAX), versao: Number.isInteger(l.versao) ? l.versao : 1, songs };
+  }
+
+  async function listsPoll() {
+    if (lists.loading) return;
+    lists.loading = true;
+    try {
+      const r = await getJSON("/api/listas", { timeout: 8000 });
+      const p = r.ok ? listsParse(r.data) : null;
+      if (!p) throw new Error("resposta inválida");
+      lists.items = p.items;
+      lists.versao = p.versao;
+      lists.acervoPronto = p.acervoPronto;
+      lists.loaded = true;
+      lists.failed = false;
+    } catch (e) {
+      if (e && e.name === "AuthLockedError") return;
+      lists.failed = true;
+    } finally {
+      lists.loading = false;
+      listsRender();
+    }
+  }
+
+  function makeListCard(l) {
+    const li = mk("li", "lcard is-new");
+    li.addEventListener("animationend", () => li.classList.remove("is-new"), { once: true });
+    const ico = mk("span", "lcard__ico");
+    ico.setAttribute("aria-hidden", "true");
+    ico.appendChild(makeIcon("list"));
+    const name = mk("span", "lcard__name");
+    const sub = mk("span", "lcard__sub");
+    const text = mk("span", "lcard__text");
+    text.append(name, sub);
+    const edit = mkBtn("btn btn--icon", "edit", "edit");
+    const rm = mkBtn("btn btn--icon lcard__rm", "remove", "trash");
+    rm.appendChild(mk("span", "lcard__rm-t", "Apagar?"));
+    const tools = mk("div", "lcard__tools");
+    tools.append(edit, rm);
+    const top = mk("div", "lcard__top");
+    top.append(ico, text, tools);
+    const play = mkBtn("btn btn--primary btn--sm", "play", "play", "", "Tocar");
+    const shuf = mkBtn("btn btn--ghost btn--sm", "shuffle", "shuffle", "", "Embaralhar");
+    const acts = mk("div", "lcard__acts");
+    acts.append(play, shuf);
+    const warn = mk("p", "hint lcard__warn");
+    li.append(top, acts, warn);
+    li._l = { name, sub, play, shuf, edit, rm, warn };
+    return li;
+  }
+
+  function updateListCard(li, l) {
+    const r = li._l;
+    setText(r.name, l.nome);
+    const falt = l.disponiveis === null ? 0 : l.total - l.disponiveis;
+    let sub = plural(l.total, "música", "músicas");
+    if (falt > 0) sub += " · " + plural(falt, "indisponível", "indisponíveis");
+    setText(r.sub, sub);
+    r.sub.classList.toggle("is-warn", falt > 0);
+    const vazia = l.total === 0 || l.disponiveis === 0;
+    r.warn.hidden = !vazia;
+    setText(r.warn, l.total === 0 ? "A lista está vazia. Toque em editar para acrescentar músicas." : vazia ? "Nenhuma música desta lista está na pasta agora." : "");
+    const busy = !!lists.busyId;
+    for (const b of [r.play, r.shuf]) b.setAttribute("aria-disabled", String(vazia || busy));
+    r.play.setAttribute("aria-label", "Tocar a lista " + l.nome);
+    r.shuf.setAttribute("aria-label", "Tocar a lista " + l.nome + " em ordem aleatória");
+    r.edit.setAttribute("aria-label", "Editar a lista " + l.nome);
+    r.edit.title = "Editar";
+    if (!r.rm.classList.contains("is-confirm")) {
+      r.rm.setAttribute("aria-label", "Apagar a lista " + l.nome);
+      r.rm.title = "Apagar";
+    }
+    r.play.classList.toggle("is-loading", busy && lists.busyId === l.id);
+  }
+
+  function listsRender() {
+    const n = lists.items.length;
+    listsCount.hidden = n === 0;
+    setText(listsCount, String(n));
+    listsEmpty.hidden = !(lists.loaded && n === 0);
+    let note = "";
+    if (lists.failed && !lists.loaded) note = "Não consegui carregar as listas agora.";
+    else if (lists.loaded && !lists.acervoPronto) note = "O Proclamare está lendo a pasta de músicas…";
+    listsNote.hidden = !note;
+    setText(listsNote, note);
+    const cheio = n >= LISTAS_MAX;
+    btnListNew.setAttribute("aria-disabled", String(cheio));
+    btnListNew.title = cheio ? "Você já tem " + LISTAS_MAX + " listas. Apague uma para criar outra." : "";
+    const sig = lists.busyId + "|" + lists.acervoPronto + "|" + lists.items.map((l) => [l.id, l.nome, l.total, l.disponiveis].join(",")).join(";");
+    if (sig !== lists.sig) {
+      lists.sig = sig;
+      reconcileList(listsGrid, lists.items, (l) => l.id, makeListCard, updateListCard);
+    }
+  }
+
+  function listsReset() {
+    Object.assign(lists, { loaded: false, failed: false, loading: false, versao: -1, items: [], acervoPronto: true, busyId: "", sig: "" });
+    listsGrid.replaceChildren();
+    disarm();
+    listsRender();
+  }
+
+  /** Tocar a lista (em ordem ou embaralhada): troca a fila e a música atual. */
+  async function listPlay(l, shuffle, btn) {
+    if (lists.busyId || btn.getAttribute("aria-disabled") === "true") return;
+    const label = btn.querySelector("span");
+    const original = label ? label.textContent : "";
+    // tocar uma lista SUBSTITUI a música e a fila: se algo está tocando, pede um 2º toque (como "Tocar pasta")
+    if ((ytqItems.length > 0 || ytPlayUI.playing) && !btn.classList.contains("is-confirm")) {
+      if (label) label.textContent = "Trocar a música?";
+      arm(btn, () => { if (label) label.textContent = original; }, 4500);
+      return;
+    }
+    disarm();
+    lists.busyId = l.id;
+    listsRender();
+    try {
+      const r = await libPost("/api/listas/" + l.id + "/tocar", { embaralhar: !!shuffle });
+      if (r && r.ok && r.data.ok) {
+        let msg = "Tocando a lista “" + truncate(l.nome, 30) + "”" + (shuffle ? " em ordem aleatória" : "") + ".";
+        if (Number.isInteger(r.data.cortados) && r.data.cortados > 0) msg += " A fila encheu: " + r.data.cortados + " ficaram de fora.";
+        if (Number.isInteger(r.data.indisponiveis) && r.data.indisponiveis > 0) msg += " " + plural(r.data.indisponiveis, "música não estava", "músicas não estavam") + " na pasta e foi pulada.";
+        toast(msg, "success", { duration: 4800, action: { label: "Ver fila", onClick: scrollToQueue } });
+        setTimeout(() => scheduler.kick("yt-state"), 1200);
+        scheduler.kick("lib-lists");
+      } else if (r && r.status === 409 && r.data.codigo === "sem_tocador") {
+        noTocadorToast(null);
+      } else if (r && r.status === 404) {
+        toast(libErr(r, "Essa lista não existe mais."), "warn");
+        scheduler.kick("lib-lists");
+      } else {
+        toast(libErr(r, r ? "Não foi possível tocar a lista agora." : "Sem resposta do servidor."), r && (r.status === 429 || r.status === 409) ? "info" : "error");
+      }
+    } finally {
+      lists.busyId = "";
+      listsRender();
+    }
+  }
+
+  async function listRemove(l, btn) {
+    if (lists.busyId || btn.getAttribute("aria-disabled") === "true") return;
+    if (!btn.classList.contains("is-confirm")) {
+      btn.setAttribute("aria-label", "Confirmar: apagar a lista " + l.nome + ". As músicas continuam na pasta");
+      arm(btn, () => { btn.setAttribute("aria-label", "Apagar a lista " + l.nome); }, 4500);
+      return;
+    }
+    disarm();
+    btn.setAttribute("aria-disabled", "true");
+    const r = await libPost("/api/listas/" + l.id + "/apagar", { versao: l.versao });
+    btn.removeAttribute("aria-disabled");
+    if (r && r.ok && r.data.ok) {
+      lists.items = lists.items.filter((x) => x.id !== l.id);
+      listsRender();
+      const usos = prog.itens.filter((i) => i.tipo === "lista" && i.alvo === l.id).length;
+      toast("Lista apagada. As músicas continuam na pasta." + (usos ? " " + plural(usos, "horário usava", "horários usavam") + " esta lista e ficou sem música." : ""), usos ? "warn" : "success", { duration: usos ? 8000 : 4200 });
+      scheduler.kick("lib-lists");
+      scheduler.kick("prog");
+    } else {
+      toast(libErr(r, r ? "Não foi possível apagar a lista." : "Sem resposta do servidor."), "error");
+      scheduler.kick("lib-lists");
+    }
+  }
+
+  listsGrid.addEventListener("click", (e) => {
+    const btn = e.target instanceof Element ? e.target.closest("button[data-act]") : null;
+    if (!btn || !listsGrid.contains(btn)) return;
+    const li = btn.closest(".lcard");
+    const l = li ? lists.items.find((x) => x.id === li.dataset.key) : null;
+    if (!l) return;
+    const act = btn.dataset.act;
+    if (act !== "remove" && armed.btn && armed.btn !== btn) disarm();
+    if (act === "play") listPlay(l, false, btn);
+    else if (act === "shuffle") listPlay(l, true, btn);
+    else if (act === "edit") openListEditor(l.id, null, btn);
+    else if (act === "remove") listRemove(l, btn);
+  });
+
+  btnListNew.addEventListener("click", () => {
+    if (btnListNew.getAttribute("aria-disabled") === "true") {
+      toast("Você já tem " + LISTAS_MAX + " listas. Apague uma para criar outra.", "info");
+      return;
+    }
+    openListEditor(null, null, btnListNew);
+  });
+
+  // ======================================================================
+  // 16d-2. Editor de lista (nome, músicas, ordem)
+  // ======================================================================
+  const listDialog = $("list-dialog");
+  const listForm = $("list-form");
+  const listDlgTitle = $("list-dlg-title");
+  const listNome = $("list-nome");
+  const listNomeCount = $("list-nome-count");
+  const listNomeErro = $("list-nome-erro");
+  const listSongs = $("list-songs");
+  const listSongsCount = $("list-songs-count");
+  const listSongsEmpty = $("list-songs-empty");
+  const listUndo = $("list-undo");
+  const listUndoText = $("list-undo-text");
+  const btnListUndo = $("btn-list-undo");
+  const btnListAddSongs = $("btn-list-addsongs");
+  const listPicker = $("list-picker");
+  const listPickQ = $("list-pick-q");
+  const listPickFolderBox = $("list-pick-folder-box");
+  const listPickFolder = $("list-pick-folder");
+  const listPickNote = $("list-pick-note");
+  const listPickResults = $("list-pick-results");
+  const btnListPickMore = $("btn-list-pick-more");
+  const btnListPickAll = $("btn-list-pick-all");
+  const listLive = $("list-live");
+  const listError = $("list-error");
+  const btnListCancel = $("btn-list-cancel");
+  const btnListSave = $("btn-list-save");
+
+  const led = { mode: "new", id: "", versao: 0, songs: [], baseSig: "", busy: false, loading: false, session: 0, keySeq: 0, removed: null, opener: null };
+  const ledSig = () => JSON.stringify([listNome.value.trim(), led.songs.map((s) => s.id)]);
+  const ledDirty = () => listDialog.open && !led.loading && ledSig() !== led.baseSig;
+  const ledGuard = bindDiscardGuard(listDialog, $("list-confirm"), $("btn-list-confirm-yes"), $("btn-list-confirm-no"), ledDirty, () => led.busy);
+
+  function ledAnnounce(text) {
+    listLive.textContent = "";
+    setTimeout(() => { listLive.textContent = text; }, 30);
+  }
+
+  function ledShowError(text) {
+    listError.hidden = !text;
+    setText(listError, text || "");
+  }
+
+  function ledNameError(text) {
+    listNomeErro.hidden = !text;
+    setText(listNomeErro, text || "");
+    if (text) {
+      listNome.setAttribute("aria-invalid", "true");
+      listNome.setAttribute("aria-describedby", "list-nome-erro");
+    } else {
+      listNome.removeAttribute("aria-invalid");
+    }
+  }
+
+  function ledSetBusy(on) {
+    led.busy = on;
+    btnListSave.classList.toggle("is-loading", on);
+    for (const b of [btnListSave, btnListCancel]) {
+      if (on) b.setAttribute("aria-disabled", "true");
+      else b.removeAttribute("aria-disabled");
+    }
+    if (!on && led.loading) btnListSave.setAttribute("aria-disabled", "true");
+  }
+
+  function makeSongRow(s, i, n) {
+    const li = mk("li", "lrow" + (s.isNew ? " is-new" : "") + (s.disp === false ? " is-missing" : "") + (s.bad ? " is-bad" : ""));
+    li.dataset.key = String(s.key);
+    s.isNew = false;
+    const title = s.title || (s.disp === false ? "Música que saiu da pasta" : "Música");
+    const text = mk("span", "lrow__text");
+    text.append(mk("span", "lrow__title", title));
+    const sub = s.disp === false ? "Indisponível: o arquivo saiu da pasta (é pulada ao tocar)" : libSub(s);
+    if (sub) text.appendChild(mk("span", "lrow__sub", sub));
+    const tools = mk("div", "lrow__tools");
+    const num = String(i + 1);
+    tools.append(
+      buildToolButton("up", "up", "Subir a música " + num + ": " + truncate(title, 40), i === 0),
+      buildToolButton("down", "down", "Descer a música " + num + ": " + truncate(title, 40), i === n - 1),
+      buildToolButton("remove", "trash", "Remover da lista a música " + num + ": " + truncate(title, 40), false),
+    );
+    li.append(mk("span", "lrow__n", num), text, tools);
+    return li;
+  }
+
+  function ledFocus(key, what) {
+    const li = listSongs.querySelector('.lrow[data-key="' + key + '"]');
+    if (!li) return;
+    let el = li.querySelector('[data-act="' + what + '"]');
+    if (el && el.disabled) el = li.querySelector('[data-act="' + (what === "up" ? "down" : "up") + '"]');
+    if (el && !el.disabled) el.focus();
+  }
+
+  function ledRenderSongs(focus) {
+    const n = led.songs.length;
+    listSongs.replaceChildren(...led.songs.map((s, i) => makeSongRow(s, i, n)));
+    listSongsEmpty.hidden = n > 0 || led.loading;
+    setText(listSongsEmpty, led.loading ? "" : "Nenhuma música ainda. Toque em “Adicionar músicas”.");
+    paintCounter(listSongsCount, n, LISTA_MUSICAS_MAX);
+    if (focus) ledFocus(focus.key, focus.what);
+    lpickRender();
+  }
+
+  const ledByKey = (key) => led.songs.findIndex((s) => String(s.key) === String(key));
+
+  listSongs.addEventListener("click", (e) => {
+    const btn = e.target instanceof Element ? e.target.closest("button[data-act]") : null;
+    if (!btn || btn.disabled || !listSongs.contains(btn) || led.busy) return;
+    const key = btn.closest(".lrow").dataset.key;
+    const i = ledByKey(key);
+    if (i < 0) return;
+    const act = btn.dataset.act;
+    if (act === "up" || act === "down") {
+      const j = act === "up" ? i - 1 : i + 1;
+      if (j < 0 || j >= led.songs.length) return;
+      const s = led.songs[i];
+      led.songs[i] = led.songs[j];
+      led.songs[j] = s;
+      ledRenderSongs({ key: s.key, what: act });
+      ledAnnounce("Música movida para a posição " + (j + 1) + " de " + led.songs.length + ".");
+    } else if (act === "remove") {
+      const [gone] = led.songs.splice(i, 1);
+      led.removed = { song: gone, index: i };
+      setText(listUndoText, "“" + truncate(gone.title || "Música", 40) + "” saiu da lista.");
+      listUndo.hidden = false;
+      const next = led.songs[Math.min(i, led.songs.length - 1)];
+      ledRenderSongs(next ? { key: next.key, what: "remove" } : null);
+      if (!next) btnListAddSongs.focus();
+      ledAnnounce("Música removida da lista. Restam " + led.songs.length + ".");
+    }
+  });
+
+  btnListUndo.addEventListener("click", () => {
+    if (!led.removed || led.songs.length >= LISTA_MUSICAS_MAX) return;
+    const { song, index } = led.removed;
+    led.removed = null;
+    listUndo.hidden = true;
+    const at = Math.min(index, led.songs.length);
+    led.songs.splice(at, 0, song);
+    ledRenderSongs({ key: song.key, what: "remove" });
+    ledAnnounce("Música de volta na posição " + (at + 1) + ".");
+  });
+
+  /** Acrescenta músicas da biblioteca ao fim da lista (sem repetir). */
+  function ledAddTracks(tracks) {
+    const have = new Set(led.songs.map((s) => s.id));
+    let added = 0;
+    let full = false;
+    for (const t of tracks) {
+      if (have.has(t.id)) continue;
+      if (led.songs.length >= LISTA_MUSICAS_MAX) { full = true; break; }
+      led.songs.push(Object.assign(songFrom(t, true), { key: ++led.keySeq, isNew: true }));
+      have.add(t.id);
+      added++;
+    }
+    if (added) {
+      led.removed = null;
+      listUndo.hidden = true;
+      ledRenderSongs(null);
+      ledAnnounce(plural(added, "música adicionada", "músicas adicionadas") + ". A lista tem " + plural(led.songs.length, "música", "músicas") + ".");
+    }
+    if (full) ledShowError("Cada lista pode ter no máximo " + LISTA_MUSICAS_MAX + " músicas.");
+    return added;
+  }
+
+  listNome.addEventListener("input", () => {
+    paintCounter(listNomeCount, listNome.value.length, LISTA_NOME_MAX);
+    if (!listNomeErro.hidden) ledNameError("");
+    if (!listError.hidden) ledShowError("");
+  });
+
+  async function openListEditor(id, preset, opener) {
+    if (listDialog.open || authLocked || shuttingDown) return;
+    const session = ++led.session;
+    led.mode = id ? "edit" : "new";
+    led.id = id || "";
+    led.versao = 0;
+    led.loading = !!id;
+    led.removed = null;
+    led.opener = opener || document.activeElement;
+    led.songs = (preset || []).map((t) => Object.assign(songFrom(t, true), { key: ++led.keySeq }));
+    listNome.value = "";
+    paintCounter(listNomeCount, 0, LISTA_NOME_MAX);
+    ledNameError("");
+    ledShowError("");
+    ledGuard.hide();
+    listUndo.hidden = true;
+    lpickReset();
+    setText(listDlgTitle, id ? "Editar lista" : "Nova lista");
+    led.baseSig = JSON.stringify(["", []]);
+    ledSetBusy(false);
+    ledRenderSongs(null);
+    if (led.loading) {
+      setText(listSongsEmpty, "Carregando a lista…");
+      listSongsEmpty.hidden = false;
+      btnListSave.setAttribute("aria-disabled", "true");
+    }
+    listDialog.showModal();
+    if (!id) { listNome.focus(); return; }
+    btnListCancel.focus();
+    try {
+      const r = await getJSON("/api/listas/" + id, { timeout: 10000 });
+      if (session !== led.session || !listDialog.open) return;
+      const d = r.ok ? listDetailParse(r.data) : null;
+      if (!d) {
+        led.loading = false;
+        listSongsEmpty.hidden = true;
+        ledShowError(r.status === 404 ? "Essa lista não existe mais." : "Não foi possível abrir a lista agora. Feche e tente de novo.");
+        if (r.status === 404) scheduler.kick("lib-lists");
+        return;
+      }
+      led.versao = d.versao;
+      led.songs = d.songs.map((s) => Object.assign(s, { key: ++led.keySeq }));
+      listNome.value = d.nome;
+      paintCounter(listNomeCount, d.nome.length, LISTA_NOME_MAX);
+      led.loading = false;
+      led.baseSig = ledSig();
+      btnListSave.removeAttribute("aria-disabled");
+      ledRenderSongs(null);
+      listNome.focus();
+    } catch (err) {
+      if (session !== led.session || !listDialog.open) return;
+      led.loading = false;
+      listSongsEmpty.hidden = true;
+      if (!err || err.name !== "AuthLockedError") ledShowError("Sem conexão com o servidor. Feche e tente de novo.");
+    }
+  }
+
+  // ---- Escolher músicas da biblioteca para a lista ----
+  const lpick = { open: false, q: "", pasta: "", items: [], total: 0, loading: false, ctrl: null, seq: 0, timer: 0, foldersFor: false, all: false };
+
+  function lpickReset() {
+    if (lpick.ctrl) { lpick.ctrl.abort(); lpick.ctrl = null; }
+    clearTimeout(lpick.timer);
+    Object.assign(lpick, { open: false, q: "", pasta: "", items: [], total: 0, loading: false, seq: lpick.seq + 1, foldersFor: false, all: false });
+    listPicker.hidden = true;
+    btnListAddSongs.setAttribute("aria-expanded", "false");
+    listPickQ.value = "";
+    listPickFolderBox.hidden = true;
+    listPickFolder.replaceChildren();
+    listPickResults.replaceChildren();
+    setText(listPickNote, "");
+    btnListPickMore.hidden = true;
+    btnListPickAll.hidden = true;
+  }
+
+  function lpickFillFolders(pastas) {
+    if (lpick.foldersFor) return;
+    lpick.foldersFor = true;
+    listPickFolderBox.hidden = pastas.length === 0;
+    const frag = document.createDocumentFragment();
+    const all = mk("option", "", "Todas as pastas");
+    all.value = "";
+    frag.appendChild(all);
+    for (const p of pastas) {
+      const o = mk("option", "", p.nome.split("/").join(" › ") + " (" + p.total + ")");
+      o.value = p.nome;
+      frag.appendChild(o);
+    }
+    listPickFolder.replaceChildren(frag);
+  }
+
+  async function lpickSearch(reset) {
+    if (lpick.ctrl) lpick.ctrl.abort();
+    const ctrl = new AbortController();
+    lpick.ctrl = ctrl;
+    const mine = ++lpick.seq;
+    lpick.loading = true;
+    if (reset) { lpick.items = []; lpick.total = 0; }
+    lpickRender();
+    try {
+      const page = await musicSearch({ q: lpick.q, pasta: lpick.pasta, offset: reset ? 0 : lpick.items.length, limit: 30, signal: ctrl.signal });
+      if (mine !== lpick.seq) return;
+      if (!page) throw new Error("resposta inválida");
+      lpickFillFolders(page.pastas);
+      const have = new Set(lpick.items.map((t) => t.id));
+      lpick.items = lpick.items.concat(page.items.filter((t) => !have.has(t.id)));
+      lpick.total = page.total;
+      lpick.failed = false;
+      lpick.empty = page.totalAcervo === 0;
+    } catch (e) {
+      if (mine !== lpick.seq || (e && (e.name === "AbortError" || e.name === "AuthLockedError"))) return;
+      lpick.failed = true;
+    } finally {
+      if (mine === lpick.seq) { lpick.loading = false; lpick.ctrl = null; lpickRender(); }
+    }
+  }
+
+  function makePickRow(t, inList, problem) {
+    const li = mk("li");
+    const b = mk("button", "pick");
+    b.type = "button";
+    b.dataset.id = t.id;
+    const thumb = mk("span", "thumb thumb--lib");
+    thumb.dataset.icon = "#i-music";
+    thumb.appendChild(makeIcon("music"));
+    setThumbArt(thumb, { file: t.id, capa: t.tem_capa });
+    const text = mk("span", "pick__text");
+    text.appendChild(mk("span", "pick__title", t.title || "Música"));
+    const sub = problem || libSub(t);
+    if (sub) text.appendChild(mk("span", "pick__sub" + (problem ? " is-warn" : ""), sub));
+    const state = mk("span", "pick__state");
+    if (problem) state.appendChild(makeIcon("alert"));
+    else state.appendChild(makeIcon(inList ? "check" : "plus"));
+    b.append(thumb, text, state);
+    const name = t.title || "Música";
+    b.setAttribute("aria-label", inList ? "Já está na lista: " + name : problem ? name + ": " + problem : "Adicionar à lista: " + name);
+    if (inList || problem) b.setAttribute("aria-disabled", "true");
+    li.appendChild(b);
+    return li;
+  }
+
+  function lpickRender() {
+    if (!lpick.open) return;
+    const have = new Set(led.songs.map((s) => s.id));
+    const focusId = document.activeElement && listPickResults.contains(document.activeElement) ? document.activeElement.dataset.id : null;
+    listPickResults.replaceChildren(...lpick.items.map((t) => makePickRow(t, have.has(t.id), "")));
+    if (focusId) {
+      const again = listPickResults.querySelector('button[data-id="' + focusId + '"]');
+      if (again) again.focus({ preventScroll: true });
+    }
+    let note = "";
+    if (lpick.loading && !lpick.items.length) note = "Procurando…";
+    else if (lpick.failed && !lpick.items.length) note = "Não consegui buscar as músicas agora.";
+    else if (!lpick.items.length) note = lpick.empty ? "A biblioteca ainda está vazia. Coloque músicas na pasta ou envie pelo botão “Enviar músicas”." : "Nenhuma música encontrada.";
+    else note = lpick.items.length < lpick.total ? "Mostrando " + lpick.items.length + " de " + lpick.total + ". Refine a busca ou carregue mais." : plural(lpick.total, "música encontrada", "músicas encontradas") + ".";
+    setText(listPickNote, note);
+    const more = lpick.items.length < lpick.total;
+    btnListPickMore.hidden = !more;
+    btnListPickMore.setAttribute("aria-disabled", String(lpick.loading));
+    const addable = lpick.total > 0;
+    btnListPickAll.hidden = !addable;
+    setText(btnListPickAll, lpick.total === 1 ? "Adicionar esta" : "Adicionar todas (" + lpick.total + ")");
+    btnListPickAll.setAttribute("aria-disabled", String(lpick.all));
+  }
+
+  btnListAddSongs.addEventListener("click", () => {
+    lpick.open = !lpick.open;
+    listPicker.hidden = !lpick.open;
+    btnListAddSongs.setAttribute("aria-expanded", String(lpick.open));
+    if (lpick.open) {
+      playEnter(listPicker);
+      if (!lpick.items.length && !lpick.loading) lpickSearch(true);
+      else lpickRender();
+      listPickQ.focus({ preventScroll: true });
+      listPicker.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    }
+  });
+  listPickQ.addEventListener("input", () => {
+    clearTimeout(lpick.timer);
+    lpick.timer = setTimeout(() => {
+      const q = listPickQ.value.trim();
+      if (q !== lpick.q) { lpick.q = q; lpickSearch(true); }
+    }, 250);
+  });
+  listPickQ.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault(); // Enter na busca não salva a lista
+    clearTimeout(lpick.timer);
+    lpick.q = listPickQ.value.trim();
+    lpickSearch(true);
+  });
+  listPickFolder.addEventListener("change", () => { lpick.pasta = listPickFolder.value; lpickSearch(true); });
+  btnListPickMore.addEventListener("click", () => {
+    if (btnListPickMore.getAttribute("aria-disabled") !== "true") lpickSearch(false);
+  });
+  listPickResults.addEventListener("click", (e) => {
+    const b = e.target instanceof Element ? e.target.closest("button.pick") : null;
+    if (!b || b.getAttribute("aria-disabled") === "true") return;
+    const t = lpick.items.find((x) => x.id === b.dataset.id);
+    if (t) ledAddTracks([t]);
+  });
+  btnListPickAll.addEventListener("click", async () => {
+    if (lpick.all || btnListPickAll.getAttribute("aria-disabled") === "true") return;
+    lpick.all = true;
+    lpickRender();
+    try {
+      const got = [];
+      while (got.length < Math.min(lpick.total, LISTA_MUSICAS_MAX + 100)) {
+        const page = await musicSearch({ q: lpick.q, pasta: lpick.pasta, offset: got.length, limit: 100 });
+        if (!page || !page.items.length) break;
+        got.push(...page.items);
+        if (got.length >= page.total) break;
+      }
+      ledAddTracks(got);
+    } catch (e) {
+      if (!e || e.name !== "AuthLockedError") ledShowError("Não consegui buscar todas as músicas agora.");
+    } finally {
+      lpick.all = false;
+      lpickRender();
+    }
+  });
+
+  // ---- Salvar ----
+  async function ledSave() {
+    if (led.busy || led.loading) return;
+    ledShowError("");
+    const nome = cleanMsgText(listNome.value, false);
+    if (!nome) { ledNameError("Dê um nome à lista."); listNome.focus(); return; }
+    if (nome.length > LISTA_NOME_MAX) { ledNameError("O nome pode ter até " + LISTA_NOME_MAX + " letras."); listNome.focus(); return; }
+    ledNameError("");
+    for (const s of led.songs) s.bad = false;
+    const musicas = led.songs.map((s) => s.id);
+    ledSetBusy(true);
+    try {
+      const novo = led.mode === "new";
+      const body = novo ? { nome, musicas } : { versao: led.versao, nome, musicas };
+      const r = await postJSON(novo ? "/api/listas" : "/api/listas/" + led.id, body, { timeout: 15000 });
+      if (r.ok && r.data.ok) {
+        closeDialogAnimated(listDialog);
+        toast(novo ? "Lista criada." : "Lista salva.", "success");
+        scheduler.kick("lib-lists");
+        scheduler.kick("prog");
+        return;
+      }
+      const d = r.data;
+      if (r.status === 409 && d.codigo === "versao_mudou") {
+        // outro aparelho mexeu na lista: pega a versão atual e MANTÉM o que foi montado aqui
+        try {
+          const g = await getJSON("/api/listas/" + led.id, { timeout: 10000 });
+          const nd = g.ok ? listDetailParse(g.data) : null;
+          if (nd) led.versao = nd.versao;
+        } catch (e) { /* o erro abaixo já orienta */ }
+        ledShowError("Outro aparelho mexeu nesta lista agora há pouco. Toque em Salvar de novo para gravar a sua versão por cima.");
+      } else if (r.status === 409 && d.codigo === "nome_repetido") {
+        ledNameError("Já existe uma lista com esse nome.");
+        listNome.focus();
+      } else if (r.status === 400 && d.campo === "nome") {
+        ledNameError(typeof d.error === "string" ? d.error : "O nome da lista é inválido.");
+        listNome.focus();
+      } else if (r.status === 400 && d.campo === "musicas" && Number.isInteger(d.indice) && led.songs[d.indice]) {
+        const s = led.songs[d.indice];
+        s.bad = true;
+        ledRenderSongs(null);
+        const li = listSongs.querySelector('.lrow[data-key="' + s.key + '"]');
+        if (li) li.scrollIntoView({ block: "nearest" });
+        ledShowError(typeof d.error === "string" ? d.error : "Uma música da lista não pode ser usada.");
+      } else if (r.status === 404) {
+        ledShowError("Essa lista não existe mais. Feche e crie de novo, se quiser.");
+        scheduler.kick("lib-lists");
+      } else if (r.status === 429) {
+        ledShowError("Muitas alterações seguidas. Espere um minuto e tente de novo.");
+      } else if (r.status === 413) {
+        ledShowError("A lista ficou grande demais para enviar. Tire algumas músicas.");
+      } else {
+        ledShowError(typeof d.error === "string" && d.error ? d.error : "Não foi possível salvar a lista agora.");
+      }
+    } catch (err) {
+      if (!err || err.name !== "AuthLockedError") ledShowError("Sem conexão com o servidor. Tente de novo.");
+    } finally {
+      ledSetBusy(false);
+    }
+  }
+
+  listForm.addEventListener("submit", (e) => { e.preventDefault(); ledSave(); });
+  btnListCancel.addEventListener("click", ledGuard.request);
+  listDialog.addEventListener("close", () => {
+    led.session++;
+    led.songs = [];
+    led.removed = null;
+    led.loading = false;
+    listSongs.replaceChildren(); // não deixa nomes de músicas parados no DOM
+    lpickReset();
+    ledGuard.hide();
+    ledSetBusy(false);
+    if (!shuttingDown && !authLocked && led.opener && led.opener.isConnected) led.opener.focus({ preventScroll: true });
+    led.opener = null;
+  });
+
+  // ======================================================================
+  // 16d-3. "+ Lista" de uma música da biblioteca
+  // ======================================================================
+  const addlistDialog = $("addlist-dialog");
+  const addlistTrack = $("addlist-track");
+  const addlistList = $("addlist-list");
+  const addlistEmpty = $("addlist-empty");
+  const btnAddlistNew = $("btn-addlist-new");
+  const addlistError = $("addlist-error");
+  const btnAddlistClose = $("btn-addlist-close");
+  const atl = { track: null, busy: false, opener: null };
+
+  function atlShowError(text) {
+    addlistError.hidden = !text;
+    setText(addlistError, text || "");
+  }
+
+  function atlRender() {
+    const frag = document.createDocumentFragment();
+    for (const l of lists.items) {
+      const li = mk("li");
+      const b = mk("button", "addlist__btn");
+      b.type = "button";
+      b.dataset.id = l.id;
+      b.append(mk("span", "addlist__name", l.nome), mk("span", "addlist__n", plural(l.total, "música", "músicas")));
+      b.setAttribute("aria-label", "Adicionar à lista " + l.nome + " (" + plural(l.total, "música", "músicas") + ")");
+      li.appendChild(b);
+      frag.appendChild(li);
+    }
+    addlistList.replaceChildren(frag);
+    addlistEmpty.hidden = lists.items.length > 0 || !lists.loaded;
+    btnAddlistNew.setAttribute("aria-disabled", String(lists.items.length >= LISTAS_MAX));
+  }
+
+  function openAddToList(track, opener) {
+    if (addlistDialog.open || authLocked || shuttingDown) return;
+    atl.track = track;
+    atl.opener = opener || null;
+    atl.busy = false;
+    atlShowError("");
+    setText(addlistTrack, "Música: “" + truncate(track.title || "Música", 70) + "”");
+    atlRender();
+    addlistDialog.showModal();
+    (addlistList.querySelector("button") || btnAddlistNew).focus();
+    if (!lists.loaded) listsPoll().then(() => { if (addlistDialog.open) atlRender(); });
+  }
+
+  async function atlAdd(l, btn) {
+    if (atl.busy || !atl.track) return;
+    atl.busy = true;
+    atlShowError("");
+    btn.setAttribute("aria-disabled", "true");
+    const track = atl.track;
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const g = await getJSON("/api/listas/" + l.id, { timeout: 10000 });
+        const d = g.ok ? listDetailParse(g.data) : null;
+        if (!d) {
+          atlShowError(g.status === 404 ? "Essa lista não existe mais." : "Não foi possível abrir a lista agora.");
+          if (g.status === 404) scheduler.kick("lib-lists");
+          return;
+        }
+        if (d.songs.some((s) => s.id === track.id)) {
+          toast("“" + truncate(track.title || "Música", 40) + "” já está na lista “" + truncate(d.nome, 30) + "”.", "info");
+          closeDialogAnimated(addlistDialog);
+          return;
+        }
+        if (d.songs.length >= LISTA_MUSICAS_MAX) {
+          atlShowError("A lista “" + truncate(d.nome, 30) + "” está cheia (" + LISTA_MUSICAS_MAX + " músicas).");
+          return;
+        }
+        const r = await postJSON("/api/listas/" + l.id, { versao: d.versao, musicas: d.songs.map((s) => s.id).concat(track.id) }, { timeout: 12000 });
+        if (r.ok && r.data.ok) {
+          toast("Adicionada à lista “" + truncate(d.nome, 30) + "”.", "success", { duration: 3200 });
+          closeDialogAnimated(addlistDialog);
+          scheduler.kick("lib-lists");
+          return;
+        }
+        if (r.status === 409 && r.data.codigo === "versao_mudou" && attempt === 0) continue; // outro aparelho mexeu: tenta com a versão nova
+        atlShowError(libErr(r, "Não foi possível adicionar agora."));
+        return;
+      }
+    } catch (err) {
+      if (!err || err.name !== "AuthLockedError") atlShowError("Sem conexão com o servidor. Tente de novo.");
+    } finally {
+      atl.busy = false;
+      btn.removeAttribute("aria-disabled");
+    }
+  }
+
+  addlistList.addEventListener("click", (e) => {
+    const b = e.target instanceof Element ? e.target.closest("button[data-id]") : null;
+    const l = b ? lists.items.find((x) => x.id === b.dataset.id) : null;
+    if (b && l) atlAdd(l, b);
+  });
+  btnAddlistNew.addEventListener("click", () => {
+    if (btnAddlistNew.getAttribute("aria-disabled") === "true") {
+      atlShowError("Você já tem " + LISTAS_MAX + " listas. Apague uma para criar outra.");
+      return;
+    }
+    const track = atl.track;
+    const opener = atl.opener;
+    closeDialogAnimated(addlistDialog);
+    setTimeout(() => { if (track) openListEditor(null, [track], opener); }, prefersReducedMotion() ? 0 : 230);
+  });
+  btnAddlistClose.addEventListener("click", () => closeDialogAnimated(addlistDialog));
+  onBackdropClick(addlistDialog, () => closeDialogAnimated(addlistDialog));
+  addlistDialog.addEventListener("close", () => {
+    atl.track = null;
+    atl.busy = false;
+    addlistList.replaceChildren();
+    if (!shuttingDown && !authLocked && atl.opener && atl.opener.isConnected) atl.opener.focus({ preventScroll: true });
+  });
+
+  // ======================================================================
+  // 16e. Programação de horários: bloco, avisos, lista, histórico
+  // ======================================================================
+  const tabProg = $("tab-prog");
+  const tabProgDot = $("tab-prog-dot");
+  const progCount = $("prog-count");
+  const progClockLine = $("prog-clock-line");
+  const progClock = $("prog-clock");
+  const btnProgNew = $("btn-prog-new");
+  const progAlerts = $("prog-alerts");
+  const progNext = $("prog-next");
+  const progNextList = $("prog-next-list");
+  const progStatus = $("prog-status");
+  const progList = $("prog-list");
+  const progEmpty = $("prog-empty");
+  const progFailed = $("prog-failed");
+  const progHist = $("prog-hist");
+  const progHistCount = $("prog-hist-count");
+  const progHistList = $("prog-hist-list");
+
+  /** Avisos já dispensados neste aparelho (chave = "quando|id"). */
+  function progLoadDismissed() {
+    try {
+      const a = JSON.parse(store.get(LS_PROG_OK) || "[]");
+      return new Set(Array.isArray(a) ? a.filter((x) => typeof x === "string").slice(-60) : []);
+    } catch (e) {
+      return new Set();
+    }
+  }
+
+  const prog = {
+    loaded: false, failed: false, loading: false, saving: false, versao: -1,
+    seq: 0, // contador de pedidos: um GET atrasado (que já ficou para trás de outro pedido ou de uma gravação) é descartado
+    agora: null, // {hora:"HH:MM", data:"AAAA-MM-DD", iso} do PC da loja
+    limites: { itens: 100, audioMaxS: 600, formatos: ["flac", "mp3", "ogg", "wav"] },
+    itens: [], proximas: [], historico: [], tocando: null, tocadorVivo: null, acervoPronto: true,
+    busyId: "", dismissed: progLoadDismissed(),
+    sig: { alerts: "", next: "", list: "", hist: "" },
+  };
+  /** O bloco está à vista? (no computador, sempre; no celular, só na aba Horários) */
+  const progVisible = () => !tabModeMQ.matches || activeTab === "prog";
+
+  // ---- Leitura (nunca confia no formato) ----
+  function progItemParse(it) {
+    if (!it || typeof it.id !== "string" || !ITEM_ID_RE.test(it.id) || !PROG_TIPOS[it.tipo]) return null;
+    if (typeof it.hora !== "string" || !HORA_RE.test(it.hora)) return null;
+    const data = typeof it.data === "string" && DATA_RE.test(it.data) ? it.data : null;
+    const dias = !data && Array.isArray(it.dias) ? Array.from(new Set(it.dias.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))).sort() : null;
+    if (!data && !(dias && dias.length)) return null;
+    return {
+      id: it.id,
+      ativo: it.ativo !== false,
+      tipo: it.tipo,
+      alvo: str(it.alvo, 500),
+      nome: str(it.nome, PROG_NOME_MAX) || null,
+      hora: it.hora,
+      dias,
+      data,
+      embaralhar: it.embaralhar === true,
+      voz: VOICES.includes(it.voz) ? it.voz : null,
+      motor: ENGINES.includes(it.motor) ? it.motor : null,
+      velocidade: isNum(it.velocidade) ? clamp(Math.round(it.velocidade), -50, 50) : null,
+      rotulo: str(it.rotulo, 120) || "Horário",
+      alvoNome: typeof it.alvo_nome === "string" && it.alvo_nome ? it.alvo_nome.slice(0, 200) : null,
+      alvoOk: it.alvo_ok === true ? true : it.alvo_ok === false ? false : null,
+      alvoMotivo: typeof it.alvo_motivo === "string" && /^[a-z_]{1,30}$/.test(it.alvo_motivo) ? it.alvo_motivo : null,
+      proxima: typeof it.proxima === "string" && ISO_RE.test(it.proxima) ? it.proxima : null,
+      remoto: it.origem === "remoto", // criado/alterado por um aparelho remoto (o servidor decide; nunca é enviado de volta)
+    };
+  }
+
+  function progParse(d) {
+    if (!d || d.ok !== true || !Number.isInteger(d.versao) || !Array.isArray(d.itens)) return null;
+    const a = d.agora && typeof d.agora === "object" ? d.agora : null;
+    const agora = a && typeof a.hora === "string" && HORA_RE.test(a.hora) && typeof a.data === "string" && DATA_RE.test(a.data) && typeof a.iso === "string" && ISO_RE.test(a.iso)
+      ? { hora: a.hora, data: a.data, iso: a.iso } : null;
+    const lim = d.limites && typeof d.limites === "object" ? d.limites : {};
+    const formatos = Array.isArray(lim.formatos_audio) ? lim.formatos_audio.filter((f) => typeof f === "string" && /^[a-z0-9]{2,5}$/.test(f)).slice(0, 12) : [];
+    const limites = { itens: posInt(lim.itens, 100), audioMaxS: posInt(lim.audio_max_s, 600), audioDiaMaxS: posInt(lim.audio_dia_max_s, 3600), formatos: formatos.length ? formatos : ["flac", "mp3", "ogg", "wav"] };
+    const itens = [];
+    for (const raw of d.itens.slice(0, 100)) {
+      const it = progItemParse(raw);
+      if (it) itens.push(it);
+    }
+    const proximas = [];
+    for (const p of Array.isArray(d.proximas) ? d.proximas.slice(0, 10) : []) {
+      if (!p || typeof p.id !== "string" || typeof p.quando !== "string" || !ISO_RE.test(p.quando) || !PROG_TIPOS[p.tipo]) continue;
+      proximas.push({ id: p.id, quando: p.quando, em_s: isNum(p.em_s) ? p.em_s : null, tipo: p.tipo, rotulo: str(p.rotulo, 120) || "Horário", hora: typeof p.hora === "string" && HORA_RE.test(p.hora) ? p.hora : p.quando.slice(11, 16) });
+    }
+    const historico = [];
+    for (const h of Array.isArray(d.historico) ? d.historico.slice(0, 50) : []) {
+      if (!h || typeof h.quando !== "string" || !ISO_RE.test(h.quando) || !PROG_STATUS[h.status]) continue;
+      historico.push({
+        quando: h.quando,
+        id: typeof h.id === "string" ? h.id.slice(0, 12) : "",
+        nome: str(h.nome, 120),
+        tipo: PROG_TIPOS[h.tipo] ? h.tipo : "audio",
+        hora: typeof h.hora === "string" && HORA_RE.test(h.hora) ? h.hora : "",
+        origem: h.origem === "manual" ? "manual" : "agendado",
+        status: h.status,
+        motivo: typeof h.motivo === "string" && /^[a-z_]{1,30}$/.test(h.motivo) ? h.motivo : "",
+        texto: str(h.texto, 200),
+        interrompido: h.interrompido === true,
+        aviso: str(h.aviso, 240),
+      });
+    }
+    const t = d.tocando && typeof d.tocando === "object" ? d.tocando : null;
+    const tocando = t && typeof t.id === "string"
+      ? { id: t.id.slice(0, 12), nome: str(t.nome, 120), tipo: PROG_TIPOS[t.tipo] ? t.tipo : "audio", origem: t.origem === "manual" ? "manual" : "agendado", interrompivel: t.interrompivel !== false }
+      : null;
+    return {
+      versao: d.versao, agora, limites, itens, proximas, historico, tocando,
+      tocadorVivo: d.tocador_vivo === true ? true : d.tocador_vivo === false ? false : null,
+      acervoPronto: d.acervo_pronto !== false,
+    };
+  }
+
+  function progApplyDoc(doc, force) {
+    // Resposta de gravação / recarga após 409 (force): vale e invalida qualquer GET que ainda esteja em voo.
+    // Não comparamos "versao": se o servidor recomeçar a contar (programacao.json apagado), o painel continua atualizando.
+    if (force) prog.seq++;
+    prog.versao = doc.versao;
+    prog.agora = doc.agora;
+    prog.limites = doc.limites;
+    prog.itens = doc.itens.slice().sort((a, b) => (a.hora < b.hora ? -1 : a.hora > b.hora ? 1 : 0));
+    prog.proximas = doc.proximas;
+    prog.historico = doc.historico;
+    prog.tocando = doc.tocando;
+    prog.tocadorVivo = doc.tocadorVivo;
+    prog.acervoPronto = doc.acervoPronto;
+    prog.loaded = true;
+    prog.failed = false;
+  }
+
+  async function progPoll() {
+    if (prog.loading || prog.saving) return;
+    prog.loading = true;
+    const mine = ++prog.seq;
+    try {
+      const r = await getJSON("/api/programacao", { timeout: 8000 });
+      const doc = r.ok ? progParse(r.data) : null;
+      if (!doc) throw new Error("resposta inválida");
+      if (!prog.saving && mine === prog.seq) progApplyDoc(doc, false);
+    } catch (e) {
+      if (e && e.name === "AuthLockedError") return;
+      if (!prog.loaded) prog.failed = true;
+    } finally {
+      prog.loading = false;
+      progRender();
+    }
+  }
+
+  // ---- Textos ----
+  const emIso = (iso) => new Date(iso).getTime(); // ISO "ingênuo" (sem fuso): tudo no relógio local, a diferença é a mesma
+
+  function diaRotulo(iso) {
+    const d = isoToDate(iso);
+    if (prog.agora) {
+      const diff = Math.round((d.getTime() - isoToDate(prog.agora.data).getTime()) / 86400000);
+      if (diff === 0) return "hoje";
+      if (diff === 1) return "amanhã";
+      if (diff === -1) return "ontem";
+    }
+    return DIAS_CURTO[d.getDay()] + " " + iso.slice(8, 10) + "/" + iso.slice(5, 7);
+  }
+
+  function emTexto(s) {
+    if (!isNum(s) || s < 0) return "";
+    if (s < 60) return "em instantes";
+    const m = Math.round(s / 60);
+    if (m < 60) return "em " + m + " min";
+    const h = Math.floor(m / 60);
+    const r = m % 60;
+    return h < 24 ? "em " + h + " h" + (r ? " " + r + " min" : "") : "";
+  }
+
+  function diasResumo(dias) {
+    const k = dias.join(",");
+    if (k === "0,1,2,3,4,5,6") return "Todos os dias";
+    if (k === "1,2,3,4,5") return "Dias úteis (seg a sex)";
+    if (k === "0,6") return "Fim de semana";
+    const nomes = dias.map((d) => DIAS_CURTO[d]);
+    return upFirst(nomes.length > 1 ? nomes.slice(0, -1).join(", ") + " e " + nomes[nomes.length - 1] : nomes[0]);
+  }
+  const repResumo = (it) => (it.data ? "Só em " + brDate(it.data) + " (" + DIAS_CURTO[isoToDate(it.data).getDay()] + ")" : diasResumo(it.dias));
+
+  /** [frase curta, o que fazer] de um motivo do histórico; cai na frase do servidor se o motivo for novo. */
+  function motivoTexto(h) {
+    const m = PROG_MOTIVO[h.motivo];
+    if (m) return m;
+    return [h.texto ? h.texto.replace(/[.]+$/, "") : "houve um problema", ""];
+  }
+
+  // ---- Avisos ----
+  function progAlertList() {
+    const out = [];
+    const t = prog.tocando;
+    if (t) {
+      const tipo = PROG_TIPOS[t.tipo];
+      out.push({
+        key: "t:" + t.id + ":" + (t.interrompivel ? "1" : "0"), kind: "live", icon: tipo.icon,
+        title: "Tocando agora: " + (t.nome || tipo.label),
+        text: t.interrompivel
+          ? "A música de fundo continua de onde parou quando terminar."
+          : "Esta voz não pode ser interrompida; termina em instantes.",
+        acts: t.interrompivel ? [{ act: "stop", label: "Parar", cls: "btn btn--stop btn--sm", icon: "stop" }] : [],
+      });
+    }
+    // problemas recentes (não tocou, perdido, erro ou a música que não voltou), no máximo 2, dispensáveis
+    const problemas = [];
+    const agoraMs = prog.agora ? emIso(prog.agora.iso) : Date.now();
+    const vistos = new Set();
+    for (const h of prog.historico) {
+      if (problemas.length >= 2) break;
+      const problema = h.status !== "ok" || !!h.aviso;
+      const idade = agoraMs - emIso(h.quando);
+      const key = h.quando + "|" + h.id;
+      if (!problema || idade > PROG_PROBLEMA_JANELA_MS || prog.dismissed.has(key)) continue;
+      const dup = h.id + "|" + h.motivo + "|" + h.status;
+      if (vistos.has(dup)) continue;
+      vistos.add(dup);
+      const tipo = PROG_TIPOS[h.tipo];
+      const nome = h.nome || tipo.label;
+      let title;
+      let text;
+      if (h.status === "ok") {
+        title = "“" + truncate(nome, 40) + "” tocou, mas houve um problema";
+        text = h.aviso;
+      } else {
+        const m = motivoTexto(h);
+        title = (h.status === "perdido" ? tipo.label + " perdeu o horário: " : tipo.label + " não tocou: ") + m[0];
+        text = "“" + truncate(nome, 40) + "”" + (h.hora ? ", marcado para " + h.hora : "") + ". " + (m[1] || "") + (h.aviso ? " " + h.aviso : "");
+      }
+      const acts = [{ act: "dismiss", label: "Entendi", cls: "btn btn--text btn--sm" }];
+      if (h.motivo === "tocador_fechado" && !isRemote()) acts.unshift({ act: "usehere", label: "Usar este computador", cls: "btn btn--text btn--sm" });
+      problemas.push({ key: "h:" + key, dismissKey: key, kind: "warn", icon: "alert", title, text: text.trim(), motivo: h.motivo, acts });
+    }
+    // "Tocador fechado" como estado: some quando o aviso do que aconteceu já diz a mesma coisa
+    if (prog.tocadorVivo === false && prog.itens.some((i) => i.ativo && i.tipo === "lista") && !problemas.some((p) => p.motivo === "tocador_fechado")) {
+      out.push({
+        key: "tocador", kind: "warn", icon: "alert", title: "Tocador da loja fechado",
+        text: "Há listas marcadas, mas nenhuma aba do Tocador da loja está aberta. Abra o Proclamare no computador das caixas e escolha “Tocador da loja”: sem isso as listas não tocam.",
+        acts: isRemote() ? [] : [{ act: "usehere", label: "Usar este computador", cls: "btn btn--text btn--sm" }],
+      });
+    }
+    out.push(...problemas);
+    return out;
+  }
+
+  function makeAlert(a) {
+    const box = mk("div", "palert palert--" + a.kind);
+    box.dataset.key = a.key;
+    const ico = mk("span", "palert__icon");
+    ico.setAttribute("aria-hidden", "true");
+    ico.appendChild(makeIcon(a.icon));
+    const body = mk("div", "palert__body");
+    body.append(mk("p", "palert__title", a.title), mk("p", "palert__text", a.text));
+    box.append(ico, body);
+    if (a.acts.length) {
+      const acts = mk("div", "palert__acts");
+      for (const x of a.acts) {
+        const b = mkBtn(x.cls, x.act, x.icon || "", "", x.label);
+        if (a.dismissKey) b.dataset.dismiss = a.dismissKey;
+        acts.appendChild(b);
+      }
+      box.appendChild(acts);
+    }
+    return box;
+  }
+
+  function progRenderAlerts(alerts) {
+    const sig = JSON.stringify(alerts.map((a) => [a.key, a.title, a.text]));
+    if (sig === prog.sig.alerts) return;
+    prog.sig.alerts = sig;
+    const active = document.activeElement;
+    const focusAct = active && progAlerts.contains(active) ? active.dataset.act : null;
+    progAlerts.replaceChildren(...alerts.map(makeAlert));
+    if (focusAct) {
+      const again = progAlerts.querySelector('[data-act="' + focusAct + '"]');
+      if (again) again.focus({ preventScroll: true });
+    }
+  }
+
+  // ---- Próximos horários ----
+  function progRenderNext() {
+    const list = prog.proximas.slice(0, 3);
+    const sig = JSON.stringify(list.map((p) => [p.id, p.quando, p.rotulo, emTexto(p.em_s)])) + (prog.agora ? prog.agora.data : "");
+    if (sig === prog.sig.next) return;
+    prog.sig.next = sig;
+    progNext.hidden = list.length === 0;
+    progNextList.replaceChildren(...list.map((p) => {
+      const li = mk("li", "pnext");
+      const ico = mk("span", "pnext__ico");
+      ico.setAttribute("aria-hidden", "true");
+      ico.appendChild(makeIcon(PROG_TIPOS[p.tipo].icon));
+      const em = emTexto(p.em_s);
+      li.append(ico, mk("span", "pnext__time", p.hora), mk("span", "pnext__name", p.rotulo), mk("span", "pnext__when", diaRotulo(p.quando) + (em ? ", " + em : "")));
+      return li;
+    }));
+  }
+
+  // ---- Lista de horários ----
+  function makeProgRow(it) {
+    const li = mk("li", "prow prow--" + it.tipo + " is-new");
+    li.addEventListener("animationend", () => li.classList.remove("is-new"), { once: true });
+    const ico = mk("span", "prow__ico");
+    ico.setAttribute("aria-hidden", "true");
+    ico.appendChild(makeIcon(PROG_TIPOS[it.tipo].icon));
+    const title = mk("span", "prow__title");
+    const hora = mk("span", "prow__hora");
+    const rep = mk("span", "prow__rep");
+    const when = mk("span", "prow__when");
+    when.append(hora, rep);
+    const days = mk("span", "prow__days");
+    days.setAttribute("aria-hidden", "true");
+    const chips = DIAS_LETRA.map((l) => mk("span", "dchip", l));
+    days.append(...chips);
+    const sub = mk("span", "prow__sub");
+    const badges = mk("span", "prow__badges");
+    const main = mk("div", "prow__main");
+    main.append(title, when, days, sub, badges);
+
+    const sw = mk("label", "switch prow__sw");
+    const inp = mk("input", "switch__input");
+    inp.type = "checkbox";
+    inp.setAttribute("role", "switch");
+    inp.dataset.act = "toggle";
+    const track = mk("span", "switch__track");
+    track.setAttribute("aria-hidden", "true");
+    track.appendChild(mk("span", "switch__thumb"));
+    const swText = mk("span", "sr-only");
+    sw.append(inp, track, swText);
+
+    const acts = mk("div", "prow__acts");
+    const test = mkBtn("btn btn--ghost btn--sm btn--test", "test", "play", "", "Tocar agora");
+    const edit = mkBtn("btn btn--icon", "edit", "edit");
+    const rm = mkBtn("btn btn--icon prow__rm", "remove", "trash");
+    rm.appendChild(mk("span", "prow__rm-t", "Remover?"));
+    acts.append(test, edit, rm);
+
+    li.append(ico, main, sw, acts);
+    li._p = { ico, title, hora, rep, days, chips, sub, badges, inp, swText, test, edit, rm, badgeSig: "" };
+    return li;
+  }
+
+  function progBadges(it) {
+    const out = [[PROG_TIPOS[it.tipo].label, ""]];
+    if (it.tipo === "lista" && it.embaralhar) out.push(["Embaralhada", ""]);
+    if (!it.ativo) out.push(["Desativado", "badge--warn"]);
+    if (it.alvoOk === false) {
+      if (it.tipo === "lista") out.push(["Lista apagada", "badge--bad"]);
+      else if (it.alvoMotivo === "audio_longo") out.push(["Áudio passa de 10 min", "badge--bad"]);
+      else if (it.alvoNome) out.push(["Formato não toca em horário", "badge--bad"]);
+      else out.push(["Música não está na pasta", "badge--bad"]);
+    }
+    if (it.data && it.ativo && !it.proxima && prog.agora) out.push(["Já passou", ""]);
+    if (it.remoto) out.push(["Criado pelo celular", ""]);
+    return out;
+  }
+
+  function updateProgRow(li, it) {
+    const r = li._p;
+    li.classList.toggle("is-off", !it.ativo);
+    li.classList.toggle("is-playing", !!prog.tocando && prog.tocando.id === it.id);
+    setText(r.title, it.rotulo);
+    setText(r.hora, it.hora);
+    setText(r.rep, repResumo(it));
+    r.days.hidden = !!it.data;
+    r.chips.forEach((c, i) => c.classList.toggle("is-on", !!it.dias && it.dias.includes(i)));
+    let sub = "";
+    if (it.tipo === "anuncio") sub = "“" + truncate(it.alvo, 110) + "”";
+    else if (it.alvoNome && it.alvoNome !== it.rotulo) sub = (it.tipo === "lista" ? "Lista: " : "Áudio: ") + it.alvoNome;
+    setText(r.sub, sub);
+    r.sub.hidden = !sub;
+    const bsig = JSON.stringify(progBadges(it));
+    if (bsig !== r.badgeSig) {
+      r.badgeSig = bsig;
+      r.badges.replaceChildren(...progBadges(it).map(([t, c]) => mk("span", "badge " + c, t)));
+    }
+    if (r.inp.checked !== it.ativo) r.inp.checked = it.ativo;
+    setText(r.swText, "Horário ativo: " + it.rotulo + ", " + it.hora);
+    const label = PROG_TIPOS[it.tipo].label + " das " + it.hora + ", " + it.rotulo;
+    r.test.setAttribute("aria-label", "Tocar agora: " + label);
+    r.edit.setAttribute("aria-label", "Editar o horário: " + label);
+    r.edit.title = "Editar";
+    if (!r.rm.classList.contains("is-confirm")) {
+      r.rm.setAttribute("aria-label", "Remover o horário: " + label);
+      r.rm.title = "Remover";
+    }
+    const busy = prog.busyId === it.id;
+    r.test.setAttribute("aria-disabled", String(busy));
+    r.test.classList.toggle("is-loading", busy);
+  }
+
+  function progRenderList() {
+    const sig = prog.busyId + "|" + (prog.tocando ? prog.tocando.id : "") + "|" + JSON.stringify(prog.itens);
+    if (sig === prog.sig.list) return;
+    prog.sig.list = sig;
+    reconcileList(progList, prog.itens, (it) => it.id, makeProgRow, updateProgRow);
+  }
+
+  // ---- Histórico ----
+  function makeHistRow(h) {
+    const li = mk("li", "phist");
+    const time = mk("span", "phist__time", h.quando.slice(11, 16));
+    const dia = diaRotulo(h.quando);
+    if (dia !== "hoje") time.appendChild(mk("span", "phist__day", dia));
+    const main = mk("div", "phist__main");
+    const title = mk("p", "phist__title");
+    const st = PROG_STATUS[h.status];
+    title.append(mk("span", "phist__name", h.nome || PROG_TIPOS[h.tipo].label), mk("span", "badge " + st[1], st[0]));
+    if (h.origem === "manual") title.appendChild(mk("span", "badge", "Tocar agora"));
+    main.appendChild(title);
+    if (h.status === "ok" && h.interrompido) main.appendChild(mk("p", "phist__why", "Interrompido antes do fim."));
+    else if (h.status !== "ok") {
+      const m = motivoTexto(h);
+      main.appendChild(mk("p", "phist__why", upFirst(m[0]) + "." + (m[1] ? " " + m[1] : "")));
+    }
+    if (h.aviso) main.appendChild(mk("p", "phist__aviso", h.aviso));
+    li.append(time, main);
+    return li;
+  }
+
+  function progRenderHist() {
+    const list = prog.historico;
+    progHist.hidden = list.length === 0;
+    const sig = JSON.stringify(list.map((h) => [h.quando, h.id, h.status, h.motivo, h.aviso])) + (prog.agora ? prog.agora.data : "");
+    if (sig === prog.sig.hist) return;
+    prog.sig.hist = sig;
+    setText(progHistCount, String(list.length));
+    progHistList.replaceChildren(...list.map(makeHistRow));
+  }
+
+  // ---- Tudo junto ----
+  function progRender() {
+    const n = prog.itens.length;
+    const ready = prog.loaded;
+    progClockLine.hidden = !(ready && prog.agora);
+    if (ready && prog.agora) setText(progClock, prog.agora.hora);
+    progCount.hidden = !(ready && n > 0);
+    setText(progCount, String(n));
+    progStatus.hidden = ready || prog.failed;
+    progFailed.hidden = !(prog.failed && !ready);
+    progEmpty.hidden = !(ready && n === 0);
+    const cheio = ready && n >= prog.limites.itens;
+    btnProgNew.setAttribute("aria-disabled", String(cheio));
+    btnProgNew.title = cheio ? "Você chegou ao limite de " + prog.limites.itens + " horários." : "";
+    const alerts = ready ? progAlertList() : [];
+    progRenderAlerts(alerts);
+    progRenderNext();
+    progRenderList();
+    progRenderHist();
+    // ponto na aba Horários (celular) quando algo toca ou há aviso e a aba não está à vista
+    const live = !!prog.tocando;
+    const warn = alerts.some((a) => a.kind === "warn");
+    tabProgDot.hidden = !(live || warn) || progVisible();
+    tabProgDot.classList.toggle("is-warn", !live);
+    if (live) tabProg.setAttribute("aria-label", "Horários: algo está tocando agora");
+    else if (warn) tabProg.setAttribute("aria-label", "Horários: há avisos");
+    else tabProg.removeAttribute("aria-label");
+  }
+
+  function progReset() {
+    Object.assign(prog, {
+      loaded: false, failed: false, loading: false, saving: false, versao: -1, agora: null, seq: prog.seq + 1,
+      itens: [], proximas: [], historico: [], tocando: null, tocadorVivo: null, busyId: "",
+      sig: { alerts: "", next: "", list: "", hist: "" },
+    });
+    progAlerts.replaceChildren();
+    progNextList.replaceChildren();
+    progList.replaceChildren();
+    progHistList.replaceChildren();
+    progRender();
+  }
+
+  // ---- Gravar (a API substitui a lista INTEIRA, com a versão que o aparelho viu) ----
+  function progPayloadItem(it) {
+    const o = { ativo: it.ativo !== false, tipo: it.tipo, alvo: it.alvo, nome: it.nome || null, hora: it.hora };
+    if (it.id) o.id = it.id;
+    if (it.data) o.data = it.data;
+    else o.dias = it.dias;
+    if (it.tipo === "lista") o.embaralhar = !!it.embaralhar;
+    if (it.tipo === "anuncio") {
+      o.voz = it.voz || "francisca";
+      o.motor = it.motor || "auto";
+      o.velocidade = isNum(it.velocidade) ? it.velocidade : 0;
+    }
+    return o;
+  }
+
+  /**
+   * Aplica UMA mudança (`change(itens)` devolve a lista nova, sem mutar, ou null se o alvo sumiu).
+   * Se outro aparelho gravou antes (409 versao_mudou), pega a lista atual e reaplica só esta mudança.
+   */
+  async function progApply(change) {
+    prog.saving = true;
+    try {
+      let items = prog.itens;
+      let versao = prog.versao;
+      for (let tentativa = 0; tentativa < 2; tentativa++) {
+        const next = change(items);
+        if (!next) return { ok: false, gone: true };
+        const r = await postJSON("/api/programacao", { versao, itens: next.map(progPayloadItem) }, { timeout: 15000 });
+        const doc = r.ok ? progParse(r.data) : null;
+        if (doc) {
+          progApplyDoc(doc, true);
+          return { ok: true };
+        }
+        if (tentativa === 0 && r.status === 409 && r.data.codigo === "versao_mudou") {
+          const g = await getJSON("/api/programacao", { timeout: 8000 });
+          const fresh = g.ok ? progParse(g.data) : null;
+          if (!fresh) return { ok: false, status: r.status, data: r.data };
+          progApplyDoc(fresh, true);
+          items = prog.itens;
+          versao = prog.versao;
+          continue;
+        }
+        return { ok: false, status: r.status, data: r.data };
+      }
+      return { ok: false };
+    } catch (e) {
+      return { ok: false, error: e };
+    } finally {
+      prog.saving = false;
+      progRender();
+    }
+  }
+
+  function progErrText(res, fallback) {
+    if (!res || res.error) return "Sem resposta do servidor.";
+    const d = res.data || {};
+    if (res.status === 409 && d.codigo === "versao_mudou") return "Outro aparelho mudou a programação. Atualizei a lista; tente de novo.";
+    if (res.status === 413) return "Os textos dos anúncios ficaram grandes demais para enviar. Encurte alguns.";
+    if (res.status === 429) return "Muitas alterações seguidas. Espere um minuto e tente de novo.";
+    return typeof d.error === "string" && d.error ? d.error : fallback;
+  }
+
+  async function progToggle(it, on, inp) {
+    it.ativo = on; // otimista: o interruptor já mudou; o servidor confirma (ou desfazemos)
+    progRender();
+    const res = await progApply((items) => (items.some((i) => i.id === it.id) ? items.map((i) => (i.id === it.id ? Object.assign({}, i, { ativo: on }) : i)) : null));
+    if (res.ok) {
+      toast(on ? "Horário ativado." : "Horário desativado.", "success", { duration: 2200 });
+      return;
+    }
+    it.ativo = !on;
+    if (inp) inp.checked = !on;
+    progRender();
+    toast(res.gone ? "Esse horário não existe mais." : progErrText(res, "Não foi possível mudar o horário."), "error");
+    if (res.gone) scheduler.kick("prog");
+  }
+
+  async function progRemove(it, btn) {
+    if (prog.busyId || btn.getAttribute("aria-disabled") === "true") return;
+    if (!btn.classList.contains("is-confirm")) {
+      btn.setAttribute("aria-label", "Confirmar: remover o horário " + it.rotulo + " das " + it.hora);
+      arm(btn, () => { btn.setAttribute("aria-label", "Remover o horário: " + PROG_TIPOS[it.tipo].label + " das " + it.hora + ", " + it.rotulo); }, 4500);
+      return;
+    }
+    disarm();
+    btn.setAttribute("aria-disabled", "true");
+    const res = await progApply((items) => (items.some((i) => i.id === it.id) ? items.filter((i) => i.id !== it.id) : null));
+    btn.removeAttribute("aria-disabled");
+    if (res.ok) toast("Horário removido.", "success", { duration: 2600 });
+    else if (res.gone) { toast("Esse horário já tinha sido removido.", "info"); scheduler.kick("prog"); }
+    else toast(progErrText(res, "Não foi possível remover o horário."), "error");
+  }
+
+  // ---- Tocar agora / Parar ----
+  async function progTest(it, btn) {
+    if (prog.busyId || btn.getAttribute("aria-disabled") === "true") return;
+    const label = btn.querySelector("span");
+    const original = label ? label.textContent : "";
+    if (!btn.classList.contains("is-confirm")) {
+      // vai interromper a música da loja: pede um 2º toque
+      if (label) label.textContent = "Tocar mesmo?";
+      arm(btn, () => { if (label) label.textContent = original; }, 4500);
+      return;
+    }
+    disarm();
+    prog.busyId = it.id;
+    progRender();
+    try {
+      const r = await libPost("/api/programacao/" + it.id + "/testar", {});
+      if (r && r.status === 202 && r.data.ok) {
+        toast("Tocando agora: " + truncate(it.rotulo, 40), "success", { duration: 3000 });
+        setTimeout(() => scheduler.kick("prog"), 500);
+        setTimeout(() => scheduler.kick("prog"), 3000);
+      } else if (r && r.status === 409 && r.data.codigo === "sem_tocador") {
+        noTocadorToast(null);
+      } else if (r && r.status === 404) {
+        toast(libErr(r, "Esse horário não existe mais."), "warn");
+        scheduler.kick("prog");
+      } else {
+        toast(libErr(r, r ? "Não foi possível tocar agora." : "Sem resposta do servidor."), r && (r.status === 409 || r.status === 429) ? "info" : "error", { duration: 7000 });
+        scheduler.kick("prog");
+      }
+    } finally {
+      prog.busyId = "";
+      progRender();
+    }
+  }
+
+  let progStopBusy = false;
+  async function progStop(btn) {
+    if (progStopBusy) return;
+    progStopBusy = true;
+    btn.setAttribute("aria-disabled", "true");
+    try {
+      const r = await libPost("/api/programacao/parar", {});
+      if (r && r.ok && r.data.ok) {
+        if (r.data.parando === false) toast(typeof r.data.aviso === "string" && r.data.aviso ? r.data.aviso : "Esta voz não pode ser interrompida.", "warn", { duration: 7000 });
+        else toast("Parando…", "info", { duration: 2000 });
+      } else if (r && r.status === 409) {
+        toast("Já tinha terminado.", "info", { duration: 2400 });
+      } else {
+        toast(libErr(r, r ? "Não foi possível parar agora." : "Sem resposta do servidor."), "error");
+      }
+    } finally {
+      progStopBusy = false;
+      btn.removeAttribute("aria-disabled");
+      setTimeout(() => scheduler.kick("prog"), 700);
+    }
+  }
+
+  // ---- Eventos da lista e dos avisos ----
+  progList.addEventListener("click", (e) => {
+    const btn = e.target instanceof Element ? e.target.closest("button[data-act]") : null;
+    if (!btn || !progList.contains(btn)) return;
+    const li = btn.closest(".prow");
+    const it = li ? prog.itens.find((x) => x.id === li.dataset.key) : null;
+    if (!it) return;
+    const act = btn.dataset.act;
+    if (act !== "remove" && armed.btn && armed.btn !== btn) disarm();
+    if (act === "test") progTest(it, btn);
+    else if (act === "edit") openProgDialog(it, btn);
+    else if (act === "remove") progRemove(it, btn);
+  });
+  progList.addEventListener("change", (e) => {
+    const inp = e.target instanceof HTMLInputElement && e.target.dataset.act === "toggle" ? e.target : null;
+    if (!inp) return;
+    const li = inp.closest(".prow");
+    const it = li ? prog.itens.find((x) => x.id === li.dataset.key) : null;
+    if (it) progToggle(it, inp.checked, inp);
+    else inp.checked = !inp.checked;
+  });
+  progAlerts.addEventListener("click", (e) => {
+    const btn = e.target instanceof Element ? e.target.closest("button[data-act]") : null;
+    if (!btn) return;
+    const act = btn.dataset.act;
+    if (act === "stop") progStop(btn);
+    else if (act === "usehere") {
+      applyYoutubeMode("player", true);
+      toast("Este computador agora é o Tocador da loja. Deixe esta aba aberta.", "success", { duration: 5000 });
+      setTimeout(() => scheduler.kick("prog"), 1500);
+    } else if (act === "dismiss" && btn.dataset.dismiss) {
+      prog.dismissed.add(btn.dataset.dismiss);
+      store.set(LS_PROG_OK, JSON.stringify(Array.from(prog.dismissed).slice(-60)));
+      prog.sig.alerts = "";
+      progRender();
+    }
+  });
+  btnProgNew.addEventListener("click", () => {
+    if (btnProgNew.getAttribute("aria-disabled") === "true") {
+      toast("Você chegou ao limite de " + prog.limites.itens + " horários. Remova algum para criar outro.", "info");
+      return;
+    }
+    openProgDialog(null, btnProgNew);
+  });
+  $("btn-prog-empty-new").addEventListener("click", (e) => openProgDialog(null, e.currentTarget));
+  $("btn-prog-retry").addEventListener("click", () => { prog.failed = false; progRender(); scheduler.kick("prog"); });
+
+  // ======================================================================
+  // 16f. Programação: diálogo "Novo / Editar horário"
+  // ======================================================================
+  const progDialog = $("prog-dialog");
+  const progForm = $("prog-form");
+  const progDlgTitle = $("prog-dlg-title");
+  const progTipoHint = $("prog-tipo-hint");
+  const progAlvoAudio = $("prog-alvo-audio");
+  const progAudioPicked = $("prog-audio-picked");
+  const progAudioThumb = $("prog-audio-thumb");
+  const progAudioTitle = $("prog-audio-title");
+  const progAudioSub = $("prog-audio-sub");
+  const btnProgAudioChange = $("btn-prog-audio-change");
+  const progAudioFinder = $("prog-audio-finder");
+  const progAudioQ = $("prog-audio-q");
+  const progAudioNote = $("prog-audio-note");
+  const progAudioResults = $("prog-audio-results");
+  const progAlvoLista = $("prog-alvo-lista");
+  const progListaSel = $("prog-lista-sel");
+  const progListaHint = $("prog-lista-hint");
+  const progEmbaralhar = $("prog-embaralhar");
+  const progAlvoAnuncio = $("prog-alvo-anuncio");
+  const progTexto = $("prog-texto");
+  const progTextoCount = $("prog-texto-count");
+  const progMsgsBox = $("prog-msgs-box");
+  const progMsgs = $("prog-msgs");
+  const progVoz = $("prog-voz");
+  const progMotor = $("prog-motor");
+  const progVel = $("prog-vel");
+  const progVelOut = $("prog-vel-out");
+  const progNome = $("prog-nome");
+  const progHora = $("prog-hora");
+  const progRep = $("prog-rep");
+  const progDias = $("prog-dias");
+  const progDataBox = $("prog-data-box");
+  const progData = $("prog-data");
+  const progRepHint = $("prog-rep-hint");
+  const progError = $("prog-error");
+  const btnProgCancel = $("btn-prog-cancel");
+  const btnProgSave = $("btn-prog-save");
+
+  const TIPO_DICA = {
+    audio: "Toca uma música ou áudio da sua biblioteca (mp3, ogg, wav ou flac, até 10 minutos). A música de fundo pausa e continua de onde parou.",
+    lista: "Troca a música que está tocando pela lista escolhida.",
+    anuncio: "Fala o texto nas caixas da loja. A música de fundo pausa e continua de onde parou.",
+  };
+  const REP_DIAS = { todos: [0, 1, 2, 3, 4, 5, 6], uteis: [1, 2, 3, 4, 5], fds: [0, 6] };
+
+  const pf = { mode: "new", id: "", current: null, baseSig: "", busy: false, session: 0, audio: null, opener: null, ctrl: null, seq: 0, timer: 0, results: [], loading: false, failed: false, empty: false, preset: REP_DIAS.todos };
+  const pfTipo = initGroup($("prog-tipo"), { role: "radio", onSelect: (t) => pfOnTipo(t) });
+  const pfRep = bindChipRadio(progRep, (v) => pfOnRep(v));
+  const pfGuard = bindDiscardGuard(progDialog, $("prog-confirm"), $("btn-prog-confirm-yes"), $("btn-prog-confirm-no"), () => progDialog.open && pfSig() !== pf.baseSig, () => pf.busy);
+
+  const pfDaysChecked = () => Array.from(progDias.querySelectorAll('[aria-checked="true"]')).map((b) => Number(b.dataset.dia));
+  function pfSetDays(days) {
+    for (const b of progDias.querySelectorAll("[data-dia]")) b.setAttribute("aria-checked", String(days.includes(Number(b.dataset.dia))));
+  }
+
+  /** Tudo o que o formulário contém agora (também serve de "assinatura" para saber se foi alterado). */
+  function pfRead() {
+    return {
+      tipo: pfTipo.value, audio: pf.audio ? pf.audio.id : "", lista: progListaSel.value, embaralhar: progEmbaralhar.checked,
+      texto: progTexto.value, voz: progVoz.value, motor: progMotor.value, vel: Number(progVel.value),
+      nome: progNome.value, hora: progHora.value, rep: pfRep.value, dias: pfDaysChecked(), data: progData.value,
+    };
+  }
+  const pfSig = () => JSON.stringify(pfRead());
+
+  function pfShowError(text, field) {
+    progError.hidden = !text;
+    setText(progError, text || "");
+    for (const el of [progTexto, progNome, progHora, progData, progListaSel, progAudioQ]) el.removeAttribute("aria-invalid");
+    if (text && field) {
+      const el = { texto: progTexto, nome: progNome, hora: progHora, data: progData, lista: progListaSel, audio: progAudioQ }[field];
+      if (el) el.setAttribute("aria-invalid", "true");
+    }
+  }
+
+  function pfFocusField(field) {
+    const el = { texto: progTexto, nome: progNome, hora: progHora, data: progData, lista: progListaSel }[field];
+    if (field === "audio") (pf.audio ? btnProgAudioChange : progAudioQ).focus();
+    else if (field === "dias") (progDias.querySelector("[data-dia]") || progRep).focus();
+    else if (el) el.focus();
+  }
+
+  function pfSetBusy(on) {
+    pf.busy = on;
+    btnProgSave.classList.toggle("is-loading", on);
+    for (const b of [btnProgSave, btnProgCancel]) {
+      if (on) b.setAttribute("aria-disabled", "true");
+      else b.removeAttribute("aria-disabled");
+    }
+  }
+
+  // ---- Tipo ----
+  function pfOnTipo(tipo) {
+    progAlvoAudio.hidden = tipo !== "audio";
+    progAlvoLista.hidden = tipo !== "lista";
+    progAlvoAnuncio.hidden = tipo !== "anuncio";
+    setText(progTipoHint, TIPO_DICA[tipo] || "");
+    pfShowError("", "");
+    if (tipo === "audio") { pfRenderAudio(); if (!pf.audio && !pf.results.length && !pf.loading) pfSearchAudio(); }
+    else if (tipo === "lista") pfFillListas(progListaSel.value);
+    else pfFillMsgs();
+  }
+
+  // ---- Áudio: escolher da biblioteca ----
+  function audioProblem(t) {
+    const f = (t.formato || "").toLowerCase();
+    if (f && !prog.limites.formatos.includes(f)) return "." + f + " não toca em horário. Converta para mp3.";
+    if (isNum(t.duracao_s) && t.duracao_s > prog.limites.audioMaxS) return "Passa de " + Math.floor(prog.limites.audioMaxS / 60) + " minutos.";
+    return "";
+  }
+
+  function pfRenderAudio() {
+    const a = pf.audio;
+    progAudioPicked.hidden = !a;
+    progAudioFinder.hidden = !!a;
+    progAudioPicked.classList.toggle("is-warn", !!(a && a.warn));
+    if (a) {
+      setText(progAudioTitle, a.title);
+      setText(progAudioSub, a.warn || a.sub);
+      progAudioSub.hidden = !(a.warn || a.sub);
+      setThumbArt(progAudioThumb, a.id && MUSIC_ID_RE.test(a.id) ? { file: a.id, capa: a.capa } : null);
+    }
+  }
+
+  function pfRenderResults() {
+    const rows = pf.results.map((t) => makePickRow(t, false, audioProblem(t)));
+    progAudioResults.replaceChildren(...rows);
+    let note = "";
+    if (pf.loading && !pf.results.length) note = "Procurando…";
+    else if (pf.failed) note = "Não consegui buscar as músicas agora.";
+    else if (!pf.results.length) note = pf.empty ? "A biblioteca ainda está vazia. Coloque músicas na pasta ou envie pelo botão “Enviar músicas”." : "Nenhuma música encontrada.";
+    else if (pf.total > pf.results.length) note = "Mostrando " + pf.results.length + " de " + pf.total + ". Digite para refinar a busca.";
+    setText(progAudioNote, note);
+    progAudioNote.hidden = !note;
+  }
+
+  async function pfSearchAudio() {
+    if (pf.ctrl) pf.ctrl.abort();
+    const ctrl = new AbortController();
+    pf.ctrl = ctrl;
+    const mine = ++pf.seq;
+    pf.loading = true;
+    pfRenderResults();
+    try {
+      const q = progAudioQ.value.trim();
+      const page = await musicSearch({ q, ordem: q ? "titulo" : "recentes", offset: 0, limit: 30, signal: ctrl.signal });
+      if (mine !== pf.seq) return;
+      if (!page) throw new Error("resposta inválida");
+      pf.results = page.items;
+      pf.total = page.total;
+      pf.empty = page.totalAcervo === 0;
+      pf.failed = false;
+    } catch (e) {
+      if (mine !== pf.seq || (e && (e.name === "AbortError" || e.name === "AuthLockedError"))) return;
+      pf.failed = true;
+    } finally {
+      if (mine === pf.seq) { pf.loading = false; pf.ctrl = null; pfRenderResults(); }
+    }
+  }
+
+  progAudioQ.addEventListener("input", () => {
+    clearTimeout(pf.timer);
+    pf.timer = setTimeout(pfSearchAudio, 250);
+  });
+  progAudioQ.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault(); // Enter na busca não salva o horário
+    clearTimeout(pf.timer);
+    pfSearchAudio();
+  });
+  progAudioResults.addEventListener("click", (e) => {
+    const b = e.target instanceof Element ? e.target.closest("button.pick") : null;
+    if (!b) return;
+    const t = pf.results.find((x) => x.id === b.dataset.id);
+    if (!t || b.getAttribute("aria-disabled") === "true") return;
+    const sub = [libSub(t), t.formato ? t.formato.toUpperCase() : ""].filter(Boolean).join(" · ");
+    pf.audio = { id: t.id, title: t.title || "Música", sub, capa: t.tem_capa, warn: "" };
+    if (!progNome.value.trim()) progNome.placeholder = "ex.: " + truncate(pf.audio.title, 28);
+    pfShowError("", "");
+    pfRenderAudio();
+    btnProgAudioChange.focus();
+  });
+  btnProgAudioChange.addEventListener("click", () => {
+    pf.audio = null;
+    pfRenderAudio();
+    progAudioQ.focus();
+    if (!pf.results.length && !pf.loading) pfSearchAudio();
+  });
+
+  // ---- Lista ----
+  function pfFillListas(selected) {
+    const frag = document.createDocumentFragment();
+    const ph = mk("option", "", lists.items.length ? "Escolha uma lista…" : "Nenhuma lista criada");
+    ph.value = "";
+    frag.appendChild(ph);
+    for (const l of lists.items) {
+      const o = mk("option", "", l.nome + " (" + plural(l.total, "música", "músicas") + ")");
+      o.value = l.id;
+      frag.appendChild(o);
+    }
+    if (selected && LISTA_ID_RE.test(selected) && !lists.items.some((l) => l.id === selected) && lists.loaded) {
+      const o = mk("option", "", "Lista apagada (escolha outra)");
+      o.value = selected;
+      frag.appendChild(o);
+    }
+    progListaSel.replaceChildren(frag);
+    if (selected) progListaSel.value = selected;
+    progListaSel.disabled = !lists.items.length && !selected;
+    setText(progListaHint, lists.loaded && !lists.items.length
+      ? "Você ainda não tem listas. Crie uma em Música → Minhas músicas → Nova lista."
+      : "");
+    progListaHint.hidden = !progListaHint.textContent;
+  }
+
+  // ---- Anúncio ----
+  function pfFillMsgs() {
+    const items = msgs.loaded ? msgs.items : [];
+    progMsgsBox.hidden = items.length === 0;
+    progMsgs.replaceChildren(...items.map(buildChip));
+    if (!msgs.loaded) {
+      fetchMessages().then((m) => { applyMessages(m); if (progDialog.open && pfTipo.value === "anuncio") pfFillMsgs(); }).catch(() => { /* sem mensagens prontas aqui */ });
+    }
+  }
+  progMsgs.addEventListener("click", (e) => {
+    const chip = e.target instanceof Element ? e.target.closest(".chip") : null;
+    if (!chip) return;
+    progTexto.value = (chip.dataset.msg || "").slice(0, MAX_CHARS);
+    paintCounter(progTextoCount, progTexto.value.length, MAX_CHARS);
+    pfShowError("", "");
+    progTexto.focus();
+  });
+  progTexto.addEventListener("input", () => {
+    paintCounter(progTextoCount, progTexto.value.length, MAX_CHARS);
+    if (progTexto.getAttribute("aria-invalid")) pfShowError("", "");
+  });
+  progVel.addEventListener("input", () => {
+    const v = Number(progVel.value);
+    setText(progVelOut, (v > 0 ? "+" : "") + v + "%");
+    paintRange(progVel, true);
+  });
+
+  // ---- Repetição ----
+  function pfRepHint() {
+    const rep = pfRep.value;
+    const hora = progHora.value && HORA_RE.test(progHora.value) ? " às " + progHora.value : "";
+    let t;
+    if (rep === "data") {
+      t = progData.value ? "Toca uma vez só, em " + brDate(progData.value) + hora + "." : "Toca uma vez só, na data que você escolher.";
+    } else {
+      const dias = rep === "dias" ? pfDaysChecked() : REP_DIAS[rep] || [];
+      t = dias.length ? diasResumo(dias) + hora + "." : "Marque ao menos um dia.";
+    }
+    setText(progRepHint, t);
+  }
+
+  function pfOnRep(rep) {
+    progDias.hidden = rep !== "dias";
+    progDataBox.hidden = rep !== "data";
+    if (rep === "dias") {
+      if (!pfDaysChecked().length) pfSetDays(pf.preset);
+    } else if (REP_DIAS[rep]) {
+      pf.preset = REP_DIAS[rep];
+    }
+    if (rep === "data" && !progData.value && prog.agora) progData.value = prog.agora.data;
+    pfRepHint();
+  }
+  progDias.addEventListener("click", (e) => {
+    const b = e.target instanceof Element ? e.target.closest("[data-dia]") : null;
+    if (!b) return;
+    b.setAttribute("aria-checked", String(b.getAttribute("aria-checked") !== "true"));
+    pf.preset = pfDaysChecked();
+    pfShowError("", "");
+    pfRepHint();
+  });
+  progHora.addEventListener("input", () => { pfRepHint(); if (progHora.getAttribute("aria-invalid")) pfShowError("", ""); });
+  progData.addEventListener("input", () => { pfRepHint(); if (progData.getAttribute("aria-invalid")) pfShowError("", ""); });
+  progNome.addEventListener("input", () => { if (progNome.getAttribute("aria-invalid")) pfShowError("", ""); });
+  progListaSel.addEventListener("change", () => { if (progListaSel.getAttribute("aria-invalid")) pfShowError("", ""); });
+
+  // ---- Abrir ----
+  function nextFullHour() {
+    if (!prog.agora) return "";
+    const h = (Number(prog.agora.hora.slice(0, 2)) + 1) % 24;
+    return pad2(h) + ":00";
+  }
+
+  function openProgDialog(item, opener) {
+    if (progDialog.open || authLocked || shuttingDown) return;
+    pf.session++;
+    pf.mode = item ? "edit" : "new";
+    pf.id = item ? item.id : "";
+    pf.current = item || null;
+    pf.opener = opener || document.activeElement;
+    pf.results = [];
+    pf.total = 0;
+    pf.failed = false;
+    pf.empty = false;
+    pf.preset = REP_DIAS.todos;
+    setText(progDlgTitle, item ? "Editar horário" : "Novo horário");
+    pfShowError("", "");
+    pfGuard.hide();
+    pfSetBusy(false);
+    const tipo = item ? item.tipo : "audio";
+
+    // áudio
+    progAudioQ.value = "";
+    progNome.placeholder = "ex.: Ave Maria";
+    pf.audio = null;
+    if (item && tipo === "audio") {
+      pf.audio = {
+        id: item.alvo, title: item.alvoNome || "Música indisponível", sub: item.alvoNome ? "Escolhida neste horário" : "",
+        capa: false, warn: item.alvoOk === false ? (item.alvoMotivo === "audio_longo" ? "Este áudio passa de 10 minutos e não toca em horário marcado. Escolha outro." : item.alvoNome ? "Este arquivo não toca em horário marcado. Escolha outro (mp3, ogg, wav ou flac)." : "Esta música não está mais na pasta. Escolha outra.") : "",
+      };
+    }
+    // lista
+    progEmbaralhar.checked = !!(item && item.embaralhar);
+    // anúncio
+    progTexto.value = item && tipo === "anuncio" ? item.alvo : "";
+    paintCounter(progTextoCount, progTexto.value.length, MAX_CHARS);
+    const voz = item && item.voz ? item.voz : VOICES.includes(voiceSelect.value) ? voiceSelect.value : "francisca";
+    const motor = item && item.motor ? item.motor : ENGINES.includes(engineGroup.value) ? engineGroup.value : "auto";
+    const vel = item && isNum(item.velocidade) ? item.velocidade : clamp(Math.round(Number(speedRange.value) || 0), -50, 50);
+    progVoz.value = voz;
+    progMotor.value = motor;
+    progVel.value = String(vel);
+    setText(progVelOut, (vel > 0 ? "+" : "") + vel + "%");
+    paintRange(progVel, true);
+    // nome, hora e repetição
+    progNome.value = item && item.nome ? item.nome : "";
+    progHora.value = item ? item.hora : nextFullHour();
+    if (prog.agora) progData.min = prog.agora.data;
+    progData.value = item && item.data ? item.data : "";
+    let rep = "todos";
+    if (item && item.data) rep = "data";
+    else if (item) {
+      const k = item.dias.join(",");
+      rep = k === "0,1,2,3,4,5,6" ? "todos" : k === "1,2,3,4,5" ? "uteis" : k === "0,6" ? "fds" : "dias";
+      if (rep === "dias") pfSetDays(item.dias);
+      pf.preset = item.dias;
+    }
+    if (rep !== "dias") pfSetDays([]);
+    pfRep.set(rep, true);
+    progDias.hidden = rep !== "dias";
+    progDataBox.hidden = rep !== "data";
+    pfRepHint();
+
+    pfTipo.set(tipo, true);
+    pfOnTipo(tipo);
+    if (!lists.loaded || tipo === "lista") listsPoll().then(() => { if (progDialog.open && pfTipo.value === "lista") pfFillListas(progListaSel.value); });
+    if (item && tipo === "lista") pfFillListas(item.alvo);
+    pf.baseSig = pfSig();
+    progDialog.showModal();
+    if (!item) (pf.audio ? btnProgAudioChange : progAudioQ).focus({ preventScroll: true });
+    else progHora.focus({ preventScroll: true });
+  }
+
+  // ---- Conferir e montar o item ----
+  function pfBuild() {
+    const v = pfRead();
+    const fail = (error, field) => ({ error, field });
+    let alvo = "";
+    if (v.tipo === "audio") {
+      if (!v.audio) return fail("Escolha a música ou o áudio que vai tocar.", "audio");
+      alvo = v.audio;
+    } else if (v.tipo === "lista") {
+      if (!v.lista || !LISTA_ID_RE.test(v.lista)) return fail("Escolha a lista que vai tocar.", "lista");
+      alvo = v.lista;
+    } else {
+      alvo = cleanMsgText(v.texto, true);
+      if (!alvo) return fail("Escreva o texto que será falado.", "texto");
+      if (alvo.length > MAX_CHARS) return fail("O texto pode ter até " + MAX_CHARS + " caracteres.", "texto");
+    }
+    const nome = cleanMsgText(v.nome, false);
+    if (nome.length > PROG_NOME_MAX) return fail("O nome pode ter até " + PROG_NOME_MAX + " caracteres.", "nome");
+    if (!HORA_RE.test(v.hora)) return fail("Informe a hora (por exemplo, 18:00).", "hora");
+    let dias = null;
+    let data = null;
+    if (v.rep === "data") {
+      if (!DATA_RE.test(v.data)) return fail("Escolha a data.", "data");
+      const antes = pf.current && pf.current.data === v.data && pf.current.hora === v.hora;
+      if (prog.agora && !antes) {
+        if (v.data < prog.agora.data) return fail("Essa data já passou. Escolha hoje ou uma data futura.", "data");
+        if (v.data === prog.agora.data && v.hora <= prog.agora.hora) return fail("Esse horário de hoje já passou (agora são " + prog.agora.hora + " no computador da loja). Escolha uma hora mais tarde ou outra data.", "hora");
+      }
+      data = v.data;
+    } else {
+      dias = v.rep === "dias" ? v.dias : REP_DIAS[v.rep];
+      if (!dias || !dias.length) return fail("Marque ao menos um dia da semana.", "dias");
+    }
+    const item = { ativo: pf.current ? pf.current.ativo : true, tipo: v.tipo, alvo, nome: nome || null, hora: v.hora, dias, data, embaralhar: v.tipo === "lista" && v.embaralhar, voz: null, motor: null, velocidade: null };
+    if (pf.current) item.id = pf.current.id;
+    if (v.tipo === "anuncio") {
+      item.voz = VOICES.includes(v.voz) ? v.voz : "francisca";
+      item.motor = ENGINES.includes(v.motor) ? v.motor : "auto";
+      item.velocidade = clamp(Math.round(v.vel / 5) * 5, -50, 50);
+    }
+    return { item };
+  }
+
+  /** Mensagem do servidor sem o "Horário N:" (o número da lista não quer dizer nada para quem edita um só). */
+  const pfClean = (msg) => upFirst(String(msg).replace(/^Horário \d+:\s*/, ""));
+
+  async function pfSave() {
+    if (pf.busy) return;
+    pfShowError("", "");
+    const b = pfBuild();
+    if (b.error) { pfShowError(b.error, b.field); pfFocusField(b.field); return; }
+    const novo = b.item;
+    pfSetBusy(true);
+    try {
+      const res = await progApply((items) => {
+        if (pf.mode === "new") return items.concat(novo);
+        return items.some((i) => i.id === novo.id) ? items.map((i) => (i.id === novo.id ? novo : i)) : null;
+      });
+      if (res.ok) {
+        closeDialogAnimated(progDialog);
+        toast(pf.mode === "new" ? "Horário criado." : "Horário salvo.", "success");
+        return;
+      }
+      if (res.gone) { pfShowError("Este horário foi removido em outro aparelho. Feche e crie de novo, se quiser.", ""); scheduler.kick("prog"); return; }
+      const d = res.data || {};
+      if (res.status === 400 && typeof d.error === "string") {
+        const campo = d.campo === "alvo" ? (novo.tipo === "audio" ? "audio" : novo.tipo === "lista" ? "lista" : "texto") : d.campo;
+        pfShowError(pfClean(d.error), campo);
+        pfFocusField(campo);
+      } else if (res.status === 409 && d.codigo === "lendo_pasta") {
+        pfShowError(typeof d.error === "string" ? d.error : "O Proclamare está lendo a pasta de músicas. Tente de novo em instantes.", "");
+      } else {
+        pfShowError(progErrText(res, "Não foi possível salvar o horário agora."), "");
+      }
+    } finally {
+      pfSetBusy(false);
+    }
+  }
+
+  progForm.addEventListener("submit", (e) => { e.preventDefault(); pfSave(); });
+  btnProgCancel.addEventListener("click", pfGuard.request);
+  progDialog.addEventListener("close", () => {
+    pf.session++;
+    if (pf.ctrl) { pf.ctrl.abort(); pf.ctrl = null; }
+    clearTimeout(pf.timer);
+    pf.results = [];
+    pf.audio = null;
+    progTexto.value = ""; // não deixa texto de anúncio parado no DOM
+    progAudioResults.replaceChildren();
+    progMsgs.replaceChildren();
+    pfGuard.hide();
+    pfSetBusy(false);
+    if (!shuttingDown && !authLocked && pf.opener && pf.opener.isConnected) pf.opener.focus({ preventScroll: true });
+    pf.opener = null;
+  });
+
+  /** A porta de PIN fechou ou o Proclamare foi desligado: nada continua falando com o servidor. */
+  function listsProgStopAll() {
+    disarm();
+    for (const d of [listDialog, progDialog, addlistDialog]) if (d.open) d.close();
+    if (lpick.ctrl) { lpick.ctrl.abort(); lpick.ctrl = null; }
+    if (pf.ctrl) { pf.ctrl.abort(); pf.ctrl = null; }
+    clearTimeout(lpick.timer);
+    clearTimeout(pf.timer);
+    listsReset();
+    progReset();
+  }
+
+  // ======================================================================
   // 17. Configurações do Spotify (diálogo)
   // ======================================================================
   function showSettingsError(message) {
@@ -5935,6 +8088,7 @@
     ytPendingLoad = null;
     stopFile();
     libStopAll();
+    listsProgStopAll(); // v2.6: diálogos, buscas e estado de Listas e Programação
     if (searchCtrl) { searchCtrl.abort(); searchCtrl = null; }
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
     toastHost.replaceChildren();
@@ -6238,6 +8392,14 @@
     });
   }
 
+  /** Horários criados por aparelhos remotos seguem valendo depois de trocar o PIN / desconectar: avisa o dono para revisar. */
+  function remoteProgNotice(data) {
+    const n = Number.isInteger(data.programacao_remota) ? data.programacao_remota : 0;
+    if (n <= 0) return;
+    toast(n === 1 ? "Há 1 horário criado por um celular. Revise a Programação." : "Há " + n + " horários criados por celulares. Revise a Programação.", "warn", { duration: 9000 });
+    setTimeout(() => scheduler.kick("prog"), 300);
+  }
+
   /** Envia o novo PIN (string) ou null (desativar). Devolve true em sucesso. */
   async function sendPin(pin, successMessage) {
     if (netBusy) return false;
@@ -6252,6 +8414,7 @@
         resetNetForm();
         renderNetSection();
         toast(successMessage, "success");
+        remoteProgNotice(data);
         return true;
       }
       showPinError(typeof data.error === "string" && data.error ? data.error : "Não foi possível salvar o PIN.");
@@ -6319,6 +8482,7 @@
       if (ok && data.ok) {
         revokeConfirm.hidden = true;
         toast("Todos os aparelhos foram desconectados.", "success");
+        remoteProgNotice(data);
         btnRevoke.focus();
       } else {
         showPinError(typeof data.error === "string" && data.error ? data.error : "Não foi possível desconectar os aparelhos.");
@@ -7394,6 +9558,11 @@
     scheduler.add("lib", libPoll, 15000, { enabled: libActive, immediate: true });
     // Mensagens prontas (v2.5): lê agora e relê a cada minuto, pausado com a aba oculta e com o editor aberto
     scheduler.add("mensagens", refreshMessages, MSG_POLL_MS, { immediate: true, enabled: () => !msgsDialog.open });
+    // Listas (v2.6): só com a biblioteca à vista (a versão do arquivo muda quando outro aparelho edita)
+    scheduler.add("lib-lists", listsPoll, 20000, { enabled: libActive, immediate: true });
+    // Programação (v2.6): a cada 5 s com o bloco à vista; fora de vista só confere de vez em quando (avisos e o ponto da aba)
+    scheduler.add("prog", progPoll, PROG_POLL_MS, { enabled: progVisible, immediate: true });
+    scheduler.add("prog-bg", progPoll, PROG_BG_POLL_MS, { enabled: () => !progVisible(), immediate: true });
 
     refreshSpotifyStatus();
     finishSpotifyRedirectBack();

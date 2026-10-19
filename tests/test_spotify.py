@@ -781,7 +781,7 @@ class TesteErrosComCausa(BaseSpotify):
         self.get("/api/spotify/now-playing")
         self.assertEqual(self.get("/api/spotify/status").get_json()["api_codigo"], "sem_dispositivo")
         with mock.patch.object(server, "SPOTIFY_API_LEITURA_VALIDADE_S", 0.0):
-            time.sleep(0.01)
+            time.sleep(0.05)  # > 15 ms: o time.monotonic() do Windows anda de 15,6 em 15,6 ms
             s = self.get("/api/spotify/status").get_json()
         self.assertIsNone(s["api_ok"])
 
@@ -1210,7 +1210,7 @@ class TesteCorrecoesRevisao(BaseSpotify):
         self.f.api_resposta = None
         self.assertEqual(self.get("/api/spotify/status").get_json()["api_codigo"], "indisponivel")
         with mock.patch.object(server, "SPOTIFY_API_COMANDO_TRANSITORIO_S", 0.0):
-            time.sleep(0.01)
+            time.sleep(0.05)  # idem
             self.assertIsNone(self.get("/api/spotify/status").get_json()["api_ok"])
         self.assertGreaterEqual(server.SPOTIFY_API_COMANDO_VALIDADE_S, 600.0)
 
@@ -1222,7 +1222,7 @@ class TesteCorrecoesRevisao(BaseSpotify):
                 self.post("/api/spotify/next")
                 self.f.api_resposta = None
                 with mock.patch.object(server, "SPOTIFY_API_COMANDO_TRANSITORIO_S", 0.0):
-                    time.sleep(0.01)
+                    time.sleep(0.05)
                     s = self.get("/api/spotify/status").get_json()
                 self.assertEqual((s["api_ok"], s["api_codigo"]), (False, CODIGO_ESPERADO[chave]))
 
