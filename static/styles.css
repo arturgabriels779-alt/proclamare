@@ -915,7 +915,7 @@ html[data-announcing="true"] .onstage::before { display: none; }
 
 .timeline { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; }
 .timeline__time { min-width: 3.2ch; font-size: 12px; line-height: 16px; font-variant-numeric: tabular-nums; color: var(--text-3); }
-.timeline__time:last-child { text-align: right; }
+.timeline__time:last-child { text-align: right; min-width: 52px; } /* "Ao vivo", "3:45" e "1:02:03" não mexem na largura da barra */
 .progress { height: 4px; overflow: hidden; border-radius: 2px; background: var(--track); }
 .progress__fill {
   display: block;
@@ -925,6 +925,51 @@ html[data-announcing="true"] .onstage::before { display: none; }
   transform-origin: left center;
   transform: scaleX(0);
 }
+
+.timeline__time.is-live { color: var(--accent-text, var(--accent)); font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; font-size: 11px; }
+
+/* Barra de posição com seek (Tocador/controle remoto). Alvo de toque de 44 px; só transform/opacity animam. */
+.seek {
+  position: relative;
+  display: flex; align-items: center;
+  height: 44px;
+  margin-block: -14px;               /* o alvo é alto, mas a linha ocupa o mesmo espaço da barra do Spotify */
+  cursor: pointer;
+  touch-action: pan-y;
+  user-select: none; -webkit-user-select: none;
+  border-radius: 8px;
+}
+.seek[aria-disabled="true"] { cursor: default; }
+.seek__track {
+  display: block; width: 100%; height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--track);
+  transform-origin: center;
+  transition: transform var(--dur-1) var(--ease);
+}
+.seek .progress__fill { transition: transform 0.28s linear; }
+.seek.is-dragging .progress__fill { transition: none; }
+.seek:not([aria-disabled="true"]):hover .seek__track,
+.seek.is-dragging .seek__track { transform: scaleY(1.5); }
+.seek__thumb {
+  position: absolute; left: 0; top: 50%;
+  width: 14px; height: 14px; margin-left: -7px;
+  border-radius: 50%;
+  background: var(--text-1);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transform: translate(0, -50%);
+  transition: opacity var(--dur-1) var(--ease);
+  pointer-events: none;
+}
+.seek:not([aria-disabled="true"]):hover .seek__thumb,
+.seek:not([aria-disabled="true"]):focus-visible .seek__thumb,
+.seek.is-dragging .seek__thumb { opacity: 1; }
+@media (pointer: coarse) {
+  .seek:not([aria-disabled="true"]) .seek__thumb { opacity: 1; }
+}
+.seek:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 .transport { display: flex; align-items: center; justify-content: center; gap: 20px; }
 

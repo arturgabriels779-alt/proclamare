@@ -1,4 +1,4 @@
-/* Proclamare — interface do painel de controle (v2.4: Minhas músicas)
+/* Proclamare — interface do painel de controle (v2.4.1: tempo da música)
    -----------------------------------------------------------------------
    Sem frameworks e sem build: um único IIFE.
 
@@ -15,6 +15,11 @@
    conhece ids opacos (16 hex): nunca caminho de arquivo. Todo texto vindo do
    servidor (título, artista, nome de arquivo) entra no DOM só por textContent.
    O envio de músicas é a ÚNICA requisição que não é JSON (multipart via XHR).
+
+   Tempo da música (v2.4.1): o "Tocando agora" mostra decorrido/total e uma barra.
+   A aba tocadora manda posicao_s/duracao_s no heartbeat e obedece a ação "seek"
+   (<audio>.currentTime ou YT.Player.seekTo); o controle remoto interpola a posição
+   (posicao_s + posicao_idade_ms) e pode mandar "seek". No Spotify a barra é só leitura.
 
    Regras de segurança deste arquivo (CSP do servidor):
    - nada de innerHTML/eval com dados de API ou do usuário (só textContent
@@ -79,7 +84,10 @@
 
   function formatTime(ms) {
     const total = Math.max(0, Math.floor(ms / 1000));
-    return Math.floor(total / 60) + ":" + String(total % 60).padStart(2, "0");
+    const h = Math.floor(total / 3600);
+    const mm = Math.floor((total % 3600) / 60);
+    const ss = String(total % 60).padStart(2, "0");
+    return h ? h + ":" + String(mm).padStart(2, "0") + ":" + ss : mm + ":" + ss;
   }
 
   function truncate(text, max) {
@@ -1091,6 +1099,7 @@
       paneYoutube.classList.remove("is-offscreen");
     }
     if (isTocadorSource(src)) syncTocadorPanel(src);
+    tlRefresh(); // v2.4.1 (definida na seção do YouTube; syncPanes só roda após a montagem, em startApp/boot)
   }
 
   function onSourceChange(source) {
@@ -1377,7 +1386,7 @@
       lastSecond = sec;
       setText(spotifyTimeElapsed, formatTime(p));
       spotifyProgress.setAttribute("aria-valuenow", String(sec));
-      spotifyProgress.setAttribute("aria-valuetext", formatTime(p) + " de " + formatTime(a.duration));
+      spotifyProgress.setAttribute("aria-valuetext", a.duration ? falado(p / 1000) + " de " + falado(a.duration / 1000) : "Nada tocando");
     }
     // fim da faixa: pede o estado novo ao servidor (uma vez por faixa)
     if (sp.playing && a.duration && p >= a.duration - 150 && !sp.endKicked) {
@@ -2422,6 +2431,7 @@
           setText(youtubeNpState, ytAlive ? "No tocador" : idleEyebrow());
         }
         youtubeVol.set(data.volume);
+        tlIngest(data);
       }
       libUpdateBanner();
       // Fila e próximas da playlist (iguais para todos os aparelhos). Um poll
@@ -2794,13 +2804,305 @@
       case "play_index":
         if (ytPlayer && ytReady && Number.isInteger(params.index) && params.index >= 0) ytPlayIndex(params.index);
         break;
+      case "seek": // v2.4.1: só um número 0..86400; nada mais do comando é usado
+        if (isNum(params.segundos) && params.segundos >= 0 && params.segundos <= 86400) tlApplySeek(params.segundos);
+        break;
       default: break;
     }
   }
 
+  // ---- Tempo da música (v2.4.1): barra, relógio e seek ----
+  // Tocador: lê direto do <audio>/YT.Player. Controle remoto: interpola a posição que o servidor
+  // devolve (posicao_s + idade). O Spotify tem a própria barra (só leitura), mais acima.
+  const ytSeek = $("yt-seek");
+  const ytSeekFill = $("yt-seek-fill");
+  const ytSeekThumb = $("yt-seek-thumb");
+  const ytTimeElapsed = $("yt-time-elapsed");
+  const ytTimeTotal = $("yt-time-total");
+  const TL_TICK_MS = 250; // atualização local: só com o card à vista e a música tocando
+  const TL_STEP_S = 5; // setas do teclado
+  const TL_HOLD_MS = 2500; // depois de um seek remoto, ignora posições velhas que ainda estejam a caminho
+  const TL_COALESCE_MS = 350; // teclas/cliques seguidos viram UM salto
+  const TL_PUSH_DELAY_MS = 300; // heartbeat depois do salto (agrupado, para não estourar o limite do servidor)
+  const TL_END_MARGIN_S = 0.5; // o salto nunca vai até o fim exato (dispararia "ended" e pularia a faixa)
+  const tl = {
+    active: false, // há uma faixa em cena
+    key: "", // identifica a faixa (origem:id): trocou -> recomeça a âncora
+    pos: 0, at: 0, // controle remoto: posição (s) e performance.now() em que ela valia
+    dur: null, live: false, playing: false,
+    hold: 0, timer: 0, width: 0, ratio: -1, sec: -1, text: "",
+    dragging: false, dragPos: 0, keyTarget: null, keyTimer: 0, pushTimer: 0,
+  };
+  /** Maior alvo de um salto: um pouco antes do fim da faixa. */
+  const tlMaxSeek = () => (tl.dur > 0 ? Math.max(0, tl.dur - TL_END_MARGIN_S) : 86400);
+
+  /** "1 minuto e 23 segundos" (leitor de tela). */
+  function falado(seconds) {
+    const t = Math.max(0, Math.floor(seconds));
+    const h = Math.floor(t / 3600);
+    const m = Math.floor((t % 3600) / 60);
+    const s = t % 60;
+    const parts = [];
+    if (h) parts.push(h + (h === 1 ? " hora" : " horas"));
+    if (m) parts.push(m + (m === 1 ? " minuto" : " minutos"));
+    if (s || !parts.length) parts.push(s + (s === 1 ? " segundo" : " segundos"));
+    return parts.length > 1 ? parts.slice(0, -1).join(", ") + " e " + parts[parts.length - 1] : parts[0];
+  }
+
+  /** Lê o que esta aba está tocando agora (só modo Tocador). */
+  function tlSample() {
+    tl.live = false;
+    if (fa.id) {
+      const d = audioEl.duration;
+      const known = fa.meta && fa.meta.duracao_s;
+      tl.active = true;
+      tl.pos = audioEl.currentTime || 0;
+      tl.dur = Number.isFinite(d) && d > 0 ? d : (known > 0 ? known : null);
+      tl.playing = filePlaying();
+    } else if (ytPlayer && ytReady && ytCurrentVideoId()) {
+      let st = -1;
+      tl.active = true;
+      tl.pos = 0;
+      tl.dur = null;
+      try {
+        st = ytPlayer.getPlayerState();
+        tl.pos = Number(ytPlayer.getCurrentTime()) || 0;
+        const d = Number(ytPlayer.getDuration());
+        tl.dur = Number.isFinite(d) && d > 0 ? d : null;
+        const vd = ytPlayer.getVideoData();
+        tl.live = !!(vd && vd.isLive);
+      } catch (e) { /* player em troca */ }
+      if (tl.live) tl.dur = null;
+      tl.playing = st === YT_PLAYING;
+    } else {
+      tl.active = false;
+      tl.pos = 0;
+      tl.dur = null;
+      tl.playing = false;
+    }
+    return tl;
+  }
+
+  /** Posição a mostrar agora (s). */
+  function tlPosition() {
+    if (tl.dragging) return tl.dragPos;
+    if (tl.keyTarget !== null) return tl.keyTarget; // salto do teclado/clique ainda agrupando
+    if (ytMode === "player") return tl.pos;
+    const p = tl.pos + (tl.playing ? (performance.now() - tl.at) / 1000 : 0);
+    return clamp(p, 0, tl.dur || p);
+  }
+
+  const tlSeekable = () => tl.active && !tl.live && tl.dur > 0;
+
+  function tlPaint() {
+    const pos = tl.active ? Math.max(0, tlPosition()) : 0;
+    const dur = tl.active && tl.dur > 0 ? tl.dur : 0;
+    const ratio = dur ? clamp(pos / dur, 0, 1) : 0;
+    if (Math.abs(ratio - tl.ratio) >= 0.0004 || ratio === 0 || ratio === 1) {
+      tl.ratio = ratio;
+      ytSeekFill.style.setProperty("transform", "scaleX(" + ratio.toFixed(4) + ")");
+      ytSeekThumb.style.setProperty("transform", "translate(" + (ratio * tl.width).toFixed(1) + "px, -50%)");
+    }
+    const dis = tlSeekable() ? "false" : "true";
+    if (ytSeek.getAttribute("aria-disabled") !== dis) ytSeek.setAttribute("aria-disabled", dis);
+    setText(ytTimeElapsed, formatTime(pos * 1000));
+    ytTimeTotal.classList.toggle("is-live", tl.active && tl.live);
+    setText(ytTimeTotal, !tl.active ? "0:00" : tl.live ? "Ao vivo" : dur ? formatTime(dur * 1000) : "--:--");
+    const text = !tl.active ? "Nada tocando"
+      : tl.live ? falado(pos) + ", ao vivo"
+      : dur ? falado(pos) + " de " + falado(dur)
+      : falado(pos);
+    if (text !== tl.text) {
+      tl.text = text;
+      ytSeek.setAttribute("aria-valuetext", text);
+    }
+    const sec = Math.floor(pos);
+    if (sec !== tl.sec) {
+      tl.sec = sec;
+      ytSeek.setAttribute("aria-valuenow", String(sec));
+      ytSeek.setAttribute("aria-valuemax", String(Math.floor(dur)));
+    }
+  }
+
+  /** Relê (modo Tocador), repinta e liga/desliga o relógio local. */
+  function tlRefresh() {
+    if (ytMode === "player") tlSample();
+    tlPaint();
+    const run = tl.active && tl.playing && youtubeActive() && !document.hidden;
+    if (run && !tl.timer) tl.timer = setInterval(tlRefresh, TL_TICK_MS);
+    else if (!run && tl.timer) { clearInterval(tl.timer); tl.timer = 0; }
+  }
+
+  /** Controle remoto: guarda o tempo informado pelo servidor (mesma faixa e quase igual = não mexe). */
+  function tlIngest(data) {
+    const file = data.source === "arquivo" && typeof data.music_id === "string" && MUSIC_ID_RE.test(data.music_id);
+    const title = typeof data.now_playing === "string" ? data.now_playing : "";
+    const has = !!ytAlive && (file || (title !== "" && title !== IDLE_YT));
+    if (!has) {
+      tl.active = false; tl.key = ""; tl.playing = false; tl.live = false; tl.pos = 0; tl.dur = null;
+      tlRefresh();
+      return;
+    }
+    const fresh = isNum(data.posicao_s) && data.posicao_s >= 0;
+    const now = performance.now();
+    const idade = isNum(data.posicao_idade_ms) ? Math.max(0, data.posicao_idade_ms) : 0;
+    const playing = !!data.is_playing;
+    const key = file ? "a:" + data.music_id : "y:" + (data.video_id || title);
+    const same = key === tl.key;
+    tl.key = key;
+    tl.active = true;
+    let dur = fresh && isNum(data.duracao_s) && data.duracao_s > 0 ? data.duracao_s : null;
+    if (!dur && file && fresh) {
+      const t = trackCache.get(data.music_id);
+      if (t && t.duracao_s > 0) dur = t.duracao_s;
+    }
+    tl.dur = dur;
+    // contrato: duracao_s null = desconhecida / ao vivo. Posição > 0 sem duração no YouTube = ao vivo
+    // (no carregamento a posição ainda é 0 e mostramos só "--:--").
+    tl.live = !file && fresh && dur === null && data.posicao_s > 0;
+    if (!fresh) {
+      tl.pos = 0; tl.at = now; tl.playing = false; // sem posição confiável (aba antiga ou dado velho)
+    } else if (same && now < tl.hold) {
+      // Logo após um seek nosso: segura só a POSIÇÃO (polls velhos ainda a caminho), mas play/pause
+      // vale sempre — re-ancora no ponto atual para o relógio parar/andar na hora.
+      if (tl.playing !== playing) { tl.pos = tlPosition(); tl.at = now; tl.playing = playing; }
+    } else {
+      const novaAgora = data.posicao_s + (playing ? idade / 1000 : 0);
+      const atual = same ? tlPosition() : null;
+      // mesma faixa e diferença pequena: mantém a âncora (o relógio não “treme” a cada poll)
+      if (atual === null || tl.playing !== playing || Math.abs(novaAgora - atual) >= 0.7) {
+        tl.pos = data.posicao_s;
+        tl.at = now - idade;
+      }
+      tl.playing = playing;
+    }
+    tlRefresh();
+  }
+
+  /** Pula para `sec` NESTA aba (modo Tocador). Limitado à duração; ignora se nada toca ou se é ao vivo. */
+  function tlApplySeek(sec) {
+    if (!isNum(sec) || sec < 0) return;
+    tlSample();
+    if (!tl.active || tl.live) return;
+    const target = clamp(sec, 0, tlMaxSeek());
+    try {
+      if (fa.id) audioEl.currentTime = target;
+      else if (ytPlayer && ytReady) ytPlayer.seekTo(target, true);
+      else return;
+    } catch (e) { return; }
+    tl.pos = target;
+    tlRefresh();
+    // O controle remoto vê a posição nova no próximo poll. Heartbeat ATRASADO e agrupado: vários saltos
+    // seguidos viram um só (o servidor limita o heartbeat a 60 por 10 s; estourar deixaria o tocador "offline").
+    clearTimeout(tl.pushTimer);
+    tl.pushTimer = setTimeout(pushYoutubeState, TL_PUSH_DELAY_MS);
+  }
+
+  /** Salto pedido pelo usuário (clique/teclado), com o alvo já limitado a tlMaxSeek(). */
+  function tlSendSeek(target) {
+    if (ytMode === "player") tlApplySeek(target);
+    else youtubeEnqueue("seek", { segundos: Math.round(target * 1000) / 1000 });
+  }
+
+  /** Agrupa saltos seguidos (teclas, cliques): mostra o alvo já, e só o ÚLTIMO vira seek/comando. */
+  function tlSchedule(target) {
+    tl.keyTarget = target;
+    if (ytMode !== "player") { tl.pos = target; tl.at = performance.now(); tl.hold = tl.at + TL_HOLD_MS; }
+    tlRefresh();
+    clearTimeout(tl.keyTimer);
+    tl.keyTimer = setTimeout(() => {
+      const t = tl.keyTarget;
+      tl.keyTarget = null;
+      if (t !== null) tlSendSeek(t);
+    }, TL_COALESCE_MS);
+  }
+
+  /** Clique/arraste: no Tocador aplica na hora; no controle remoto agrupa (um comando por rajada). */
+  function tlUserSeek(sec) {
+    if (!tlSeekable()) return;
+    const target = clamp(sec, 0, tlMaxSeek());
+    if (ytMode === "player") {
+      clearTimeout(tl.keyTimer); tl.keyTarget = null;
+      tlApplySeek(target);
+      return;
+    }
+    tlSchedule(target);
+  }
+
+  /** Campos do heartbeat (posicao_s / duracao_s); {} se nada toca. */
+  function tlBodyFields() {
+    tlSample();
+    if (!tl.active) return {};
+    let pos = Number.isFinite(tl.pos) ? clamp(tl.pos, 0, 86400) : 0;
+    const dur = tl.dur > 0 && tl.dur <= 86400 && !tl.live ? Math.round(tl.dur * 1000) / 1000 : null;
+    // YouTube sem duração que NÃO é ao vivo = o player ainda está carregando: manda posição 0, para o
+    // controle remoto (que deduz "ao vivo" de duração nula + posição > 0) não piscar o selo "Ao vivo".
+    if (!fa.id && dur === null && !tl.live) pos = 0;
+    return { posicao_s: Math.round(pos * 1000) / 1000, duracao_s: dur };
+  }
+
+  // -- ponteiro (clique/arraste) --
+  function tlFromPointer(ev) {
+    const r = ytSeek.getBoundingClientRect();
+    tl.width = r.width;
+    return r.width > 0 ? Math.min(clamp((ev.clientX - r.left) / r.width, 0, 1) * tl.dur, tlMaxSeek()) : 0;
+  }
+  ytSeek.addEventListener("pointerdown", (ev) => {
+    if (!tlSeekable() || (ev.pointerType === "mouse" && ev.button !== 0)) return;
+    tl.dragging = true;
+    tl.dragPos = tlFromPointer(ev);
+    ytSeek.classList.add("is-dragging");
+    try { ytSeek.setPointerCapture(ev.pointerId); } catch (e) { /* ignora */ }
+    tlPaint();
+  });
+  ytSeek.addEventListener("pointermove", (ev) => {
+    if (!tl.dragging) return;
+    tl.dragPos = tlFromPointer(ev);
+    tlPaint();
+  });
+  function tlEndDrag(ev, commit) {
+    if (!tl.dragging) return;
+    tl.dragging = false;
+    ytSeek.classList.remove("is-dragging");
+    if (commit) tlUserSeek(tlFromPointer(ev));
+    else tlRefresh();
+  }
+  ytSeek.addEventListener("pointerup", (ev) => tlEndDrag(ev, true));
+  ytSeek.addEventListener("pointercancel", (ev) => tlEndDrag(ev, false));
+  ytSeek.addEventListener("lostpointercapture", (ev) => tlEndDrag(ev, false));
+
+  // -- teclado: setas ±5 s, Home/End; no controle remoto vários toques viram UM comando --
+  ytSeek.addEventListener("keydown", (ev) => {
+    if (!tlSeekable() || ev.altKey || ev.ctrlKey || ev.metaKey) return;
+    const base = tl.keyTarget !== null ? tl.keyTarget : tlPosition();
+    let target = null;
+    switch (ev.key) {
+      case "ArrowRight": case "ArrowUp": target = base + TL_STEP_S; break;
+      case "ArrowLeft": case "ArrowDown": target = base - TL_STEP_S; break;
+      case "Home": target = 0; break;
+      case "End": target = tl.dur; break;
+      default: return;
+    }
+    ev.preventDefault();
+    tlSchedule(clamp(target, 0, tlMaxSeek())); // nunca exatamente no fim: isso pularia para a próxima faixa
+  });
+
+  // largura da trilha (posição do botão), sem medir a cada quadro
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(() => {
+      tl.width = ytSeek.getBoundingClientRect().width;
+      tl.ratio = -1;
+      tlPaint();
+    }).observe(ytSeek);
+  }
+  ["seeked", "loadedmetadata", "durationchange", "emptied"].forEach((n) => audioEl.addEventListener(n, () => {
+    if (ytMode === "player") tlRefresh();
+  }));
+
   // ---- Heartbeat / estado do tocador ----
   async function pushYoutubeState() {
     if (ytMode !== "player") return;
+    tlRefresh();
     if (ytPushBusy) { ytPushAgain = true; return; }
     ytPushBusy = true;
     try {
@@ -2816,6 +3118,7 @@
           now_playing: name.slice(0, 300), is_playing: filePlaying(), volume: ytUserVolume,
           video_id: null, list_id: null, playlist_ids: [], playlist_index: null,
           source: "arquivo", music_id: fa.id, yt_pronto: !!(ytPlayer && ytReady),
+          ...tlBodyFields(),
         };
       } else if (ytPlayer && ytReady) {
         let title = "";
@@ -2843,6 +3146,7 @@
           playlist_ids: ids,
           playlist_index: pidx,
           source: "youtube", music_id: null, yt_pronto: true,
+          ...tlBodyFields(),
         };
       } else {
         if (ytTitle !== YT_TITLE_IDLE) { // ocioso: o "tocando agora" mostra o estado vazio (e o play fica discreto)
@@ -2965,6 +3269,8 @@
       ytTitle = "";
       scheduler.kick("yt-state");
     }
+    tl.key = ""; tl.active = false; tl.playing = false; tl.live = false; tl.pos = 0; tl.dur = null; // recomeça do zero no novo modo
+    clearTimeout(tl.keyTimer); clearTimeout(tl.pushTimer); tl.keyTarget = null; // salto agrupado pendente não vale no novo modo
     syncPanes(); // o modo mudou: o pane do YouTube pode precisar (ou não) ficar fora da tela
     libUpdateBanner();
     scheduler.refresh();
@@ -5787,6 +6093,7 @@
       scheduler.wake(); // refresh imediato ao voltar para a aba
       ensureProgressLoop();
     }
+    tlRefresh();
   });
   window.addEventListener("online", () => scheduler.kick("status"));
   tabModeMQ.addEventListener("change", () => {

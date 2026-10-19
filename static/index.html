@@ -357,7 +357,7 @@
 
               <div class="timeline">
                 <span class="timeline__time" id="spotify-time-elapsed">0:00</span>
-                <div class="progress" id="spotify-progress" role="progressbar" aria-label="Progresso da faixa" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+                <div class="progress" id="spotify-progress" role="progressbar" aria-label="Progresso da faixa" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-valuetext="Nada tocando">
                   <span class="progress__fill" id="spotify-progress-fill"></span>
                 </div>
                 <span class="timeline__time" id="spotify-time-total">0:00</span>
@@ -451,6 +451,16 @@
                   <p class="np__title" id="youtube-now-playing">Nada tocando</p>
                   <p class="np__artists" id="youtube-np-artist" hidden></p>
                 </div>
+              </div>
+
+              <!-- Tempo da música (v2.4.1): barra com seek por clique, arraste e teclado -->
+              <div class="timeline" id="yt-timeline">
+                <span class="timeline__time" id="yt-time-elapsed">0:00</span>
+                <div class="seek" id="yt-seek" role="slider" tabindex="0" aria-label="Posição da música" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-valuetext="Nada tocando" aria-disabled="true">
+                  <span class="seek__track"><span class="progress__fill" id="yt-seek-fill"></span></span>
+                  <span class="seek__thumb" id="yt-seek-thumb" aria-hidden="true"></span>
+                </div>
+                <span class="timeline__time" id="yt-time-total">0:00</span>
               </div>
 
               <div class="transport">

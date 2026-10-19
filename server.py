@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.4 "Minhas músicas"; base v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.4.1 "tempo da música"; base v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -31,6 +31,30 @@ da loja. Serve a interface (static/) e cuida de três coisas:
                                computadores também consigam controlá-la.
                                A aba tocadora recebe os comandos por
                                long-poll (latência quase instantânea).
+
+Contrato v2.4.1 (tempo da música no "Tocando agora")
+---------------------------------------------------
+  Só ACRESCENTA campos/ação ao contrato v2.4; nada do que já existia muda. Todas as rotas
+  continuam atrás do PIN, com 415 (não JSON) e 403 (Origin de outro host) como as demais.
+  * POST /api/youtube/state (heartbeat da aba Tocador) aceita também:
+      "posicao_s"  número >= 0 e <= 86400 (int ou float; arredondado a milissegundos);
+      "duracao_s"  número > 0 e <= 86400, ou null (duração desconhecida / vídeo ao vivo).
+    String, bool, NaN, Infinity, negativo, zero (só a duração) ou acima de 86400 = 400, e um
+    heartbeat recusado não altera NADA do estado. Ausentes = o valor anterior é mantido, EXCETO
+    quando o heartbeat troca de faixa (source/video_id/music_id diferentes): aí posição e
+    duração antigas são descartadas, para o tempo de uma música nunca aparecer na outra.
+  * GET /api/youtube/state devolve "posicao_s", "duracao_s" e "posicao_idade_ms": a posição como
+    chegou + os ms desde o heartbeat que a trouxe (relógio MONOTÔNICO do servidor). O controle
+    remoto interpola: exibida = posicao_s + (is_playing ? idade/1000 : 0), limitada a duracao_s.
+    Os três vêm null se o tocador está offline, se a posição nunca chegou ou se ela tem mais de
+    YOUTUBE_PLAYER_TIMEOUT (6 s) - a mesma régua de "tocador vivo"; dado velho não é exibido.
+  * POST /api/youtube/command ganha a ação de cliente "seek" com params {"segundos": 0..86400}
+    (número, validado; ausente/inválido = 400; chaves extras são ignoradas e NUNCA repassadas).
+    A aba Tocador aplica no que estiver tocando e responde com um heartbeat; "duck"/"restore"
+    continuam internos do servidor.
+  * Limite de taxa em POST /api/youtube/command (429): 30 comandos / 10 s por aparelho e, para
+    "seek", 10 / 4 s. Com o buffer de comandos cheio (50), o servidor descarta o mais antigo que
+    NÃO seja "duck"/"restore": uma enxurrada nunca faz a música ficar alta (ou abaixada) por engano.
 
 Contrato v2.4 ("Minhas músicas": arquivos de áudio na fila do Tocador da loja)
 -----------------------------------------------------------------------------
@@ -225,6 +249,7 @@ import hmac
 import ipaddress
 import logging
 import logging.handlers
+import math
 import random
 import signal
 import sys
@@ -387,6 +412,29 @@ def validar_str(valor: Any, nome: str, max_len: int, *, min_len: int = 0, strip:
     if not min_len <= len(valor) <= max_len:
         raise ErroApi(f"Campo '{nome}' com tamanho inválido.")
     return valor
+
+
+SEGUNDOS_MAX = 86400  # v2.4.1: teto de posição/duração/seek (24 h)
+
+
+def validar_segundos(valor: Any, nome: str, *, positivo: bool = False) -> float:
+    """
+    v2.4.1 — tempo de mídia em segundos: número JSON (int ou float), 0 <= valor <= 86400
+    (`positivo=True`: > 0, para durações). Devolve float arredondado a milissegundos.
+    Recusam-se (400): bool (que em Python é int), string, null, NaN/Infinity (o json do
+    Python os aceita!), negativos e acima do teto. Sem exceções soltas (-> 500): um int
+    gigante é comparado ANTES de virar float, então não há OverflowError.
+    """
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        raise ErroApi(f"Campo '{nome}' inválido.")
+    if isinstance(valor, float) and not math.isfinite(valor):
+        raise ErroApi(f"Campo '{nome}' inválido.")
+    if valor < 0 or valor > SEGUNDOS_MAX or (positivo and valor <= 0):
+        raise ErroApi(f"Campo '{nome}' fora do intervalo permitido.")
+    arredondado = round(float(valor), 3) + 0.0   # "+ 0.0" troca -0.0 por 0.0
+    if positivo and arredondado <= 0:             # 0.0004 s não é uma duração
+        raise ErroApi(f"Campo '{nome}' fora do intervalo permitido.")
+    return arredondado
 
 
 CSP = (
@@ -2246,7 +2294,7 @@ def spotify_restore(volume_anterior: int | None) -> None:
 YOUTUBE_PLAYER_TIMEOUT = 6.0  # segundos sem heartbeat = considera tocador offline
 YOUTUBE_WAIT_MAX = 25
 YOUTUBE_ACOES_CLIENTE = frozenset(
-    {"load", "play", "pause", "next", "prev", "volume", "play_index"}
+    {"load", "play", "pause", "next", "prev", "volume", "play_index", "seek"}
 )
 YOUTUBE_HOSTS = frozenset(
     {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
@@ -2275,6 +2323,8 @@ _yt_estado: dict[str, Any] = {
     "video_id": None, "list_id": None, "playlist_ids": [], "playlist_index": None,
     "source": "youtube", "music_id": None,   # v2.4: o que a aba tocadora está tocando
     "yt_pronto": True,   # v2.4: o player do YouTube da aba tocadora carregou (False = sem internet/API)
+    # v2.4.1: tempo da faixa. "posicao_em" = time.monotonic() do heartbeat que trouxe a posição.
+    "posicao_s": None, "duracao_s": None, "posicao_em": None,
 }
 
 # Fila do Proclamare: SÓ em memória (não sobrevive a reinício do servidor).
@@ -2296,6 +2346,13 @@ def youtube_enqueue(action: str, params: dict | None = None) -> int:
     global _yt_ultimo_id
     with _yt_cond:
         _yt_ultimo_id += 1
+        if len(_yt_comandos) >= (_yt_comandos.maxlen or 0):
+            # Buffer cheio: descarta o comando mais antigo que NÃO seja "duck"/"restore" (um anúncio
+            # não pode deixar a música alta nem abaixada por causa de uma enxurrada de outros comandos).
+            for velho in _yt_comandos:
+                if velho["action"] not in ("duck", "restore"):
+                    _yt_comandos.remove(velho)
+                    break
         _yt_comandos.append({"id": _yt_ultimo_id, "action": action, "params": params or {}})
         _yt_cond.notify_all()
         return _yt_ultimo_id
@@ -2744,6 +2801,11 @@ def youtube_command() -> Response:
     # "duck"/"restore" são internos do servidor: o cliente nunca pode enviá-los.
     if not isinstance(action, str) or action not in YOUTUBE_ACOES_CLIENTE:
         raise ErroApi("Ação inválida.")
+    # v2.4.1: limite de taxa por aparelho (o buffer de comandos é pequeno e o seek força rede na aba
+    # tocadora). Uso normal (volume com throttle de 600 ms, toques na barra) fica bem abaixo.
+    ip = request.remote_addr or "?"
+    if excedeu_limite("ytcmd:" + ip, 30, 10.0):
+        raise ErroApi("Muitos comandos seguidos. Aguarde um instante.", 429)
     bruto = body.get("params", {})
     if bruto is None:
         bruto = {}
@@ -2763,6 +2825,11 @@ def youtube_command() -> Response:
         params["value"] = validar_int(bruto.get("value"), "value", 0, 100)
     elif action == "play_index":
         params["index"] = validar_int(bruto.get("index"), "index", 0, YOUTUBE_PLAYLIST_MAX - 1)
+    elif action == "seek":
+        # v2.4.1: pular para um ponto da faixa. Só o número validado segue para a aba tocadora.
+        params["segundos"] = validar_segundos(bruto.get("segundos"), "segundos")
+        if excedeu_limite("ytseek:" + ip, 10, 4.0):  # só saltos válidos contam
+            raise ErroApi("Muitos saltos seguidos. Aguarde um instante.", 429)
     return jsonify({"ok": True, "id": youtube_enqueue(action, params)})
 
 
@@ -2858,21 +2925,46 @@ def youtube_state_push() -> Response:
         if not isinstance(body["yt_pronto"], bool):
             raise ErroApi("Campo 'yt_pronto' inválido.")
         novo["yt_pronto"] = body["yt_pronto"]
+    # v2.4.1: tempo da faixa. Tudo é validado ANTES de tocar no estado (400 não altera nada).
+    if "posicao_s" in body:
+        novo["posicao_s"] = validar_segundos(body["posicao_s"], "posicao_s")
+    if "duracao_s" in body:   # null = desconhecida / ao vivo
+        novo["duracao_s"] = (
+            None if body["duracao_s"] is None
+            else validar_segundos(body["duracao_s"], "duracao_s", positivo=True)
+        )
     with _yt_estado_lock:
+        agora = time.monotonic()
+        faixa = ("source", "video_id", "music_id")
+        if any(k in novo and novo[k] != _yt_estado[k] for k in faixa):
+            # trocou de faixa: o tempo da anterior não vale para esta (se o heartbeat trouxer
+            # posicao_s/duracao_s eles são aplicados logo abaixo)
+            _yt_estado.update(posicao_s=None, duracao_s=None, posicao_em=None)
         _yt_estado.update(novo)
-        _yt_estado["last_heartbeat"] = time.monotonic()
+        if "posicao_s" in novo:
+            _yt_estado["posicao_em"] = agora
+        _yt_estado["last_heartbeat"] = agora
     return jsonify({"ok": True})
 
 
 @app.get("/api/youtube/state")
 def youtube_state_get() -> Response:
     with _yt_estado_lock:
+        agora = time.monotonic()
         beat = _yt_estado["last_heartbeat"]
-        vivo = beat is not None and (time.monotonic() - beat) < YOUTUBE_PLAYER_TIMEOUT
+        vivo = beat is not None and (agora - beat) < YOUTUBE_PLAYER_TIMEOUT
         snap = {k: _yt_estado[k] for k in (
             "now_playing", "is_playing", "volume", "video_id", "list_id",
             "playlist_ids", "playlist_index", "source", "music_id", "yt_pronto",
         )}
+        # v2.4.1: tempo da faixa, SÓ se o tocador está vivo e a posição é fresca (mesma régua do
+        # "vivo"). A idade usa o mesmo `agora` de cima e o relógio monotônico do servidor.
+        posicao_s = duracao_s = idade_ms = None
+        em = _yt_estado["posicao_em"]
+        if vivo and _yt_estado["posicao_s"] is not None and em is not None \
+                and agora - em <= YOUTUBE_PLAYER_TIMEOUT:
+            posicao_s, duracao_s = _yt_estado["posicao_s"], _yt_estado["duracao_s"]
+            idade_ms = max(0, int((agora - em) * 1000))
     # Fila (com títulos já resolvidos) e versão lidas juntas, de forma consistente.
     with _yt_fila_lock:
         itens = list(_yt_fila)
@@ -2915,6 +3007,9 @@ def youtube_state_get() -> Response:
             "music_id": snap["music_id"],
             "yt_pronto": bool(vivo and snap["yt_pronto"]),
             "musica": tocando.publico() if tocando else None,
+            "posicao_s": posicao_s,
+            "duracao_s": duracao_s,
+            "posicao_idade_ms": idade_ms,
             "queue": fila,
             "queue_version": versao,
             "playlist": playlist,
