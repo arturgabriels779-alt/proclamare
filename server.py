@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.4.1 "tempo da música"; base v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.4.2 "Spotify"; base v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -31,6 +31,48 @@ da loja. Serve a interface (static/) e cuida de três coisas:
                                computadores também consigam controlá-la.
                                A aba tocadora recebe os comandos por
                                long-poll (latência quase instantânea).
+
+Contrato v2.4.2 (Spotify: erros com causa, reconexão e volume do anúncio)
+------------------------------------------------------------------------
+  Só ACRESCENTA campos/rotas de resposta; nenhuma rota nova. Regras do Spotify (2026): o dono do
+  app em Development Mode precisa de Premium; até 5 usuários em User Management (fora da lista =
+  403 em tudo); o refresh token expira ~6 meses após a autorização (400 invalid_grant: reautorizar);
+  Transfer/Start Playback exigem Premium; 404 NO_ACTIVE_DEVICE é comum com o app desktop ocioso.
+  * Código de erro ("codigo", lista FIXA) + "error" legível, em /devices, /now-playing, /search e
+    nos comandos (play/pause/next/previous/volume), sempre com HTTP 200 e "ok": false (exceto o 400
+    de "nenhum dispositivo selecionado"): "premium" (403) | "sem_dispositivo" (404/NO_ACTIVE_DEVICE)
+    | "reconectar" (sem token/401) | "limite" (429, com "espera_s") | "indisponivel" (rede/5xx/timeout).
+  * GET /api/spotify/status -> {"connected", "reason": "ok"|"reconectar"|"rede"|"sem_config"|
+    "sem_token", "device_id", "api_ok": true|false|null, "api_codigo", "api_error",
+    "volume_pendente"}. Falha de REDE na renovação mantém connected:true, reason "rede" (blip de
+    internet não vira "Conecte o Spotify"). invalid_grant/invalid_client na renovação DESCARTA os
+    tokens, grava spotify_auth_erro="reconectar" (limpo no próximo callback de sucesso) e para de
+    tentar. "api_ok": último resultado conhecido da API (falha de comando persistente — premium,
+    sem_dispositivo, reconectar — vale 10 min; transitória — limite, indisponivel — 60 s; de leitura 2 min).
+  * GET /api/spotify/config ganha "configured" (Client ID e Secret presentes). POST: Client ID e
+    Secret são limpos (espaços/aspas/invisíveis nas pontas) e validados como 32 hexadecimais; formato
+    errado = 400 {"ok": false, "error": "Cole só o código (32 letras e números).", "campo"}.
+  * GET /spotify/login nunca devolve texto: redireciona para "/?spotify=nocfg|local|rate".
+    GET /spotify/callback: sucesso "/?spotify=connected"; falha "/?spotify=error&motivo=negado|state|
+    credenciais|rede|redirect" (lista fixa). 200 sem refresh_token é erro.
+  * GET /api/spotify/devices: cada aparelho ganha "is_restricted" e "supports_volume".
+    POST /api/spotify/activate -> {"ok": true, "transferred": bool, "warning": str|null}. Nome e tipo
+    do aparelho são guardados: num 404 "Device not found" o servidor relê os aparelhos, reencontra
+    por nome/tipo e repete o comando uma vez.
+  * now-playing: podcast usa show.name. Falha real (premium, limite...) = "ok": false + error/codigo
+    (os campos de sempre seguem presentes, vazios).
+  * Anúncio: duck só devolve o volume anterior se o PUT funcionou; o restore tenta até 4 vezes
+    (pausa 1,5 s, ignora o backoff 429 mas espera o Retry-After se couber no orçamento, confirma pelo
+    estado do player 1,2 s depois; 2 PUTs aceitos com a leitura ainda divergente = leitura defasada,
+    vale como restaurado) numa thread própria e o
+    anúncio espera no máximo 8 s por ele; se não confirmar, o volume vai para "spotify_volume_pendente"
+    no config.json (reaplicado a cada 30 s por até 30 min, só se o aparelho ainda estiver no volume
+    do duck, e no duck do próximo anúncio). POST /api/announce ganha "musica_aviso"
+    ("musica_nao_restaurada"|"musica_nao_abaixada") e "musica_aviso_texto" quando aplicável.
+    Pause e o volume do restore são comandos críticos (não esperam o backoff 429); o pause da
+    ROTA fura o backoff no máximo 1 vez a cada 2 s. Um anúncio novo cancela o restore de fundo do
+    anterior. Os comandos (play/pause/next/previous/volume/activate) têm limite de 20 por 10 s por
+    IP (429 "Muitos comandos seguidos"). /activate de aparelho restrito não o grava como salvo.
 
 Contrato v2.4.1 (tempo da música no "Tocando agora")
 ---------------------------------------------------
@@ -1646,10 +1688,37 @@ SPOTIFY_DUCK_VOLUME = 12  # volume (%) da música durante o anúncio
 PLAYER_CACHE_TTL_S = 2.0
 BACKOFF_MAX_S = 120.0  # teto para respeitar Retry-After (429)
 
+# v2.4.2 — volume da música depois do anúncio (B1): o restore tenta de novo, confirma pelo
+# estado do player e nunca segura o anúncio por mais que SPOTIFY_RESTORE_ESPERA_MAX_S.
+SPOTIFY_RESTORE_TENTATIVAS = 4
+SPOTIFY_RESTORE_PAUSA_S = 1.5
+# O /me/player do Spotify costuma devolver o estado defasado por 1 a 3 s depois de um PUT 204:
+# a confirmação espera um pouco mais que a pausa entre tentativas e, depois de 2 PUTs aceitos
+# (204) com a leitura ainda divergente, considera a leitura defasada (não repete até o teto).
+SPOTIFY_RESTORE_CONFIRMA_ESPERA_S = 1.2
+SPOTIFY_RESTORE_ACEITA_NA_TENTATIVA = 2
+SPOTIFY_RESTORE_ESPERA_MAX_S = 8.0     # o que o anúncio espera pelo restore; o resto segue em 2º plano
+SPOTIFY_VOLUME_TOLERANCIA = 2          # o Spotify arredonda o volume em alguns aparelhos
+SPOTIFY_PENDENTE_VALIDADE_S = 30 * 60.0   # volume pendente mais velho que isto é descartado
+SPOTIFY_PENDENTE_INTERVALO_S = 30.0       # pausa entre as reaplicações do volume pendente
+SPOTIFY_REBUSCA_INTERVALO_S = 20.0        # no máximo uma releitura de aparelhos por 404 neste intervalo
+SPOTIFY_API_LEITURA_VALIDADE_S = 120.0    # "api_ok": quanto tempo uma falha/sucesso de leitura vale
+# ... e de comando: causas que NÃO se resolvem sozinhas ficam por 10 min (comandos são raros);
+# falha transitória (limite 429, 5xx/rede) vale só 60 s, para o painel não ficar âmbar à toa.
+SPOTIFY_API_COMANDO_VALIDADE_S = 600.0
+SPOTIFY_API_COMANDO_TRANSITORIO_S = 60.0
+CODIGOS_PERSISTENTES = frozenset({"premium", "sem_dispositivo", "reconectar"})
+SPOTIFY_COMANDO_IP_MAX = 20               # comandos /api/spotify/* por IP ...
+SPOTIFY_COMANDO_IP_JANELA_S = 10.0        # ... nesta janela (SEC-RT-SPOT-01)
+SPOTIFY_PAUSA_CRITICA_INTERVALO_S = 2.0   # com 429 ativo, o bypass do pause da rota passa 1x neste intervalo
+
 RE_DEVICE_ID = re.compile(r"[A-Za-z0-9]{1,128}")
+# Client ID e Client Secret do Spotify são sempre 32 caracteres hexadecimais.
+RE_CREDENCIAL_SPOTIFY = re.compile(r"[0-9a-fA-F]{32}")
+MSG_CREDENCIAL_SPOTIFY = "Cole só o código (32 letras e números)."
+_ASPAS_E_INVISIVEIS = "\"'`“”‘’«»​‌‍﻿ "
 RE_URI_TRACK = re.compile(r"spotify:track:[A-Za-z0-9]{1,64}")
 RE_URI_CONTEXTO = re.compile(r"spotify:(?:playlist|album|artist):[A-Za-z0-9]{1,64}")
-RE_CREDENCIAL = re.compile(r"[\x21-\x7E]*")  # ASCII imprimível, sem espaços/controle
 
 
 def _criar_sessao_http() -> requests.Session:
@@ -1718,6 +1787,7 @@ def _redirect_e_loopback() -> bool:
 _token_lock = threading.Lock()
 _token_falha_ate = 0.0  # monotonic: após falha de renovação, não martela o accounts.spotify.com
 TOKEN_FALHA_BACKOFF_S = 15.0
+RE_CODIGO_OAUTH = re.compile(r"[a-z_]{1,40}")
 
 
 def _token_valido(cfg: dict) -> str | None:
@@ -1745,6 +1815,68 @@ def spotify_get_token(stale: str | None = None) -> str | None:
         return _spotify_refresh_token(cfg)
 
 
+def _motivo_sem_token(cfg: dict) -> str:
+    """
+    Por que não há token (v2.4.2): "sem_config" (falta Client ID/Secret), "reconectar" (o Spotify
+    recusou a autorização guardada: reautorizar), "sem_token" (nunca conectou) ou "rede" (há
+    autorização guardada, mas a renovação falhou agora por rede/5xx/429: tentar de novo depois).
+    """
+    if not (cfg.get("spotify_client_id") and cfg.get("spotify_client_secret")):
+        return "sem_config"
+    if cfg.get("spotify_auth_erro") == "reconectar":
+        return "reconectar"
+    if not cfg.get("spotify_refresh_token"):
+        return "sem_token"
+    return "rede"
+
+
+def _remover_chaves_config(*chaves: str) -> None:
+    """Apaga chaves do config.json (grava só se alguma existia)."""
+    with _config_lock:
+        cfg = load_config()
+        if any(k in cfg for k in chaves):
+            for k in chaves:
+                cfg.pop(k, None)
+            _gravar_config_atomico(cfg)
+
+
+def _erro_oauth(res: requests.Response) -> tuple[str | None, str]:
+    """
+    (código, descrição em minúsculas) do corpo de erro do accounts.spotify.com. O código só
+    é aceito se tiver o formato [a-z_]{1,40}; a descrição serve apenas para classificar (nunca
+    é logada nem devolvida ao cliente).
+    """
+    try:
+        corpo = res.json()
+    except ValueError:
+        return None, ""
+    if not isinstance(corpo, dict):
+        return None, ""
+    codigo = corpo.get("error")
+    descricao = corpo.get("error_description")
+    codigo = codigo if isinstance(codigo, str) and RE_CODIGO_OAUTH.fullmatch(codigo) else None
+    return codigo, (descricao.lower()[:200] if isinstance(descricao, str) else "")
+
+
+def _descartar_autorizacao(refresh_usado: str, codigo: str) -> None:
+    """
+    invalid_grant/invalid_client (v2.4.2, A2): o refresh token não serve mais (expira ~6 meses
+    depois da autorização, ou foi revogado). Descarta os tokens e marca "reconectar" para a tela
+    avisar, em vez de tentar a cada 15 s para sempre. Só descarta se o refresh token guardado
+    ainda é o que falhou (uma reautorização feita enquanto isso não é apagada).
+    """
+    with _config_lock:
+        cfg = load_config()
+        if cfg.get("spotify_refresh_token") != refresh_usado:
+            return
+        for k in ("spotify_refresh_token", "spotify_access_token", "spotify_expires_at"):
+            cfg.pop(k, None)
+        cfg["spotify_auth_erro"] = "reconectar"
+        _gravar_config_atomico(cfg)
+    log.warning("O Spotify recusou a autorização guardada (%s): descartada; é preciso reconectar.", codigo)
+    spotify_invalidar_cache()
+
+
 def _spotify_refresh_token(cfg: dict) -> str | None:
     """Renova o token (chamar SEMPRE com _token_lock segurado)."""
     global _token_falha_ate
@@ -1762,13 +1894,25 @@ def _spotify_refresh_token(cfg: dict) -> str | None:
             auth=(client_id, client_secret),
             timeout=SPOTIFY_TIMEOUT,
         )
-        data = res.json() if res.status_code == 200 else {}
-    except (requests.RequestException, ValueError):
-        log.warning("Falha de rede/resposta ao renovar o token do Spotify.")
+    except requests.RequestException:
+        # Falha de REDE: mantém o token (a internet volta) e só espera um pouco para tentar.
+        log.warning("Falha de rede ao renovar o token do Spotify.")
         _token_falha_ate = time.monotonic() + TOKEN_FALHA_BACKOFF_S
         return None
+    if res.status_code != 200:
+        codigo, _ = _erro_oauth(res)
+        if codigo in ("invalid_grant", "invalid_client"):
+            _descartar_autorizacao(refresh, codigo)
+            return None
+        log.warning("Renovação do token do Spotify recusada (HTTP %s, %s).", res.status_code, codigo or "?")
+        _token_falha_ate = time.monotonic() + TOKEN_FALHA_BACKOFF_S
+        return None
+    try:
+        data = res.json()
+    except ValueError:
+        data = {}
     if not isinstance(data, dict) or not isinstance(data.get("access_token"), str):
-        log.warning("Renovação do token do Spotify recusada (HTTP %s).", res.status_code)
+        log.warning("Resposta inesperada ao renovar o token do Spotify.")
         _token_falha_ate = time.monotonic() + TOKEN_FALHA_BACKOFF_S
         return None
     mudancas: dict[str, Any] = {
@@ -1789,15 +1933,157 @@ def _em_backoff() -> bool:
     return time.monotonic() < _backoff_ate
 
 
+_critico_lock = threading.Lock()
+_critico_ate = 0.0   # monotonic: até quando o bypass do backoff pela ROTA de pause fica "gasto"
+
+
+def _bypass_critico_da_rota() -> bool:
+    """
+    O pause vindo da rota HTTP fura o backoff 429, mas no máximo 1 vez a cada
+    SPOTIFY_PAUSA_CRITICA_INTERVALO_S enquanto o backoff vale (SEC-RT-SPOT-01): um cliente em
+    laço não pode martelar o Spotify ignorando o Retry-After. O duck/restore internos não passam
+    por aqui (são poucas chamadas, limitadas pelo próprio fluxo do anúncio).
+    """
+    global _critico_ate
+    if not _em_backoff():
+        return True
+    with _critico_lock:
+        agora = time.monotonic()
+        if agora < _critico_ate:
+            return False
+        _critico_ate = agora + SPOTIFY_PAUSA_CRITICA_INTERVALO_S
+        return True
+
+
+def _espera_backoff_s() -> int:
+    """Segundos (inteiro >= 1) que faltam para o fim do backoff 429."""
+    return max(1, math.ceil(_backoff_ate - time.monotonic()))
+
+
 def _registrar_429(res: requests.Response) -> None:
     global _backoff_ate
     try:
         espera = float(res.headers.get("Retry-After", "5"))
     except ValueError:
         espera = 5.0
+    if not math.isfinite(espera):
+        espera = 5.0
     espera = max(1.0, min(espera, BACKOFF_MAX_S))
     _backoff_ate = time.monotonic() + espera
     log.warning("Spotify respondeu 429; pausando chamadas por %.0f s.", espera)
+
+
+RE_REASON_SPOTIFY = re.compile(r"[A-Z][A-Z_]{1,40}")
+
+
+def _motivo_do_corpo(corpo: dict, status: int) -> str | None:
+    """
+    `error.reason` do corpo de erro da API do Spotify (NO_ACTIVE_DEVICE, PREMIUM_REQUIRED,
+    QUOTA_EXCEEDED...), só se tiver o formato esperado. 403 sem reason cuja mensagem fala de
+    Premium/cadastro no painel vira PREMIUM_REQUIRED; 404 "no active device" vira NO_ACTIVE_DEVICE.
+    A mensagem do Spotify serve só para classificar; nunca é repassada ao cliente.
+    """
+    erro = corpo.get("error")
+    reason: str | None = None
+    msg = ""
+    if isinstance(erro, dict):
+        r = erro.get("reason")
+        if isinstance(r, str) and RE_REASON_SPOTIFY.fullmatch(r.upper()):
+            reason = r.upper()
+        m = erro.get("message")
+        msg = m.lower() if isinstance(m, str) else ""
+    elif isinstance(erro, str):
+        msg = erro.lower()
+    if reason is None and status == 403 and any(p in msg for p in ("premium", "registered", "dashboard")):
+        reason = "PREMIUM_REQUIRED"
+    if reason is None and status == 404 and "no active device" in msg:
+        reason = "NO_ACTIVE_DEVICE"
+    return reason
+
+
+# Mensagens por causa (v2.4.2, B2). "codigo" é uma lista FIXA para o front decidir o que mostrar.
+CODIGOS_SPOTIFY = ("premium", "sem_dispositivo", "reconectar", "limite", "indisponivel")
+MSG_SPOTIFY = {
+    "reconectar": "Reconecte o Spotify.",
+    "sem_dispositivo": "Abra o Spotify no PC da loja e dê play uma vez.",
+    "premium": ("A conta precisa ser Premium e ser a dona do app ou estar em User Management "
+                "no painel do Spotify."),
+    "indisponivel": "Spotify indisponível agora.",
+}
+MSG_SPOTIFY_RECUSOU = "O Spotify não aceitou este comando agora."
+# 403 com reason que NÃO é falta de Premium: restrição do momento/aparelho (pausar o que já está
+# pausado, aparelho sem controle de volume...). Não é problema de conta.
+MSG_SPOTIFY_APARELHO = "Este aparelho do Spotify não aceita esse comando (volume/controle remoto)."
+_REASONS_APARELHO = frozenset({"VOLUME_CONTROL_DISALLOW", "DEVICE_NOT_CONTROLLABLE", "REMOTE_CONTROL_DISALLOW"})
+
+
+def classificar_erro_spotify(status: int, reason: str | None) -> tuple[str, str, int | None]:
+    """
+    (codigo, mensagem, espera_s) de uma resposta de falha da API do Spotify.
+    status: 0 = falha de rede/timeout, 401 = sem autorização, 403, 404, 429, 5xx...
+    `reason`: error.reason do Spotify OU o motivo interno de spotify_api ("sem_token",
+    "sem_config", "reconectar", "rede"). Só os códigos de CODIGOS_SPOTIFY saem daqui.
+    """
+    if status == 401 or reason in ("sem_token", "sem_config", "reconectar"):
+        return "reconectar", MSG_SPOTIFY["reconectar"], None
+    if status == 429:
+        espera = _espera_backoff_s()
+        return "limite", f"Aguarde {espera} s.", espera
+    if reason == "NO_ACTIVE_DEVICE" or status == 404:
+        return "sem_dispositivo", MSG_SPOTIFY["sem_dispositivo"], None
+    if status == 403:
+        if reason in (None, "PREMIUM_REQUIRED"):
+            return "premium", MSG_SPOTIFY["premium"], None
+        if reason in _REASONS_APARELHO:
+            return "indisponivel", MSG_SPOTIFY_APARELHO, None
+        return "indisponivel", MSG_SPOTIFY_RECUSOU, None
+    return "indisponivel", MSG_SPOTIFY["indisponivel"], None
+
+
+def _corpo_erro_spotify(status: int, reason: str | None) -> dict[str, Any]:
+    """{"error", "codigo"[, "espera_s"]} para as respostas JSON de falha."""
+    codigo, mensagem, espera = classificar_erro_spotify(status, reason)
+    corpo: dict[str, Any] = {"error": mensagem, "codigo": codigo}
+    if espera is not None:
+        corpo["espera_s"] = espera
+    return corpo
+
+
+# Último resultado conhecido da API (alimenta "api_ok" do /api/spotify/status). Leitura (GET) e
+# comando (PUT/POST) ficam em compartimentos separados: o polling de now-playing (200) não pode
+# apagar a falha de um comando ("premium") a cada 2 s.
+_api_resultado_lock = threading.Lock()
+_api_resultado: dict[str, tuple[bool, str | None, float]] = {}   # "leitura"|"comando" -> (ok, codigo, monotonic)
+
+
+def _registrar_api(method: str, status: int, reason: str | None) -> None:
+    ok = status in (200, 201, 202, 204)
+    codigo = None if ok else classificar_erro_spotify(status, reason)[0]
+    with _api_resultado_lock:
+        _api_resultado["leitura" if method == "GET" else "comando"] = (ok, codigo, time.monotonic())
+
+
+def spotify_api_ok() -> tuple[bool | None, str | None]:
+    """(api_ok, codigo da falha): None = nenhuma chamada recente; False = a falha mais recente vale."""
+    agora = time.monotonic()
+    visto = False
+    pior: tuple[float, str | None] | None = None
+    with _api_resultado_lock:
+        for chave, (ok, codigo, ts) in _api_resultado.items():
+            if chave == "leitura":
+                validade = SPOTIFY_API_LEITURA_VALIDADE_S
+            elif ok or codigo in CODIGOS_PERSISTENTES:
+                validade = SPOTIFY_API_COMANDO_VALIDADE_S
+            else:   # limite/indisponivel: passa sozinho, não deixa o painel âmbar por 10 min
+                validade = SPOTIFY_API_COMANDO_TRANSITORIO_S
+            if agora - ts > validade:
+                continue
+            visto = True
+            if not ok and (pior is None or ts > pior[0]):
+                pior = (ts, codigo)
+    if pior is not None:
+        return False, pior[1]
+    return (True if visto else None), None
 
 
 def spotify_api(
@@ -1806,17 +2092,28 @@ def spotify_api(
     *,
     params: dict[str, Any] | None = None,
     json_body: dict | None = None,
-) -> tuple[dict, int]:
+    critico: bool = False,
+) -> tuple[dict, int, str | None]:
     """
-    Chama a API do Spotify. Devolve (json, status); status 401 = sem token,
-    0 = falha de rede, 429 = limite (respeita Retry-After). Parâmetros de
-    query SEMPRE via `params` (nunca concatenados na URL).
+    Chama a API do Spotify. Devolve (json, status, reason):
+      status 401 = sem autorização (reason "sem_config"|"sem_token"|"reconectar"), 0 = falha de
+      rede/timeout (reason "rede"), 429 = limite (respeita Retry-After), senão o HTTP do Spotify
+      com `reason` = error.reason do corpo (NO_ACTIVE_DEVICE, PREMIUM_REQUIRED...) ou None.
+    Parâmetros de query SEMPRE via `params` (nunca concatenados na URL).
+    `critico=True` ignora o backoff 429 (pausar a música e restaurar o volume depois do anúncio
+    não podem ficar presos atrás de um 429 de leitura); um 429 novo continua sendo registrado.
     """
-    if _em_backoff():
-        return {}, 429
+    if not critico and _em_backoff():
+        return {}, 429, None
     token = spotify_get_token()
     if not token:
-        return {}, 401
+        motivo = _motivo_sem_token(load_config())
+        if motivo == "rede":
+            _registrar_api(method, 0, "rede")
+            return {}, 0, "rede"
+        if motivo == "reconectar":
+            _registrar_api(method, 401, "reconectar")
+        return {}, 401, motivo
     res: requests.Response | None = None
     for tentativa in (0, 1):
         try:
@@ -1830,7 +2127,8 @@ def spotify_api(
             )
         except requests.RequestException:
             log.warning("Falha de rede ao chamar o Spotify (%s %s).", method, path)
-            return {}, 0
+            _registrar_api(method, 0, "rede")
+            return {}, 0, "rede"
         if res.status_code == 401 and tentativa == 0:
             novo = spotify_get_token(stale=token)  # token revogado/expirado antes da hora
             if novo and novo != token:
@@ -1838,16 +2136,23 @@ def spotify_api(
                 continue
         break
     assert res is not None
-    if res.status_code == 429:
+    status = res.status_code
+    corpo: dict = {}
+    if status != 204 and res.content:
+        try:
+            lido = res.json()
+            corpo = lido if isinstance(lido, dict) else {}
+        except ValueError:
+            corpo = {}
+    reason = _motivo_do_corpo(corpo, status) if status >= 400 else None
+    if reason == "QUOTA_EXCEEDED":
+        log.warning("Spotify: QUOTA_EXCEEDED (cota do app esgotada; HTTP %s).", status)
+    if status == 429:
         _registrar_429(res)
-        return {}, 429
-    if res.status_code == 204 or not res.content:
-        return {}, res.status_code
-    try:
-        corpo = res.json()
-    except ValueError:
-        return {}, res.status_code
-    return (corpo if isinstance(corpo, dict) else {}), res.status_code
+        _registrar_api(method, 429, reason)
+        return {}, 429, reason
+    _registrar_api(method, status, reason)
+    return corpo, status, reason
 
 
 def spotify_active_device_id() -> str | None:
@@ -1856,7 +2161,7 @@ def spotify_active_device_id() -> str | None:
 
 # --- Cache compartilhado do estado do player ---------------------------------
 _player_lock = threading.Lock()  # serializa a busca: N clientes -> 1 chamada
-_player_estado: dict[str, Any] = {"data": None, "ts": None, "gen": 0}
+_player_estado: dict[str, Any] = {"data": None, "ts": None, "gen": 0, "erro": None}
 
 
 def spotify_invalidar_cache() -> None:
@@ -1874,7 +2179,8 @@ def spotify_player_state(force: bool = False) -> dict | None:
     """
     GET /me/player com cache de ~2 s compartilhado entre todos os clientes.
     Em 429 (ou backoff ativo) devolve o último valor em cache em vez de
-    martelar a API. Devolve {} se não há player ativo e None se indisponível.
+    martelar a API. Devolve {} se não há player ativo e None se indisponível
+    (nesse caso `_player_estado["erro"]` guarda (status, reason) da falha).
     """
     if not force and _cache_player_fresco():
         return _player_estado["data"]
@@ -1884,7 +2190,7 @@ def spotify_player_state(force: bool = False) -> dict | None:
         if _em_backoff():
             return _player_estado["data"]
         geracao = _player_estado["gen"]
-        data, status = spotify_api("GET", "/me/player")
+        data, status, reason = spotify_api("GET", "/me/player")
         if status == 429:
             return _player_estado["data"]
         resultado: dict | None = data if status == 200 and data else ({} if status in (200, 204) else None)
@@ -1892,7 +2198,51 @@ def spotify_player_state(force: bool = False) -> dict | None:
         if geracao == _player_estado["gen"]:
             _player_estado["data"] = resultado
             _player_estado["ts"] = time.monotonic()
+        _player_estado["erro"] = None if resultado is not None else (status, reason)
         return resultado
+
+
+_rebusca_lock = threading.Lock()
+_rebusca_ate = 0.0   # monotonic: no máximo uma releitura de aparelhos por intervalo
+
+
+def _reachar_dispositivo(id_antigo: str) -> str | None:
+    """
+    B7 — o Spotify respondeu 404 ("Device not found") ao aparelho salvo: o id mudou (app
+    reinstalado/relogado). Relê os aparelhos e procura UM com o mesmo nome e tipo salvos; se
+    achar, grava o id novo e o devolve. None = não achou (ou releitura recente demais).
+    """
+    global _rebusca_ate
+    cfg = load_config()
+    if cfg.get("spotify_device_id") != id_antigo:
+        return None
+    nome = cfg.get("spotify_device_nome")
+    tipo = cfg.get("spotify_device_tipo")
+    if not isinstance(nome, str) or not nome:
+        return None
+    with _rebusca_lock:
+        if time.monotonic() < _rebusca_ate:
+            return None
+        _rebusca_ate = time.monotonic() + SPOTIFY_REBUSCA_INTERVALO_S
+    dados, status, _ = spotify_api("GET", "/me/player/devices")
+    if status in (0, 429):
+        # a releitura nem chegou a acontecer (rede/limite): não gasta a janela de 20 s
+        with _rebusca_lock:
+            _rebusca_ate = 0.0
+        return None
+    if status != 200:
+        return None
+    achados = [
+        d["id"] for d in dados.get("devices") or []
+        if isinstance(d, dict) and isinstance(d.get("id"), str) and RE_DEVICE_ID.fullmatch(d["id"])
+        and d["id"] != id_antigo and d.get("name") == nome and not d.get("is_restricted")
+        and (not isinstance(tipo, str) or not tipo or d.get("type") == tipo)
+    ]
+    if len(achados) != 1:   # nenhum, ou ambíguo: não adivinha
+        return None
+    update_config(spotify_device_id=achados[0])
+    log.info("Aparelho do Spotify reencontrado por nome/tipo (o id mudou).")
+    return achados[0]
 
 
 def spotify_comando(
@@ -1901,10 +2251,25 @@ def spotify_comando(
     *,
     params: dict[str, Any] | None = None,
     json_body: dict | None = None,
-) -> bool:
-    """Executa um comando de controle e invalida o cache do player."""
-    _, status = spotify_api(method, path, params=params, json_body=json_body)
+    critico: bool = False,
+) -> tuple[int, str | None]:
+    """
+    Executa um comando de controle e invalida o cache do player. Devolve (status, reason)
+    (sucesso = status 200/204; veja spotify_api). 404 com o aparelho salvo: relê os aparelhos,
+    reencontra por nome/tipo e repete UMA vez com o id novo.
+    """
+    _, status, reason = spotify_api(method, path, params=params, json_body=json_body, critico=critico)
+    if status == 404 and params and isinstance(params.get("device_id"), str):
+        novo = _reachar_dispositivo(params["device_id"])
+        if novo:
+            _, status, reason = spotify_api(
+                method, path, params={**params, "device_id": novo}, json_body=json_body, critico=critico
+            )
     spotify_invalidar_cache()
+    return status, reason
+
+
+def _sucesso(status: int) -> bool:
     return status in (200, 204)
 
 
@@ -1969,24 +2334,39 @@ def _oauth_consumir_state(recebido: str) -> str | None:
     return redirect_uri if expira >= agora else None
 
 
+# Destinos FIXOS dos redirecionamentos do fluxo OAuth (v2.4.2). Nada vindo do cliente/Spotify entra
+# na URL: o app.js só reconhece estes valores.
+SPOTIFY_LOGIN_FALHAS = frozenset({"nocfg", "local", "rate"})
+SPOTIFY_CALLBACK_MOTIVOS = frozenset({"negado", "state", "credenciais", "rede", "redirect"})
+
+
+def _redirect_login(falha: str) -> Any:
+    """/spotify/login que não pode seguir: volta ao painel com /?spotify=nocfg|local|rate."""
+    assert falha in SPOTIFY_LOGIN_FALHAS
+    return redirect(f"/?spotify={falha}")
+
+
+def _redirect_erro_callback(motivo: str) -> Any:
+    """/spotify/callback que falhou: /?spotify=error&motivo=negado|state|credenciais|rede|redirect."""
+    assert motivo in SPOTIFY_CALLBACK_MOTIVOS
+    log.warning("Conexão com o Spotify não concluída (motivo: %s).", motivo)
+    return redirect(f"/?spotify=error&motivo={motivo}")
+
+
 @app.get("/spotify/login")
 def spotify_login() -> Any:
     cfg = load_config()
     if not _sessao_ok(cfg):  # local OU sessão válida (o callback não exige sessão: cookie Strict)
-        if pin_configurado(cfg):
-            return "Digite o PIN no painel antes de conectar o Spotify.", 401
-        return "Acesso pela rede desativado. Defina um PIN no computador da loja.", 401
-    client_id = cfg.get("spotify_client_id")
-    if not client_id:
-        return "Configure o Client ID do Spotify primeiro (botão 'Configurar Spotify').", 400
+        # Sem PIN/sessão: o painel (que é público) mostra a tela do PIN e o aviso de "só no PC".
+        return _redirect_login("local")
+    if not (cfg.get("spotify_client_id") and cfg.get("spotify_client_secret")):
+        return _redirect_login("nocfg")
     if _redirect_e_loopback() and not _requisicao_local():
         # O Spotify devolveria o navegador para 127.0.0.1 DESTE aparelho, não da loja.
-        return (
-            f"Conecte o Spotify no computador da loja, abrindo http://127.0.0.1:{PORT}",
-            403,
-        )
+        return _redirect_login("local")
     if excedeu_limite("login:" + (request.remote_addr or "?"), 5, 60.0):
-        return "Muitas tentativas. Aguarde um minuto.", 429
+        return _redirect_login("rate")
+    client_id = cfg["spotify_client_id"]
     redirect_uri = spotify_redirect_uri()
     params = {
         "client_id": client_id,
@@ -2004,18 +2384,17 @@ def spotify_callback() -> Any:
     state = request.args.get("state", "")
     redirect_uri = _oauth_consumir_state(state) if 0 < len(state) <= 128 else None
     if redirect_uri is None:  # state ausente/errado/expirado/já usado
-        log.warning("Callback do Spotify com state inválido.")
-        return redirect("/?spotify=error")
+        return _redirect_erro_callback("state")
 
     code = request.args.get("code", "")
-    if request.args.get("error") or not code or len(code) > 1024:
-        return redirect("/?spotify=error")
+    if request.args.get("error") or not code or len(code) > 1024:  # ex.: error=access_denied
+        return _redirect_erro_callback("negado")
 
     cfg = load_config()
     client_id = cfg.get("spotify_client_id")
     client_secret = cfg.get("spotify_client_secret")
     if not (client_id and client_secret):
-        return redirect("/?spotify=error")
+        return _redirect_erro_callback("credenciais")
 
     try:
         res = _http.post(
@@ -2024,20 +2403,38 @@ def spotify_callback() -> Any:
             auth=(client_id, client_secret),
             timeout=SPOTIFY_TIMEOUT,
         )
-        data = res.json() if res.status_code == 200 else {}
-    except (requests.RequestException, ValueError):
-        log.warning("Falha de rede/resposta na troca do code do Spotify.")
-        return redirect("/?spotify=error")
-    if not isinstance(data, dict) or not isinstance(data.get("access_token"), str):
-        log.warning("Troca do code do Spotify recusada (HTTP %s).", res.status_code)
-        return redirect("/?spotify=error")
+    except requests.RequestException:
+        return _redirect_erro_callback("rede")
+    if res.status_code != 200:
+        codigo, descricao = _erro_oauth(res)
+        log.warning("Troca do code do Spotify recusada (HTTP %s, %s).", res.status_code, codigo or "?")
+        if codigo == "invalid_client":
+            return _redirect_erro_callback("credenciais")
+        if codigo == "invalid_grant":
+            return _redirect_erro_callback("redirect" if "redirect" in descricao else "state")
+        return _redirect_erro_callback("rede")
+    try:
+        data = res.json()
+    except ValueError:
+        data = {}
+    if (not isinstance(data, dict) or not isinstance(data.get("access_token"), str)
+            or not isinstance(data.get("refresh_token"), str) or not data["refresh_token"]):
+        # 200 sem refresh_token não serve: a conexão morreria em 1 h.
+        return _redirect_erro_callback("rede")
 
-    update_config(
-        spotify_access_token=data["access_token"],
-        spotify_refresh_token=data.get("refresh_token") or cfg.get("spotify_refresh_token"),
-        spotify_expires_at=time.time() + int(data.get("expires_in", 3600)) - 60,
-    )
+    with _config_lock:   # tokens novos + limpeza do aviso "reconectar", numa gravação só
+        cfg = load_config()
+        cfg["spotify_access_token"] = data["access_token"]
+        cfg["spotify_refresh_token"] = data["refresh_token"]
+        try:
+            cfg["spotify_expires_at"] = time.time() + int(data.get("expires_in", 3600)) - 60
+        except (TypeError, ValueError, OverflowError):
+            cfg["spotify_expires_at"] = time.time() + 3540
+        cfg.pop("spotify_auth_erro", None)
+        _gravar_config_atomico(cfg)
     _token_falha_ate = 0.0
+    with _api_resultado_lock:
+        _api_resultado.clear()   # a lâmpada recomeça do zero com a autorização nova
     spotify_invalidar_cache()
     return redirect("/?spotify=connected")
 
@@ -2050,9 +2447,48 @@ def spotify_config_get() -> Response:
         {
             "client_id": cfg.get("spotify_client_id", ""),
             "has_secret": bool(cfg.get("spotify_client_secret")),
+            "configured": bool(cfg.get("spotify_client_id") and cfg.get("spotify_client_secret")),
             "redirect_uri": spotify_redirect_uri(),
         }
     )
+
+
+def _limpar_credencial_spotify(valor: str) -> str:
+    """Tira espaços, aspas (retas e tipográficas) e invisíveis das pontas (colar do painel do Spotify)."""
+    for _ in range(4):
+        novo = valor.strip().strip(_ASPAS_E_INVISIVEIS)
+        if novo == valor:
+            break
+        valor = novo
+    return valor
+
+
+def _credencial_spotify_ou_none(bruto: Any, campo: str) -> str | None:
+    """
+    Client ID/Secret: 32 caracteres hexadecimais (sem espaço/aspas nas pontas). Devolve o valor
+    limpo em minúsculas, None se veio vazio (= manter o atual) ou levanta ErroSpotifyCredencial.
+    """
+    if not isinstance(bruto, str) or len(bruto) > 256:
+        raise ErroSpotifyCredencial(campo)
+    limpo = _limpar_credencial_spotify(bruto)
+    if not limpo:
+        return None
+    if not RE_CREDENCIAL_SPOTIFY.fullmatch(limpo):
+        raise ErroSpotifyCredencial(campo)
+    return limpo.lower()
+
+
+class ErroSpotifyCredencial(ErroApi):
+    """Client ID/Secret fora do formato: 400 com o campo que errou (nunca repete o valor)."""
+
+    def __init__(self, campo: str) -> None:
+        super().__init__(MSG_CREDENCIAL_SPOTIFY, 400)
+        self.campo = campo
+
+
+@app.errorhandler(ErroSpotifyCredencial)
+def _tratar_erro_credencial(e: ErroSpotifyCredencial) -> tuple[Response, int]:
+    return jsonify({"ok": False, "error": e.mensagem, "campo": e.campo}), 400
 
 
 @app.post("/api/spotify/config")
@@ -2064,16 +2500,13 @@ def spotify_config_set() -> Response:
         raise ErroApi("Configure o Spotify no computador da loja.", 403)
     data = corpo_json()
     changes: dict[str, str] = {}
+    # Valida os DOIS antes de gravar qualquer um (tudo ou nada). Vazio = manter o atual.
     if "client_id" in data:
-        valor = validar_str(data["client_id"], "client_id", 128)
-        if not RE_CREDENCIAL.fullmatch(valor):
-            raise ErroApi("Campo 'client_id' contém caracteres inválidos.")
-        if valor:  # vazio = manter o atual (nunca apaga o client_id e derruba a renovação)
+        valor = _credencial_spotify_ou_none(data["client_id"], "client_id")
+        if valor:
             changes["spotify_client_id"] = valor
-    if data.get("client_secret"):  # vazio = manter o segredo atual
-        valor = validar_str(data["client_secret"], "client_secret", 128)
-        if not RE_CREDENCIAL.fullmatch(valor):
-            raise ErroApi("Campo 'client_secret' contém caracteres inválidos.")
+    if data.get("client_secret"):
+        valor = _credencial_spotify_ou_none(data["client_secret"], "client_secret")
         if valor:
             changes["spotify_client_secret"] = valor
     if changes:
@@ -2082,43 +2515,145 @@ def spotify_config_set() -> Response:
     return jsonify({"ok": True})
 
 
+MSG_API_ERRO_STATUS = {
+    **MSG_SPOTIFY,
+    "limite": "O Spotify pediu para aguardar um pouco antes de novas chamadas.",
+}
+
+
+def _limitar_comandos_spotify() -> None:
+    """Limite por IP nas rotas de comando (cada uma chega ao api.spotify.com): 429 se passar."""
+    if excedeu_limite("spcmd:" + (request.remote_addr or "?"), SPOTIFY_COMANDO_IP_MAX,
+                      SPOTIFY_COMANDO_IP_JANELA_S):
+        raise ErroApi("Muitos comandos seguidos. Aguarde um instante.", 429)
+
+
 @app.get("/api/spotify/status")
 def spotify_status() -> Response:
+    """
+    {"connected", "reason": ok|reconectar|rede|sem_config|sem_token, "device_id", "api_ok",
+    "api_codigo", "api_error", "volume_pendente"}. "connected" é falso só quando é preciso agir
+    (configurar/conectar/reconectar); falha de REDE na renovação mantém connected:true,
+    reason "rede" (o painel não pode piscar para "Conecte o Spotify" num blip de internet).
+    """
     cfg = load_config()
-    connected = bool(cfg.get("spotify_refresh_token")) and spotify_get_token() is not None
-    return jsonify({"connected": connected, "device_id": cfg.get("spotify_device_id")})
+    tem_credenciais = bool(cfg.get("spotify_client_id") and cfg.get("spotify_client_secret"))
+    if tem_credenciais and cfg.get("spotify_refresh_token"):
+        if spotify_get_token() is not None:
+            reason = "ok"
+        else:
+            reason = _motivo_sem_token(load_config())   # "reconectar" (descartado agora) ou "rede"
+    else:
+        reason = _motivo_sem_token(cfg)                 # sem_config | reconectar | sem_token
+    api_ok, api_codigo = spotify_api_ok() if reason in ("ok", "rede") else (None, None)
+    return jsonify(
+        {
+            "connected": reason in ("ok", "rede"),
+            "reason": reason,
+            "device_id": cfg.get("spotify_device_id"),
+            "api_ok": api_ok,
+            "api_codigo": api_codigo,
+            "api_error": MSG_API_ERRO_STATUS.get(api_codigo) if api_codigo else None,
+            "volume_pendente": _volume_pendente() is not None,
+        }
+    )
+
+
+def _dispositivo_publico(d: dict) -> dict[str, Any]:
+    """Aparelho Connect enxuto (lista branca). `supports_volume` ausente: deduz pelo volume lido."""
+    suporta = d.get("supports_volume")
+    return {
+        "id": d.get("id"),
+        "name": d.get("name"),
+        "type": d.get("type"),
+        "is_active": bool(d.get("is_active")),
+        "volume_percent": d.get("volume_percent"),
+        "is_restricted": bool(d.get("is_restricted")),
+        "supports_volume": suporta if isinstance(suporta, bool) else d.get("volume_percent") is not None,
+    }
+
+
+def _aprender_nome_do_aparelho(dispositivos: list[dict]) -> None:
+    """
+    Instalações da versão anterior salvaram o id do aparelho sem nome/tipo (só o /activate os
+    gravava). Se o aparelho salvo aparece na lista e ainda não há nome/tipo, grava-os agora: é o
+    que permite reencontrá-lo por nome/tipo quando o Spotify trocar o id dele (404).
+    """
+    cfg = load_config()
+    salvo = cfg.get("spotify_device_id")
+    if not salvo or (cfg.get("spotify_device_nome") and cfg.get("spotify_device_tipo")):
+        return
+    alvo = next((d for d in dispositivos if d.get("id") == salvo), None)
+    if alvo is None:
+        return
+    mudancas: dict[str, Any] = {}
+    nome, tipo = alvo.get("name"), alvo.get("type")
+    if isinstance(nome, str) and nome and not cfg.get("spotify_device_nome"):
+        mudancas["spotify_device_nome"] = nome[:128]
+    if isinstance(tipo, str) and tipo and not cfg.get("spotify_device_tipo"):
+        mudancas["spotify_device_tipo"] = tipo[:64]
+    if mudancas:
+        update_config(**mudancas)
 
 
 @app.get("/api/spotify/devices")
 def spotify_devices() -> Response:
-    data, status = spotify_api("GET", "/me/player/devices")
+    data, status, reason = spotify_api("GET", "/me/player/devices")
     if status != 200:
-        return jsonify({"ok": False, "devices": []})
-    lista = []
-    for d in data.get("devices") or []:
-        if isinstance(d, dict) and d.get("id"):
-            lista.append(
-                {
-                    "id": d.get("id"),
-                    "name": d.get("name"),
-                    "type": d.get("type"),
-                    "is_active": bool(d.get("is_active")),
-                    "volume_percent": d.get("volume_percent"),
-                }
-            )
-    return jsonify({"ok": True, "devices": lista})
+        return jsonify({"ok": False, "devices": [], **_corpo_erro_spotify(status, reason)})
+    brutos = [d for d in data.get("devices") or [] if isinstance(d, dict) and d.get("id")]
+    _aprender_nome_do_aparelho(brutos)
+    return jsonify({"ok": True, "devices": [_dispositivo_publico(d) for d in brutos]})
 
 
 @app.post("/api/spotify/activate")
 def spotify_activate() -> Response:
+    """
+    Salva o aparelho e tenta transferir a reprodução para ele (sem dar play).
+    -> {"ok": true, "transferred": bool, "warning": str|null}: o aparelho fica salvo mesmo que a
+    transferência falhe (app fechado, sem Premium...); nesse caso "warning" diz por quê.
+    """
+    _limitar_comandos_spotify()
     device_id = validar_str(corpo_json().get("device_id"), "device_id", 128, min_len=1)
     if not RE_DEVICE_ID.fullmatch(device_id):
         raise ErroApi("Campo 'device_id' inválido.")
-    update_config(spotify_device_id=device_id)
-    # A transferência de reprodução é "melhor esforço" (o dispositivo já fica
-    # salvo mesmo que o app do Spotify ainda não esteja ativo).
-    spotify_comando("PUT", "/me/player", json_body={"device_ids": [device_id], "play": False})
-    return jsonify({"ok": True})
+
+    aviso: str | None = None
+    alvo: dict | None = None
+    dados, status_lista, _ = spotify_api("GET", "/me/player/devices")
+    if status_lista == 200:
+        alvo = next(
+            (d for d in dados.get("devices") or [] if isinstance(d, dict) and d.get("id") == device_id), None
+        )
+    if alvo is not None and alvo.get("is_restricted"):
+        # aparelho que não aceita controle remoto: NÃO vira o aparelho salvo (play/pause/volume dariam 403)
+        return jsonify({"ok": True, "transferred": False,
+                        "warning": "Este aparelho não aceita controle remoto pelo Spotify. Escolha outro."})
+
+    # Uma única gravação atômica: id + nome/tipo (permitem reencontrar o aparelho se o Spotify
+    # trocar o id dele, B7). Trocar de aparelho esquece o nome/tipo do anterior.
+    with _config_lock:
+        cfg = load_config()
+        if cfg.get("spotify_device_id") != device_id:
+            cfg.pop("spotify_device_nome", None)
+            cfg.pop("spotify_device_tipo", None)
+        cfg["spotify_device_id"] = device_id
+        if alvo is not None:
+            nome, tipo = alvo.get("name"), alvo.get("type")
+            if isinstance(nome, str) and nome:
+                cfg["spotify_device_nome"] = nome[:128]
+            if isinstance(tipo, str) and tipo:
+                cfg["spotify_device_tipo"] = tipo[:64]
+        _gravar_config_atomico(cfg)
+    if alvo is not None and not _dispositivo_publico(alvo)["supports_volume"]:
+        aviso = "Este aparelho não aceita controle de volume: a música não será abaixada nos anúncios."
+    status, reason = spotify_comando(
+        "PUT", "/me/player", json_body={"device_ids": [device_id], "play": False}
+    )
+    transferido = _sucesso(status)
+    if not transferido:
+        aviso = _corpo_erro_spotify(status, reason)["error"]
+    return jsonify({"ok": True, "transferred": transferido, "warning": aviso})
 
 
 @app.get("/api/spotify/search")
@@ -2132,11 +2667,11 @@ def spotify_search() -> Response | tuple[Response, int]:
     if hit and (agora - hit[0]) < BUSCA_TTL_S:
         return jsonify(hit[1])
 
-    data, status = spotify_api(
+    data, status, reason = spotify_api(
         "GET", "/search", params={"q": q, "type": "track,playlist", "limit": 8}
     )
     if status != 200:
-        return jsonify({"ok": False, "tracks": [], "playlists": []})
+        return jsonify({"ok": False, "tracks": [], "playlists": [], **_corpo_erro_spotify(status, reason)})
 
     tracks = []
     for t in (data.get("tracks") or {}).get("items") or []:
@@ -2170,8 +2705,19 @@ def spotify_search() -> Response | tuple[Response, int]:
     return jsonify(resultado)
 
 
+def _resposta_comando(status: int, reason: str | None) -> Response:
+    """
+    {"ok": true} ou {"ok": false, "error", "codigo"[, "espera_s"]} (HTTP 200 nos dois casos, como
+    sempre: o app.js lê data.ok). "codigo": premium | sem_dispositivo | reconectar | limite | indisponivel.
+    """
+    if _sucesso(status):
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, **_corpo_erro_spotify(status, reason)})
+
+
 @app.post("/api/spotify/play")
 def spotify_play() -> Response | tuple[Response, int]:
+    _limitar_comandos_spotify()
     body = corpo_json()
     uri = body.get("uri") or None
     context_uri = body.get("context_uri") or None
@@ -2188,21 +2734,30 @@ def spotify_play() -> Response | tuple[Response, int]:
         raise ErroApi("Envie 'uri' ou 'context_uri', não os dois.")
     device_id = spotify_active_device_id()
     if not device_id:
-        return _resp_erro("Nenhum dispositivo Spotify selecionado.", 400)
-    ok = spotify_comando("PUT", "/me/player/play", params={"device_id": device_id}, json_body=payload)
-    return jsonify({"ok": ok})
+        return jsonify({"ok": False, "error": "Nenhum dispositivo Spotify selecionado.",
+                        "codigo": "sem_dispositivo"}), 400
+    status, reason = spotify_comando(
+        "PUT", "/me/player/play", params={"device_id": device_id}, json_body=payload
+    )
+    return _resposta_comando(status, reason)
 
 
-def _comando_simples(method: str, path: str) -> Response:
+def _comando_simples(method: str, path: str, *, critico: bool = False) -> Response:
     """pause/next/previous: mesmo formato, só muda o método e o caminho."""
+    _limitar_comandos_spotify()
     corpo_json()  # valida que veio um objeto JSON
-    ok = spotify_comando(method, path, params={"device_id": spotify_active_device_id()})
-    return jsonify({"ok": ok})
+    if critico and not _bypass_critico_da_rota():
+        critico = False   # bypass já usado há pouco: este pause respeita o backoff 429
+    status, reason = spotify_comando(
+        method, path, params={"device_id": spotify_active_device_id()}, critico=critico
+    )
+    return _resposta_comando(status, reason)
 
 
 @app.post("/api/spotify/pause")
 def spotify_pause() -> Response:
-    return _comando_simples("PUT", "/me/player/pause")
+    # Pausar é crítico (silenciar a loja): não fica preso atrás de um backoff 429 de leitura.
+    return _comando_simples("PUT", "/me/player/pause", critico=True)
 
 
 @app.post("/api/spotify/next")
@@ -2217,28 +2772,37 @@ def spotify_previous() -> Response:
 
 @app.post("/api/spotify/volume")
 def spotify_volume() -> Response:
+    _limitar_comandos_spotify()
     value = validar_int(corpo_json().get("value"), "value", 0, 100)
-    ok = spotify_comando(
+    status, reason = spotify_comando(
         "PUT",
         "/me/player/volume",
         params={"volume_percent": value, "device_id": spotify_active_device_id()},
     )
-    return jsonify({"ok": ok})
+    return _resposta_comando(status, reason)
 
 
 @app.get("/api/spotify/now-playing")
 def spotify_now_playing() -> Response:
     data = spotify_player_state()
     vazio = {
-        "ok": True, "playing": False, "track": None, "title": None, "artists": None,
+        "playing": False, "track": None, "title": None, "artists": None,
         "image": None, "progress_ms": None, "duration_ms": None, "volume": None, "device": None,
     }
+    if data is None:
+        # Falha real (sem Premium, sem conexão, limite...): "ok": false com motivo, em vez de um
+        # "nada tocando" que esconde o problema. Os campos de sempre continuam presentes (vazios).
+        status, reason = _player_estado.get("erro") or (0, None)
+        if _em_backoff():
+            status = 429
+        return jsonify({"ok": False, **vazio, **_corpo_erro_spotify(status, reason)})
     if not data:
-        return jsonify(vazio)
+        return jsonify({"ok": True, **vazio})
     item = data.get("item") or {}
     dispositivo = data.get("device") or {}
     titulo = item.get("name") if item else None
-    artistas = (_nomes_artistas(item.get("artists")) or (item.get("show") or {}).get("publisher") or "") if item else ""
+    # podcast: o dono do show vem como `show.name` (`show.publisher` saiu da API)
+    artistas = (_nomes_artistas(item.get("artists")) or (item.get("show") or {}).get("name") or "") if item else ""
     imagens = (item.get("album") or {}).get("images") or item.get("images")
     return jsonify(
         {
@@ -2256,8 +2820,224 @@ def spotify_now_playing() -> Response:
     )
 
 
+# --- Avisos de música do anúncio em andamento (v2.4.2) --------------------------------------
+# spotify_duck/spotify_restore rodam na MESMA thread da requisição /api/announce; elas anotam aqui
+# o que deu errado e o announce() devolve no JSON. Fora de um anúncio (lista None) não anotam nada.
+MUSICA_AVISOS = {
+    "musica_nao_abaixada": "A música do Spotify não foi abaixada durante este anúncio.",
+    "musica_nao_restaurada": ("O volume da música do Spotify pode não ter voltado ao normal; o "
+                              "Proclamare vai tentar de novo. Se continuar baixo, ajuste no painel."),
+}
+_aviso_musica_tl = threading.local()
+
+
+def _avisos_musica_iniciar() -> None:
+    _aviso_musica_tl.avisos = []
+
+
+def _aviso_musica(codigo: str) -> None:
+    lista = getattr(_aviso_musica_tl, "avisos", None)
+    if lista is not None and codigo not in lista:
+        lista.append(codigo)
+
+
+def _avisos_musica_coletar() -> list[str]:
+    lista = getattr(_aviso_musica_tl, "avisos", None) or []
+    _aviso_musica_tl.avisos = None
+    return lista
+
+
+# --- Volume pendente (restore que não confirmou) --------------------------------------------
+_pendente_lock = threading.Lock()
+_reaplic_lock = threading.Lock()
+_reaplic_thread: threading.Thread | None = None
+_reaplic_acordar = threading.Event()   # acorda a thread já (testes/encerramento); senão ela espera o intervalo
+
+
+def _volume_pendente() -> int | None:
+    """Volume a restaurar guardado em `spotify_volume_pendente` (None se não há ou já expirou)."""
+    p = load_config().get("spotify_volume_pendente")
+    if not isinstance(p, dict):
+        return None
+    volume, ts = p.get("volume"), p.get("ts")
+    if (isinstance(volume, int) and not isinstance(volume, bool) and 0 <= volume <= 100
+            and isinstance(ts, (int, float)) and 0 <= time.time() - ts <= SPOTIFY_PENDENTE_VALIDADE_S):
+        return volume
+    return None
+
+
+def _gravar_volume_pendente(volume: int) -> None:
+    update_config(spotify_volume_pendente={"volume": volume, "ts": time.time()})
+    _iniciar_reaplicacao()
+
+
+def _limpar_volume_pendente() -> None:
+    _remover_chaves_config("spotify_volume_pendente")
+
+
+def _volume_confere(volume: int) -> bool:
+    """Confirma pelo estado do player. Sem leitura utilizável, confia no 204 do PUT."""
+    dados, status, _ = spotify_api("GET", "/me/player", critico=True)
+    if status != 200 or not dados:
+        return True
+    atual = (dados.get("device") or {}).get("volume_percent")
+    if not isinstance(atual, int):
+        return True
+    return abs(atual - volume) <= SPOTIFY_VOLUME_TOLERANCIA
+
+
+# Geração do restore (REV-R5): cada duck de um anúncio novo incrementa; um restore de fundo de um
+# anúncio ANTERIOR (que passou dos 8 s) confere a geração antes de cada PUT e desiste se mudou,
+# para não subir o volume no meio da fala do anúncio seguinte.
+_restore_gen = 0
+_restore_gen_lock = threading.Lock()
+
+
+def _nova_geracao_restore() -> int:
+    global _restore_gen
+    with _restore_gen_lock:
+        _restore_gen += 1
+        return _restore_gen
+
+
+def _geracao_restore() -> int:
+    with _restore_gen_lock:
+        return _restore_gen
+
+
+def _restaurar_volume(volume: int, gen: int | None = None) -> bool | None:
+    """
+    Até SPOTIFY_RESTORE_TENTATIVAS tentativas (pausa SPOTIFY_RESTORE_PAUSA_S), com o PUT CRÍTICO
+    (ignora o backoff 429) e confirmação pelo estado do player. Erro que repetir não resolve
+    (sem autorização, sem Premium) encerra na hora. Devolve True (restaurado), False (falhou) ou
+    None (cancelado: outro anúncio abaixou o volume depois; `gen` mudou).
+    - A confirmação espera SPOTIFY_RESTORE_CONFIRMA_ESPERA_S (o player demora a refletir o PUT);
+      depois de SPOTIFY_RESTORE_ACEITA_NA_TENTATIVA PUTs aceitos (204) com a leitura ainda
+      divergente, a leitura é tratada como defasada (log.info) e o restore termina como sucesso.
+    - 429 (REV-R7): respeita o Retry-After; se a espera não cabe no orçamento de
+      SPOTIFY_RESTORE_ESPERA_MAX_S, desiste (a reaplicação em 2º plano tenta mais tarde).
+    """
+    inicio = time.monotonic()
+    for tentativa in range(1, SPOTIFY_RESTORE_TENTATIVAS + 1):
+        if gen is not None and gen != _geracao_restore():
+            return None
+        device_id = spotify_active_device_id()   # relido: o 404 pode ter reencontrado o aparelho
+        if not device_id:
+            return True
+        status, reason = spotify_comando(
+            "PUT", "/me/player/volume",
+            params={"volume_percent": volume, "device_id": device_id}, critico=True,
+        )
+        pausa = SPOTIFY_RESTORE_PAUSA_S
+        if _sucesso(status):
+            time.sleep(SPOTIFY_RESTORE_CONFIRMA_ESPERA_S)
+            if _volume_confere(volume):
+                return True
+            if tentativa >= SPOTIFY_RESTORE_ACEITA_NA_TENTATIVA:
+                log.info("Volume do Spotify: %d PUTs aceitos e a leitura do player ainda difere "
+                         "(estado defasado); considerado restaurado.", tentativa)
+                return True
+            log.warning("Volume do Spotify: o PUT foi aceito, mas o player ainda mostra outro "
+                        "volume (tentativa %d/%d).", tentativa, SPOTIFY_RESTORE_TENTATIVAS)
+        else:
+            log.warning("Não foi possível restaurar o volume do Spotify (HTTP %s, %s; tentativa %d/%d).",
+                        status, reason or "-", tentativa, SPOTIFY_RESTORE_TENTATIVAS)
+            if status == 401 or (status == 403 and reason in (None, "PREMIUM_REQUIRED")):
+                return False
+            if status == 429:
+                espera = float(_espera_backoff_s())
+                if time.monotonic() - inicio + espera > SPOTIFY_RESTORE_ESPERA_MAX_S:
+                    return False
+                pausa = max(pausa, espera)
+        if tentativa < SPOTIFY_RESTORE_TENTATIVAS:
+            time.sleep(pausa)
+    return False
+
+
+def _reaplicar_pendente(volume: int) -> bool:
+    """
+    Uma tentativa de reaplicar o volume pendente. True = resolvido (nada mais a fazer). Só mexe no
+    volume se o aparelho AINDA está no volume do duck; se alguém já mexeu, descarta a pendência.
+    Com backoff 429 ativo, pula o ciclo (não insiste contra o limite).
+    """
+    if _em_backoff() or not spotify_active_device_id():
+        return False
+    dados = spotify_player_state(force=True)
+    if not dados:   # None (sem leitura) ou {} (app fechado): tenta de novo mais tarde
+        return False
+    atual = (dados.get("device") or {}).get("volume_percent")
+    if not isinstance(atual, int):
+        return False
+    if atual > SPOTIFY_DUCK_VOLUME:
+        return True
+    return _restaurar_volume_uma_vez(volume)
+
+
+def _restaurar_volume_uma_vez(volume: int) -> bool:
+    device_id = spotify_active_device_id()
+    if not device_id:
+        return False
+    status, _ = spotify_comando(
+        "PUT", "/me/player/volume", params={"volume_percent": volume, "device_id": device_id}, critico=True
+    )
+    return _sucesso(status)
+
+
+def _pendente_bruto() -> dict | None:
+    """O dict `spotify_volume_pendente` como está no config (ou None)."""
+    p = load_config().get("spotify_volume_pendente")
+    return dict(p) if isinstance(p, dict) else None
+
+
+def _loop_reaplicacao() -> None:
+    """
+    Repete o volume pendente a cada SPOTIFY_PENDENTE_INTERVALO_S. Trava a ordem de locks
+    _pendente_lock -> _reaplic_lock (a mesma de quem grava a pendência) e decide SAIR sob os dois,
+    zerando `_reaplic_thread`: assim uma pendência gravada logo depois sempre religa a thread.
+    """
+    global _reaplic_thread
+    while True:
+        _reaplic_acordar.wait(SPOTIFY_PENDENTE_INTERVALO_S)
+        _reaplic_acordar.clear()
+        try:
+            with _pendente_lock:
+                with _reaplic_lock:
+                    volume = _volume_pendente()
+                    if volume is None:
+                        _limpar_volume_pendente()
+                        _reaplic_thread = None
+                        return
+                    visto = _pendente_bruto()
+            if _anuncio_lock.locked():   # anúncio tocando: o duck/restore dele cuida do volume
+                continue
+            if _reaplicar_pendente(volume):   # rede fora dos locks (não atrasa o anúncio)
+                with _pendente_lock:
+                    # só apaga a MESMA pendência que tratamos (um restore novo pode ter gravado outra)
+                    if _pendente_bruto() == visto:
+                        _limpar_volume_pendente()
+                log.info("Volume pendente do Spotify resolvido.")
+                _reaplic_acordar.set()   # a próxima volta confirma que não sobrou nada e encerra a thread
+        except Exception:  # noqa: BLE001  (a thread nunca morre por um erro de rede)
+            log.exception("Falha ao reaplicar o volume pendente do Spotify.")
+
+
+def _iniciar_reaplicacao() -> None:
+    """Liga (uma só) a thread que repete o volume pendente a cada SPOTIFY_PENDENTE_INTERVALO_S."""
+    global _reaplic_thread
+    with _reaplic_lock:
+        if _reaplic_thread is not None and _reaplic_thread.is_alive():
+            return
+        _reaplic_thread = threading.Thread(target=_loop_reaplicacao, name="spotify-pendente", daemon=True)
+        _reaplic_thread.start()
+
+
 def spotify_duck() -> int | None:
-    """Abaixa o volume do Spotify antes do anúncio; devolve o volume anterior (ou None)."""
+    """
+    Abaixa o volume do Spotify antes do anúncio; devolve o volume anterior (ou None). Só devolve o
+    anterior se o PUT deu certo: do contrário não há o que restaurar e o anúncio leva o aviso
+    "musica_nao_abaixada". Volume ainda preso de um restore que falhou antes: devolve o volume
+    pendente, para o restore deste anúncio consertar de uma vez.
+    """
     device_id = spotify_active_device_id()
     if not device_id:
         return None
@@ -2265,24 +3045,78 @@ def spotify_duck() -> int | None:
     if not data or not data.get("is_playing"):
         return None  # nada tocando: não há o que abaixar
     anterior = (data.get("device") or {}).get("volume_percent")
-    if not isinstance(anterior, int) or anterior <= SPOTIFY_DUCK_VOLUME:
+    if not isinstance(anterior, int):
         return None
-    spotify_comando(
+    pendente = _volume_pendente()
+    if anterior <= SPOTIFY_DUCK_VOLUME:
+        # já baixo: ou o aparelho estava assim, ou o último restore falhou e o volume ficou preso
+        if pendente is not None and pendente > anterior:
+            _nova_geracao_restore()   # o restore deste anúncio assume; cancela o de fundo anterior
+            return pendente
+        return None
+    if pendente is not None:
+        _limpar_volume_pendente()   # o volume voltou ao normal por outro caminho
+    _nova_geracao_restore()         # cancela qualquer restore de fundo de um anúncio anterior
+    status, reason = spotify_comando(
         "PUT", "/me/player/volume",
         params={"volume_percent": SPOTIFY_DUCK_VOLUME, "device_id": device_id},
     )
-    return anterior
+    if _sucesso(status):
+        return anterior
+    log.warning("Não foi possível abaixar o volume do Spotify (HTTP %s, %s).", status, reason or "-")
+    _aviso_musica("musica_nao_abaixada")
+    return None
 
 
-def spotify_restore(volume_anterior: int | None) -> None:
-    if volume_anterior is None:
-        return
-    device_id = spotify_active_device_id()
-    if device_id:
-        spotify_comando(
-            "PUT", "/me/player/volume",
-            params={"volume_percent": volume_anterior, "device_id": device_id},
-        )
+def spotify_restore(volume_anterior: int | None) -> bool:
+    """
+    Devolve o volume do Spotify depois do anúncio. True = restaurado (ou nada a restaurar).
+    A restauração roda numa thread própria e o anúncio espera no máximo SPOTIFY_RESTORE_ESPERA_MAX_S:
+    se passar disso, o anúncio termina (aviso "musica_nao_restaurada"), o volume fica registrado em
+    `spotify_volume_pendente` e a thread continua tentando em segundo plano. NUNCA lança exceção
+    (o `finally` do anúncio ainda precisa restaurar a música do YouTube).
+    """
+    if volume_anterior is None or not spotify_active_device_id():
+        return True
+    gen = _geracao_restore()
+    estado: dict[str, Any] = {"ok": None, "pendente": False}
+    pronto = threading.Event()
+
+    def trabalho() -> None:
+        resultado: bool | None = False
+        try:
+            resultado = _restaurar_volume(volume_anterior, gen)
+        except Exception:  # noqa: BLE001
+            log.exception("Falha inesperada ao restaurar o volume do Spotify.")
+        finally:
+            try:
+                with _pendente_lock:
+                    estado["ok"] = resultado is not False
+                    if resultado is True:
+                        _limpar_volume_pendente()
+                    elif resultado is False and not estado["pendente"]:
+                        _gravar_volume_pendente(volume_anterior)
+                    # None = cancelado por um anúncio novo: não mexe na pendência (o duck dele cuida)
+            except Exception:  # noqa: BLE001
+                log.exception("Não foi possível gravar o volume pendente do Spotify.")
+            finally:
+                pronto.set()
+
+    threading.Thread(target=trabalho, name="spotify-restore", daemon=True).start()
+    if not pronto.wait(SPOTIFY_RESTORE_ESPERA_MAX_S):
+        log.warning("O volume do Spotify demorou a voltar; segue em segundo plano.")
+        try:
+            with _pendente_lock:
+                if estado["ok"] is None:   # ainda tentando: registra a pendência (o sucesso a apaga)
+                    estado["pendente"] = True
+                    _gravar_volume_pendente(volume_anterior)
+        except Exception:  # noqa: BLE001  (disco cheio/antivírus: o restore do YouTube ainda precisa rodar)
+            log.exception("Não foi possível gravar o volume pendente do Spotify.")
+    ok = bool(estado["ok"])
+    if not ok:
+        log.warning("O volume da música do Spotify pode não ter sido restaurado.")
+        _aviso_musica("musica_nao_restaurada")
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -3108,6 +3942,7 @@ def announce() -> Response | tuple[Response, int]:
     # Não enfileira: se já há um anúncio tocando, responde 409 imediatamente.
     if not _anuncio_lock.acquire(blocking=False):
         return _resp_erro("Já existe um anúncio tocando. Aguarde terminar.", 409)
+    _avisos_musica_iniciar()   # v2.4.2: duck/restore do Spotify anotam aqui o que deu errado
     try:
         # v2.3: com "saida_anuncio" configurada o anúncio vai para a saída escolhida.
         # Sem a chave "som" (ou sem saída) o fluxo abaixo é o da v2.2.1, sem mudança.
@@ -3142,8 +3977,14 @@ def announce() -> Response | tuple[Response, int]:
             resposta["warning"] = aviso
         if extra:
             resposta.update(extra)
+        avisos_musica = _avisos_musica_coletar()
+        if avisos_musica:   # "musica_nao_restaurada" tem prioridade sobre "musica_nao_abaixada"
+            codigo = "musica_nao_restaurada" if "musica_nao_restaurada" in avisos_musica else avisos_musica[0]
+            resposta["musica_aviso"] = codigo
+            resposta["musica_aviso_texto"] = MUSICA_AVISOS[codigo]
         return jsonify(resposta)
     finally:
+        _avisos_musica_coletar()   # descarta o que sobrou se o anúncio falhou
         _anuncio_lock.release()
 
 
@@ -3213,7 +4054,7 @@ def campos_somente_local(corpo_validado: dict, alvo: Any = None) -> None:
 
 def _aparelhos_spotify_para_som() -> list[dict] | None:
     """Fonte da descoberta "spotify": aparelhos Connect da conta (None = sem token/sem rede)."""
-    dados, status = spotify_api("GET", "/me/player/devices")
+    dados, status, _ = spotify_api("GET", "/me/player/devices")
     if status != 200:
         return None
     return [
@@ -4143,6 +4984,8 @@ def main() -> None:
         sys.exit(1)
 
     _instalar_encerramento()
+    if _volume_pendente() is not None:   # o servidor caiu/fechou com o volume da música baixo
+        _iniciar_reaplicacao()
     atexit.register(SOM.parar)
     SOM.iniciar()  # primeira varredura LOCAL em segundo plano (só lê; não toca som)
     atexit.register(ACERVO.parar)

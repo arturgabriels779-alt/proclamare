@@ -326,15 +326,34 @@
 
           <div class="tile tile--callout" id="spotify-disconnected" hidden>
             <span class="callout__icon" aria-hidden="true"><svg class="icon"><use href="#i-music"/></svg></span>
-            <h2 class="callout__title">Conecte o Spotify</h2>
-            <p class="callout__text">Conecte a conta Spotify que vai tocar na loja (Premium). A reprodução sai no Spotify já aberto no computador da loja — não neste navegador.</p>
+            <h2 class="callout__title" id="spotify-callout-title">Conecte o Spotify</h2>
+            <p class="callout__text" id="spotify-callout-text">Conecte a conta Spotify Premium que vai tocar na loja. A reprodução sai no Spotify já aberto no computador da loja — não neste navegador.</p>
+            <!-- Motivo da última tentativa que não deu certo (volta do login, credenciais...) -->
+            <div class="notice notice--callout" id="spotify-alert" role="alert" hidden>
+              <span class="notice__icon" aria-hidden="true"><svg class="icon"><use href="#i-alert"/></svg></span>
+              <div class="notice__body">
+                <p class="notice__title" id="spotify-alert-title"></p>
+                <p class="notice__text" id="spotify-alert-text"></p>
+                <code class="notice__code" id="spotify-alert-code" hidden></code>
+              </div>
+            </div>
             <div class="actions actions--start">
               <button type="button" class="btn btn--primary" id="btn-spotify-connect">Conectar Spotify</button>
-              <button type="button" class="btn btn--text" data-open-settings>Configurar Spotify</button>
+              <button type="button" class="btn btn--text" id="btn-spotify-configure" data-open-settings>Configurar Spotify</button>
             </div>
           </div>
 
           <div class="pane__stack" id="spotify-connected" hidden>
+
+            <!-- Aviso de estado: conta sem acesso, app fechado, limite, sem internet, volume pendente... -->
+            <div class="notice" id="spotify-notice" role="status" hidden>
+              <span class="notice__icon" aria-hidden="true"><svg class="icon"><use href="#i-alert"/></svg></span>
+              <div class="notice__body">
+                <p class="notice__title" id="spotify-notice-title"></p>
+                <p class="notice__text" id="spotify-notice-text"></p>
+              </div>
+              <button type="button" class="btn btn--ghost notice__action" id="btn-spotify-notice-action" hidden></button>
+            </div>
 
             <!-- Tocando agora -->
             <div class="tile tile--np">
@@ -400,6 +419,7 @@
                   </button>
                 </div>
                 <p class="hint" id="spotify-device-hint">Abra o app oficial do Spotify no computador da loja e dê play em qualquer coisa uma vez, para ele aparecer aqui.</p>
+                <p class="hint is-attention" id="spotify-device-note" hidden></p>
               </div>
 
               <hr class="rule">
@@ -699,16 +719,21 @@
     <h3 class="sheet__section">Spotify</h3>
     <p class="hint" id="spotify-remote-note" hidden>As credenciais do Spotify são configuradas no computador da loja.</p>
     <div class="sheet__fields" id="spotify-fields">
-    <p class="hint">Cole aqui o <b>Client ID</b> e o <b>Client Secret</b> do aplicativo criado em developer.spotify.com/dashboard. Veja o passo a passo no guia (docs/GUIA.md).</p>
+    <div class="notice notice--sheet notice--info" id="settings-warn" role="status" hidden>
+      <span class="notice__icon" aria-hidden="true"><svg class="icon"><use href="#i-info"/></svg></span>
+      <div class="notice__body"><p class="notice__text" id="settings-warn-text"></p></div>
+    </div>
+    <p class="hint">Cole aqui o <b>Client ID</b> e o <b>Client Secret</b> do aplicativo criado em developer.spotify.com/dashboard (<b>Settings</b> do app; o Secret aparece em <b>View client secret</b>). Veja o passo a passo no guia (docs/GUIA.md).</p>
 
     <div class="field">
       <label class="label" for="settings-client-id">Client ID</label>
-      <div class="input"><input type="text" id="settings-client-id" maxlength="128" autocomplete="off" spellcheck="false" placeholder="ex.: 7f2b9c…"></div>
+      <div class="input"><input type="text" id="settings-client-id" maxlength="128" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-describedby="hint-client-code settings-error" placeholder="ex.: 7f2b9c…"></div>
     </div>
 
     <div class="field">
       <label class="label" for="settings-client-secret">Client Secret</label>
-      <div class="input"><input type="password" id="settings-client-secret" maxlength="128" autocomplete="new-password" spellcheck="false" placeholder="deixe em branco para manter o já salvo"></div>
+      <div class="input"><input type="password" id="settings-client-secret" maxlength="128" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" aria-describedby="hint-client-code settings-error" placeholder="deixe em branco para manter o já salvo"></div>
+      <p class="hint" id="hint-client-code">Cada código tem 32 letras e números, sem espaços nem aspas. Se copiar com algum, o Proclamare tira sozinho.</p>
     </div>
 
     <div class="field">

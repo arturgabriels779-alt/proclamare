@@ -576,6 +576,9 @@ html[data-announcing="true"] .tile--announce { box-shadow: var(--shadow-tile), 0
   box-shadow: 0 0 0 4px var(--accent-soft);
 }
 .input input[readonly] { opacity: 0.7; }
+/* valor recusado (ex.: Client ID fora do formato): borda e anel em vermelho; a mensagem fica no .form-error */
+.input input[aria-invalid="true"] { border-color: var(--live); }
+.input input[aria-invalid="true"]:focus-visible { border-color: var(--live); box-shadow: 0 0 0 4px var(--live-soft); }
 .input--search input { padding-left: 38px; }
 .input__icon {
   position: absolute;
@@ -1196,6 +1199,8 @@ html[data-announcing="true"] .onstage::before { display: none; }
 /* ---- Callout (Spotify desconectado) ---- */
 .tile--callout { align-items: center; gap: 14px; text-align: center; }
 .tile--callout .actions { justify-content: center; }
+/* "Configurar" é o passo principal quando faltam o Client ID/Secret: vem antes de "Conectar" */
+#spotify-disconnected[data-primary="configure"] #btn-spotify-configure { order: -1; }
 .callout__icon {
   display: grid;
   place-items: center;
@@ -1207,6 +1212,64 @@ html[data-announcing="true"] .onstage::before { display: none; }
 .callout__icon .icon { width: 24px; height: 24px; }
 .callout__title { font: 600 20px/1.2 var(--font); letter-spacing: -0.02em; }
 .callout__text { max-width: 46ch; font-size: 15px; line-height: 1.5; color: var(--text-2); text-wrap: pretty; }
+
+/* ---- Aviso (notice): estado do Spotify com motivo e, quando há, o que fazer ----
+   Âmbar = precisa de atenção; azul (--info) = informativo. A cor nunca vai sozinha:
+   sempre há ícone + título + texto. */
+.notice {
+  --n-ink: var(--warn);
+  --n-bg: var(--warn-soft);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px 14px;
+  padding: 16px 18px;
+  background-color: var(--tile);
+  background-image: linear-gradient(var(--n-bg), var(--n-bg));
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-tile-sm);
+  box-shadow: var(--shadow-tile);
+  min-width: 0;
+  text-align: left;
+}
+.notice[hidden] { display: none; }
+.notice--info { --n-ink: var(--accent-text); --n-bg: var(--accent-soft); }
+.notice.is-entering { animation: rise var(--dur-3) var(--ease) both; }
+.notice__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  background: var(--n-bg);
+  color: var(--n-ink);
+}
+.notice__icon .icon { width: 18px; height: 18px; }
+.notice__body { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.notice__title { font: 600 15px/20px var(--font); letter-spacing: -0.01em; color: var(--text-1); text-wrap: balance; }
+.notice__title:empty { display: none; }
+.notice__text { font-size: 14px; line-height: 20px; color: var(--text-2); text-wrap: pretty; overflow-wrap: anywhere; }
+.notice__code {
+  display: block;
+  margin-top: 6px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--tile-inset);
+  color: var(--text-1);
+  font: 400 13px/1.45 var(--font-mono);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.notice__code[hidden] { display: none; }
+.notice__action { flex: none; align-self: center; }
+/* dentro do card "Conecte o Spotify" (centralizado): ocupa a largura do texto */
+.notice--callout { width: 100%; max-width: 56ch; }
+/* dentro do diálogo: fundo do próprio diálogo, sem sombra */
+.notice--sheet { padding: 12px 14px; box-shadow: none; background-color: var(--tile-inset); }
+@media (max-width: 560px) {
+  .notice { padding: 14px 16px; }
+  .notice__action { flex: 1 1 100%; }
+}
 
 /* ---- Esqueleto ---- */
 .skeleton { border-radius: 12px; background: var(--tile-inset); animation: skel 1.4s ease-in-out infinite; }

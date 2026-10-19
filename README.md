@@ -38,7 +38,7 @@ de fundo **abaixa sozinha** durante o anúncio e volta ao volume normal no final
 - Proteção contra atropelo: um segundo anúncio não toca por cima do que já está no ar.
 
 ### 🎵 Música ambiente
-- **Spotify (via Spotify Connect):** busca músicas e playlists, toca, pausa, avança, volta e ajusta volume do app oficial do Spotify no PC da loja — com capa do álbum e barra de progresso.
+- **Spotify (via Spotify Connect):** busca músicas e playlists, toca, pausa, avança, volta e ajusta volume do app oficial do Spotify no PC da loja — com capa do álbum e barra de progresso. Quando algo impede (conta sem Premium, fora de *User Management*, Spotify fechado no PC, autorização de ~6 meses vencida), a lâmpada fica âmbar e o painel diz o motivo e o que fazer.
 - **YouTube:** toca vídeos ou playlists por link (começando na música do link, até em links de "Mix"), com **fila visível** — adicionar, reordenar, remover e ver as próximas da playlist; uma aba fica como "tocador" no PC da loja e os demais aparelhos viram controle remoto, com comandos chegando quase na hora.
 - **Minhas músicas:** baixou a música, ela aparece no painel — é só soltar os arquivos (MP3, M4A, AAC, OGG, OPUS, WAV, FLAC) na pasta *Músicas do Proclamare* do PC da loja, ou **enviar pelo celular**, direto da galeria. Busca, pastas, **Tocar pasta** com *Embaralhar* e a mesma fila do YouTube; toca na aba "Tocador da loja".
 - **Abaixa a música automaticamente** durante cada anúncio (Spotify, YouTube e Minhas músicas) e restaura o volume no final.
@@ -130,4 +130,4 @@ Abra **http://127.0.0.1:8502** no PC da loja. Nos outros aparelhos, use **http:/
 
 Contas pessoais de Spotify e YouTube são licenciadas para uso pessoal. Tocar música para clientes
 em um estabelecimento comercial normalmente exige licenciamento à parte — no Brasil, pelo **ECAD**.
-Consulte antes de usar em operação contínua.
+Os próprios termos do Spotify também não permitem usar a conta pessoal/Premium para tocar na loja: para uso comercial prefira **Minhas músicas** com arquivos licenciados ou um serviço de música ambiente licenciado (seção 5 do guia). Os termos mudam: confira os vigentes em spotify.com/legal e consulte antes de usar em operação contínua.

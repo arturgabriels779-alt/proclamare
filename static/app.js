@@ -1,4 +1,4 @@
-/* Proclamare — interface do painel de controle (v2.4.1: tempo da música)
+/* Proclamare — interface do painel de controle (contrato v2.4.2 "Spotify"; base v2.4.1: tempo da música)
    -----------------------------------------------------------------------
    Sem frameworks e sem build: um único IIFE.
 
@@ -20,6 +20,15 @@
    A aba tocadora manda posicao_s/duracao_s no heartbeat e obedece a ação "seek"
    (<audio>.currentTime ou YT.Player.seekTo); o controle remoto interpola a posição
    (posicao_s + posicao_idade_ms) e pode mandar "seek". No Spotify a barra é só leitura.
+
+   Spotify (v2.4.2): erros com causa. O servidor devolve "error" (texto pronto) + "codigo"
+   (premium | sem_dispositivo | reconectar | limite | indisponivel) e o /api/spotify/status traz
+   "reason" (ok | reconectar | rede | sem_config | sem_token) e "api_ok"/"api_codigo"/"api_error".
+   A lâmpada fica verde (tudo certo), âmbar (com motivo: sem acesso, app fechado, limite, sem
+   internet, autorização vencida) ou apagada (precisa conectar/configurar); queda de internet NÃO
+   volta para "Conecte o Spotify". A volta do login (/?spotify=connected|nocfg|local|rate|error
+   &motivo=...) aceita só valores de uma lista fixa. Client ID/Secret: 32 hexadecimais, com
+   limpeza de espaços/aspas antes de enviar. O anúncio pode trazer musica_aviso.
 
    Regras de segurança deste arquivo (CSP do servidor):
    - nada de innerHTML/eval com dados de API ou do usuário (só textContent
@@ -49,6 +58,15 @@
   const ENGINES = ["auto", "online", "offline"];
   const VOICES = ["francisca", "antonio"];
   const DEVICE_RE = /^[A-Za-z0-9]{1,128}$/;
+  // Spotify v2.4.2: listas FIXAS do servidor (qualquer outro valor é ignorado)
+  const SP_CODIGOS = ["premium", "sem_dispositivo", "reconectar", "limite", "indisponivel"];
+  const SP_REASONS = ["ok", "reconectar", "rede", "sem_config", "sem_token"];
+  const SP_BACK_FALHAS = ["nocfg", "local", "rate"];
+  const SP_BACK_MOTIVOS = ["negado", "state", "credenciais", "rede", "redirect"];
+  const SIG_REINICIO = "\u0000"; // assinatura de render que nunca coincide com um estado real
+  const SP_AVISOS_MUSICA = ["musica_nao_abaixada", "musica_nao_restaurada"];
+  const SP_CODE_RE = /^[0-9a-f]{32}$/i; // Client ID e Client Secret
+  const SP_CODE_MSG = "Cole só o código (32 letras e números).";
   const TRACK_URI_RE = /^spotify:track:[A-Za-z0-9]+$/;
   const CONTEXT_URI_RE = /^spotify:(playlist|album|artist):[A-Za-z0-9]+$/;
   const YT_VIDEO_RE = /^[A-Za-z0-9_-]{11}$/;
@@ -664,6 +682,8 @@
   const settingsRedirectUri = $("settings-redirect-uri");
   const btnCopyUri = $("btn-copy-uri");
   const settingsError = $("settings-error");
+  const settingsWarn = $("settings-warn");
+  const settingsWarnText = $("settings-warn-text");
   const btnSettingsSave = $("btn-settings-save");
   const btnSettingsCancel = $("btn-settings-cancel");
   // acesso por PIN: porta de entrada
@@ -938,6 +958,12 @@
         setStatus(msg, "");
         toast(msg, "success", { silent: true });
         if (typeof data.warning === "string" && data.warning) toast(data.warning, "warn");
+        // v2.4.2: a música do Spotify não abaixou / não voltou ao volume de antes
+        const avisoMusica = spotifyAvisoMusica(data);
+        if (avisoMusica) {
+          setStatus(msg + " " + avisoMusica, "warn");
+          toast(avisoMusica, "warn", { duration: 10000 });
+        }
         // v2.3: saída de anúncio em fallback (a configurada estava indisponível): o operador precisa saber onde saiu
         if (typeof data.aviso === "string" && data.aviso) toast(data.aviso, "warn", { duration: 9000 });
         if (!isTest) addHistory(text);
@@ -1116,6 +1142,13 @@
   // ======================================================================
   const sp = {
     connected: null, // null = ainda desconhecido
+    reason: null, // ok | reconectar | rede | sem_config | sem_token (do /api/spotify/status)
+    problem: null, // { codigo, error, src } — última falha da API (src: status | read | cmd)
+    volPend: false, // o volume da música ainda não voltou ao normal depois de um anúncio
+    alert: null, // chave de SP_ALERTAS mostrada no card "Conecte o Spotify"
+    redirectUri: "", // Redirect URI do servidor (mostrado no erro "redirect")
+    connecting: false,
+    back: "", // volta do login a tratar quando o app já estiver liberado (nocfg)
     deviceId: null,
     autoTried: null, // último dispositivo ativado automaticamente
     playing: false,
@@ -1124,12 +1157,138 @@
     anchor: { progress: 0, duration: 0, at: 0 },
     devicesSig: "",
     devicesLoading: false,
+    devNote: { failed: "", allRestricted: false, anyRestricted: false },
     lastStatusCheck: 0,
     cmdBusy: false,
     endKicked: false,
+    noticeSig: "",
+    lampSig: "",
+    calloutSig: "",
+    alertSig: "",
   };
   const spotifyPlayUI = playToggle(btnSpotifyPlay, spotifyPlayIcon);
   const spotifyActive = () => sourceGroup.value === "spotify" && sp.connected === true && musicVisible();
+
+  // ---- Textos por causa (o servidor manda o texto pronto; estes são o reserva e os títulos) ----
+  const SP_PROBLEMA = {
+    premium: {
+      lamp: "Sem acesso",
+      title: "A conta não tem acesso ao Spotify",
+      text: "A conta precisa ser Premium e ser a dona do app ou estar em User Management no painel do Spotify.",
+    },
+    sem_dispositivo: {
+      lamp: "App fechado",
+      title: "Nenhum aparelho do Spotify disponível",
+      text: "Abra o Spotify no PC da loja e dê play uma vez.",
+    },
+    reconectar: {
+      lamp: "Reconectar",
+      title: "Reconecte o Spotify",
+      text: "A autorização do Spotify não vale mais. Conecte de novo para voltar a tocar.",
+    },
+    limite: {
+      lamp: "Limite",
+      title: "O Spotify pediu uma pausa",
+      text: "Foram muitos pedidos seguidos. Aguarde alguns instantes.",
+    },
+    indisponivel: {
+      lamp: "Instável",
+      title: "Spotify indisponível agora",
+      text: "O Spotify não respondeu. O painel tenta de novo sozinho.",
+    },
+  };
+  const SP_REDE = {
+    lamp: "Sem conexão",
+    title: "Sem conexão com o Spotify",
+    text: "O computador da loja está sem internet ou o Spotify está fora do ar. O painel tenta de novo sozinho.",
+  };
+  const SP_VOLUME_PENDENTE = {
+    title: "O volume da música ainda está baixo",
+    text: "Depois do último anúncio o Spotify não voltou ao volume de antes. O Proclamare tenta de novo sozinho; se preferir, ajuste o volume abaixo.",
+  };
+
+  /** Códigos de aviso de música no anúncio (o servidor manda também o texto pronto). */
+  const SP_AVISO_MUSICA_TEXTO = {
+    musica_nao_abaixada: "A música do Spotify não abaixou durante o anúncio.",
+    musica_nao_restaurada: "O volume da música não voltou ao normal. O Proclamare tenta de novo sozinho por até 30 minutos.",
+  };
+
+  // Card "Conecte o Spotify" conforme o motivo do status (reason)
+  const SP_CALLOUT = {
+    sem_token: {
+      title: "Conecte o Spotify",
+      text: "Conecte a conta Spotify Premium que vai tocar na loja. A reprodução sai no Spotify já aberto no computador da loja — não neste navegador.",
+      connect: "Conectar Spotify",
+      primary: "connect",
+    },
+    sem_config: {
+      title: "Configure o Spotify",
+      text: "Falta o Client ID e o Client Secret do aplicativo criado em developer.spotify.com/dashboard. Cole os dois em Configurar Spotify e depois conecte a conta.",
+      connect: "Conectar Spotify",
+      primary: "configure",
+    },
+    reconectar: {
+      title: "Reconecte o Spotify",
+      text: "A autorização do Spotify venceu ou foi cancelada (ela vale por cerca de 6 meses). É só conectar de novo; o Client ID e o Secret continuam salvos.",
+      connect: "Reconectar Spotify",
+      primary: "connect",
+    },
+  };
+
+  // Motivo da última tentativa de conectar (volta do /spotify/login e /spotify/callback)
+  const SP_ALERTAS = {
+    nocfg: {
+      title: "Falta configurar o Spotify",
+      text: "Cole o Client ID e o Client Secret do aplicativo do Spotify em Configurar Spotify e conecte de novo.",
+      info: true,
+    },
+    local: {
+      title: "Conecte pelo computador da loja",
+      text: () => "O Spotify só aceita o login a partir do endereço http://127.0.0.1:" + (window.location.port || "8502") + ", aberto no próprio computador da loja.",
+      info: true,
+    },
+    rate: {
+      title: "Muitas tentativas de conexão",
+      text: "Espere cerca de um minuto e clique em Conectar Spotify de novo.",
+      info: true,
+    },
+    negado: {
+      title: "A conexão foi recusada no Spotify",
+      text: "A autorização foi cancelada ou recusada. Clique em Conectar Spotify e escolha Aceitar.",
+    },
+    state: {
+      title: "O pedido de conexão expirou",
+      text: "Isso acontece quando a tela do Spotify fica aberta por muito tempo ou a página é recarregada. Clique em Conectar Spotify para tentar de novo.",
+    },
+    credenciais: {
+      title: "O Spotify não aceitou o Client ID ou o Client Secret",
+      text: "Confira os dois códigos em Configurar Spotify. Copie de novo em developer.spotify.com/dashboard (Settings do app e View client secret).",
+    },
+    rede: {
+      title: "Não foi possível falar com o Spotify",
+      text: "Confira a internet do computador da loja e tente de novo.",
+    },
+    redirect: {
+      title: "INVALID_CLIENT: Invalid redirect URI",
+      text: "O endereço de retorno cadastrado no painel do Spotify não é o do Proclamare. No app, em Settings, adicione em Redirect URIs exatamente este endereço e salve:",
+      code: true,
+    },
+  };
+
+  const spotifyAlert = $("spotify-alert");
+  const spotifyAlertTitle = $("spotify-alert-title");
+  const spotifyAlertText = $("spotify-alert-text");
+  const spotifyAlertCode = $("spotify-alert-code");
+  const spotifyCalloutTitle = $("spotify-callout-title");
+  const spotifyCalloutText = $("spotify-callout-text");
+  const btnSpotifyConfigure = $("btn-spotify-configure");
+  const spotifyNotice = $("spotify-notice");
+  const spotifyNoticeTitle = $("spotify-notice-title");
+  const spotifyNoticeText = $("spotify-notice-text");
+  const spotifyNoticeIcon = spotifyNotice.querySelector("use");
+  const btnSpotifyNoticeAction = $("btn-spotify-notice-action");
+  const spotifyDeviceNote = $("spotify-device-note");
+  const lampSpotifyTile = $("lamp-spotify");
 
   function showSpotifyState(state) {
     // state: loading | disconnected | connected
@@ -1143,12 +1302,170 @@
     });
   }
 
+  /** O problema mais importante agora (a lâmpada, o aviso do painel e o card usam o mesmo). */
+  function spotifyTopProblem() {
+    // "reconectar" vale mais que tudo; depois a falta de internet; depois o erro da API
+    const p = sp.problem;
+    if (p && p.codigo === "reconectar") {
+      return { kind: "reconectar", ...SP_PROBLEMA.reconectar, text: p.error || SP_PROBLEMA.reconectar.text };
+    }
+    if (sp.reason === "rede") return { kind: "rede", ...SP_REDE };
+    if (p) {
+      const t = SP_PROBLEMA[p.codigo] || SP_PROBLEMA.indisponivel;
+      return { kind: p.codigo, ...t, text: p.error || t.text };
+    }
+    return null;
+  }
+
+  function renderSpotifyLamp() {
+    let state = "off";
+    let label = "Desconectado";
+    let tip = "";
+    if (!sp.connected) {
+      if (sp.reason === "reconectar") {
+        state = "alert"; label = "Reconectar"; tip = SP_CALLOUT.reconectar.text;
+      } else if (sp.reason === "sem_config") {
+        label = "Configurar"; tip = "Falta o Client ID e o Client Secret do Spotify.";
+      }
+    } else {
+      const top = spotifyTopProblem();
+      if (top) { state = "alert"; label = top.lamp; tip = top.title + ". " + top.text; }
+      else { state = "on"; label = "Conectado"; }
+    }
+    const sig = state + "|" + label + "|" + tip;
+    if (sig === sp.lampSig) return;
+    sp.lampSig = sig;
+    setLamp(lampSpotifyBulb, state);
+    setText(lampSpotifyLabel, label);
+    if (tip) lampSpotifyTile.setAttribute("title", tip); else lampSpotifyTile.removeAttribute("title");
+  }
+
+  /** Faixa de aviso no topo do painel conectado. */
+  function renderSpotifyNotice() {
+    let view = null;
+    if (sp.connected === true) {
+      const top = spotifyTopProblem();
+      if (top) {
+        const action = top.kind === "reconectar" ? { id: "connect", label: "Reconectar Spotify" }
+          : top.kind === "sem_dispositivo" ? { id: "devices", label: "Atualizar aparelhos" } : null;
+        view = { tone: "warn", title: top.title, text: top.text, action };
+      } else if (sp.volPend) {
+        view = { tone: "info", title: SP_VOLUME_PENDENTE.title, text: SP_VOLUME_PENDENTE.text, action: null };
+      }
+    }
+    const sig = view ? [view.tone, view.title, view.text, view.action ? view.action.id : ""].join("\u0001") : "";
+    if (sig === sp.noticeSig) return;
+    const wasHidden = spotifyNotice.hidden;
+    sp.noticeSig = sig;
+    if (!view) { spotifyNotice.hidden = true; return; }
+    spotifyNotice.classList.toggle("notice--info", view.tone === "info");
+    spotifyNoticeIcon.setAttribute("href", view.tone === "info" ? "#i-info" : "#i-alert");
+    setText(spotifyNoticeTitle, view.title);
+    setText(spotifyNoticeText, view.text);
+    btnSpotifyNoticeAction.hidden = !view.action;
+    if (view.action) {
+      btnSpotifyNoticeAction.dataset.action = view.action.id;
+      setText(btnSpotifyNoticeAction, view.action.label);
+    }
+    spotifyNotice.hidden = false;
+    if (wasHidden) playEnter(spotifyNotice);
+  }
+
+  /** Card "Conecte o Spotify": título, texto e botão principal conforme o motivo. */
+  function renderSpotifyCallout() {
+    if (sp.connected !== false) return;
+    const c = SP_CALLOUT[sp.reason] || SP_CALLOUT.sem_token;
+    const text = c.text + (isRemote() ? " Este passo é feito no computador da loja." : "");
+    const sig = [sp.reason, text].join("\u0001");
+    if (sig === sp.calloutSig) return;
+    sp.calloutSig = sig;
+    setText(spotifyCalloutTitle, c.title);
+    setText(spotifyCalloutText, text);
+    setText(btnSpotifyConnect, c.connect);
+    const connectFirst = c.primary === "connect";
+    btnSpotifyConnect.classList.toggle("btn--primary", connectFirst);
+    btnSpotifyConnect.classList.toggle("btn--text", !connectFirst);
+    btnSpotifyConfigure.classList.toggle("btn--primary", !connectFirst);
+    btnSpotifyConfigure.classList.toggle("btn--text", connectFirst);
+    spotifyDisconnected.dataset.primary = c.primary; // o CSS põe o botão principal primeiro
+  }
+
+  /** Motivo da última tentativa de conectar (some quando a conexão dá certo). */
+  function renderSpotifyAlert() {
+    // "falta configurar" já está dito no próprio card quando o status é sem_config: não repete
+    const redundante = sp.alert === "nocfg" && sp.reason === "sem_config";
+    const view = sp.alert && sp.connected !== true && !redundante ? SP_ALERTAS[sp.alert] : null;
+    const text = view ? (typeof view.text === "function" ? view.text() : view.text) : "";
+    const code = view && view.code
+      ? sp.redirectUri || "http://127.0.0.1:" + (window.location.port || "8502") + "/spotify/callback"
+      : "";
+    const sig = view ? [sp.alert, text, code].join("\u0001") : "";
+    if (sig === sp.alertSig) return;
+    sp.alertSig = sig;
+    if (!view) { spotifyAlert.hidden = true; return; }
+    setText(spotifyAlertTitle, view.title);
+    setText(spotifyAlertText, text);
+    setText(spotifyAlertCode, code);
+    spotifyAlertCode.hidden = !code;
+    spotifyAlert.classList.toggle("notice--info", view.info === true);
+    spotifyAlert.hidden = false;
+  }
+
+  function renderSpotifyState() {
+    if (sp.connected === null) return;
+    renderSpotifyLamp();
+    renderSpotifyNotice();
+    renderSpotifyCallout();
+    renderSpotifyAlert();
+  }
+
+  function showSpotifyAlert(kind) {
+    sp.alert = SP_ALERTAS[kind] ? kind : null;
+    if (kind === "redirect") loadRedirectUri();
+    renderSpotifyAlert();
+  }
+
+  /** Busca o Redirect URI cadastrado no servidor para mostrá-lo no erro "redirect". */
+  async function loadRedirectUri() {
+    if (isRemote()) return;
+    try {
+      const { data } = await getJSON("/api/spotify/config", { timeout: 6000 });
+      if (typeof data.redirect_uri === "string" && /^http:\/\/[^\s]{1,200}$/.test(data.redirect_uri)) {
+        sp.redirectUri = data.redirect_uri;
+        renderSpotifyAlert();
+      }
+    } catch (e) { /* mostra o endereço padrão */ }
+  }
+
+  /** Registra a falha de uma resposta do Spotify (error/codigo). Devolve o código, ou "" se não houver. */
+  function noteSpotifyFailure(data, src) {
+    const codigo = data && typeof data.codigo === "string" && SP_CODIGOS.includes(data.codigo) ? data.codigo : "";
+    if (!codigo) return "";
+    sp.problem = { codigo, error: str(data.error, 200), src };
+    renderSpotifyState();
+    return codigo;
+  }
+
+  /** Um comando passou: qualquer falha anterior da API deixou de valer. */
+  function noteSpotifyCommandOk() {
+    if (!sp.problem) return;
+    sp.problem = null;
+    renderSpotifyState();
+  }
+
+  /** Uma leitura passou: só desfaz falha de leitura (a de comando continua até um comando passar). */
+  function noteSpotifyReadOk() {
+    if (!sp.problem || sp.problem.src !== "read") return;
+    sp.problem = null;
+    renderSpotifyState();
+  }
+
   function setSpotifyConnected(connected, deviceId) {
     const changed = sp.connected !== connected;
     sp.connected = connected;
     if (typeof deviceId === "string" && DEVICE_RE.test(deviceId)) sp.deviceId = deviceId;
-    setLamp(lampSpotifyBulb, connected ? "on" : "off");
-    setText(lampSpotifyLabel, connected ? "Conectado" : "Desconectado");
+    if (connected && sp.alert) sp.alert = null; // conectou: o motivo antigo não vale mais
+    renderSpotifyState();
     if (!changed) return;
     showSpotifyState(connected ? "connected" : "disconnected");
     if (connected) {
@@ -1159,65 +1476,178 @@
     ensureProgressLoop();
   }
 
+  /** Aplica a resposta de /api/spotify/status (estado, motivo e último resultado da API). */
+  function applySpotifyStatus(data) {
+    const connected = data.connected === true;
+    let reason = typeof data.reason === "string" && SP_REASONS.includes(data.reason) ? data.reason : "";
+    // coerência: conectado só com ok|rede; desconectado nunca com ok|rede
+    if (connected && reason !== "rede") reason = "ok";
+    if (!connected && (!reason || reason === "ok" || reason === "rede")) reason = "sem_token";
+    sp.reason = reason;
+    const codigo = SP_CODIGOS.includes(data.api_codigo) ? data.api_codigo : "indisponivel";
+    sp.problem = connected && data.api_ok === false ? { codigo, error: str(data.api_error, 200), src: "status" } : null;
+    sp.volPend = connected && data.volume_pendente === true;
+    setSpotifyConnected(connected, data.device_id);
+  }
+
   async function refreshSpotifyStatus() {
     sp.lastStatusCheck = Date.now();
     try {
       const { data } = await getJSON("/api/spotify/status", { timeout: 8000 });
-      setSpotifyConnected(!!data.connected, data.device_id);
+      applySpotifyStatus(data);
     } catch (e) {
       // erro de rede NÃO é "desconectado": mantém o último estado e tenta de novo
       if (sp.connected === null) {
+        // escreve à mão: invalida a assinatura da lâmpada para o próximo render (que pode ser igual
+        // ao de antes desta partida) sempre reescrever
+        sp.lampSig = SIG_REINICIO;
         setLamp(lampSpotifyBulb, "alert");
         setText(lampSpotifyLabel, "Sem conexão");
       }
     }
   }
 
-  btnSpotifyConnect.addEventListener("click", () => {
+  /**
+   * "Conectar Spotify": antes de sair da página confere se o Client ID/Secret já foram salvos
+   * (sem eles o servidor não tem para onde mandar o login). Sem config abre "Configurar Spotify".
+   */
+  async function startSpotifyConnect() {
     // aparelho remoto não conecta o Spotify: o login só vale no PC da loja
     if (isRemote()) { toast(REMOTE_SPOTIFY_MSG, "info"); return; }
-    window.location.href = "/spotify/login";
+    if (sp.connecting) return;
+    sp.connecting = true;
+    btnSpotifyConnect.setAttribute("aria-disabled", "true");
+    btnSpotifyConnect.setAttribute("aria-busy", "true");
+    try {
+      let configured = true; // se a conferência falhar, o servidor decide (ele redireciona com o motivo)
+      try {
+        const { ok, data } = await getJSON("/api/spotify/config", { timeout: 6000 });
+        if (ok && data.configured === false) configured = false;
+      } catch (e) { /* segue */ }
+      if (!configured) {
+        showSpotifyAlert("nocfg");
+        openSettings(undefined, { aviso: SP_ALERTAS.nocfg.text });
+        return;
+      }
+      sp.alert = null;
+      renderSpotifyAlert();
+      window.location.href = "/spotify/login";
+    } finally {
+      sp.connecting = false;
+      btnSpotifyConnect.removeAttribute("aria-disabled");
+      btnSpotifyConnect.removeAttribute("aria-busy");
+    }
+  }
+  btnSpotifyConnect.addEventListener("click", startSpotifyConnect);
+
+  btnSpotifyNoticeAction.addEventListener("click", () => {
+    const action = btnSpotifyNoticeAction.dataset.action;
+    if (action === "connect") startSpotifyConnect();
+    else if (action === "devices") focusSpotifyDevices();
   });
 
+  /** Atualiza a lista e leva o foco ao seletor de aparelho. */
+  function focusSpotifyDevices() {
+    loadSpotifyDevices();
+    spotifyDeviceSelect.scrollIntoView({ block: "center", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    spotifyDeviceSelect.focus({ preventScroll: true });
+  }
+
+  /** Aviso (toast) para a falha de um comando/ativação, com atalho para o que resolve. */
+  function toastSpotifyFailure(data, fallback) {
+    const codigo = noteSpotifyFailure(data, "cmd");
+    const msg = typeof data.error === "string" && data.error ? data.error : fallback;
+    const opts = {};
+    if (codigo === "reconectar") opts.action = { label: "Reconectar", onClick: startSpotifyConnect };
+    else if (codigo === "sem_dispositivo") opts.action = { label: "Ver aparelhos", onClick: focusSpotifyDevices };
+    if (codigo === "premium") opts.duration = 10000;
+    toast(msg, codigo === "limite" ? "warn" : "error", opts);
+    // 401/reconectar: confere já o status (a lâmpada e o card acompanham)
+    if (codigo === "reconectar") refreshSpotifyStatus();
+  }
+
+  /** Aviso de música que o anúncio traz (musica_aviso). Devolve o texto, ou "" se não houver. */
+  function spotifyAvisoMusica(data) {
+    const code = typeof data.musica_aviso === "string" ? data.musica_aviso : "";
+    if (!SP_AVISOS_MUSICA.includes(code)) return "";
+    const text = typeof data.musica_aviso_texto === "string" && data.musica_aviso_texto
+      ? str(data.musica_aviso_texto, 200) : SP_AVISO_MUSICA_TEXTO[code];
+    // o servidor segue tentando restaurar: reconfere logo, para o aviso do painel aparecer
+    if (code === "musica_nao_restaurada") setTimeout(refreshSpotifyStatus, 1500);
+    return text;
+  }
+
   // ---- Dispositivos ----
+  const isValidDevice = (d) => d && typeof d.id === "string" && DEVICE_RE.test(d.id);
+  /** Aparelho restrito (is_restricted) não aceita controle remoto: fica desabilitado na lista. */
+  const isRestrictedDevice = (d) => d.is_restricted === true;
+  /** supports_volume === false: toca, mas o Spotify não deixa abaixar o volume. */
+  const lacksVolume = (d) => d.supports_volume === false;
+
+  /** `failed`: texto do erro ao listar ("" = deu certo). */
   function renderDevices(devices, failed) {
-    const sig = JSON.stringify([failed, devices.map((d) => [d.id, d.name, d.type, d.is_active])]);
+    const sig = JSON.stringify([failed, devices.map((d) => [d.id, d.name, d.type, d.is_active, d.is_restricted, d.supports_volume])]);
     if (sig === sp.devicesSig) return; // nada mudou: sem re-render
     sp.devicesSig = sig;
 
+    const valid = devices.filter(isValidDevice);
+    const usable = valid.filter((d) => !isRestrictedDevice(d));
     const frag = document.createDocumentFragment();
     let selectedId = "";
-    if (!devices.length) {
+    if (!valid.length) {
       const opt = document.createElement("option");
       opt.value = "";
       opt.textContent = failed ? "Erro ao buscar dispositivos" : "— nenhum encontrado —";
       frag.appendChild(opt);
+    } else if (!usable.length) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "— nenhum aparelho pode ser controlado —";
+      frag.appendChild(opt);
     }
-    devices.forEach((d) => {
-      if (typeof d.id !== "string" || !DEVICE_RE.test(d.id)) return;
+    valid.forEach((d) => {
       const opt = document.createElement("option");
       opt.value = d.id;
       const kind = typeof d.type === "string" && d.type ? " · " + d.type : "";
-      opt.textContent = String(d.name || "Dispositivo") + kind + (d.is_active ? " (ativo agora)" : "");
+      const restricted = isRestrictedDevice(d);
+      let sufixo = "";
+      if (restricted) sufixo = " — restrito";
+      else if (lacksVolume(d)) sufixo = " — sem volume";
+      opt.textContent = String(d.name || "Dispositivo") + kind + (d.is_active && !restricted ? " (ativo agora)" : "") + sufixo;
       opt.dataset.name = String(d.name || "");
+      if (lacksVolume(d)) opt.dataset.novol = "1";
+      if (restricted) opt.disabled = true;
       frag.appendChild(opt);
-      if (d.is_active) selectedId = d.id;
     });
-    if (!selectedId && sp.deviceId && devices.some((d) => d.id === sp.deviceId)) selectedId = sp.deviceId;
+    const active = usable.find((d) => d.is_active);
+    if (active) selectedId = active.id;
+    if (!selectedId && sp.deviceId && usable.some((d) => d.id === sp.deviceId)) selectedId = sp.deviceId;
     // sem ativo nem salvo: o <select> mostraria a 1ª opção; trata-a como escolhida
-    if (!selectedId) {
-      const first = devices.find((d) => typeof d.id === "string" && DEVICE_RE.test(d.id));
-      if (first) selectedId = first.id;
-    }
+    if (!selectedId && usable.length) selectedId = usable[0].id;
     spotifyDeviceSelect.replaceChildren(frag);
     if (selectedId) spotifyDeviceSelect.value = selectedId;
-    spotifyDeviceHint.classList.toggle("is-attention", !devices.length);
+    spotifyDeviceHint.classList.toggle("is-attention", !valid.length);
+    sp.devNote = { failed, allRestricted: valid.length > 0 && !usable.length, anyRestricted: valid.length > usable.length };
+    updateDeviceNote();
     // O 'change' nunca dispara para o que já aparece selecionado: sem isto o
     // servidor ficaria sem device salvo (play dá 400 e a música não abaixa).
     if (selectedId && selectedId !== sp.deviceId && selectedId !== sp.autoTried) {
       sp.autoTried = selectedId; // uma tentativa por dispositivo (evita laço de erros)
       activateDevice(selectedId, selectedName(selectedId), true);
     }
+  }
+
+  /** Explica, abaixo do seletor, o que limita o aparelho escolhido (restrito, sem volume, erro). */
+  function updateDeviceNote() {
+    const n = sp.devNote;
+    const opt = spotifyDeviceSelect.selectedOptions[0];
+    let text = "";
+    if (n.failed) text = n.failed;
+    else if (n.allRestricted) text = "Todos os aparelhos encontrados são restritos: o Spotify não deixa controlá-los. Abra o Spotify no PC da loja e dê play uma vez.";
+    else if (opt && opt.dataset.novol === "1") text = "Este aparelho não aceita controle de volume: a música toca nele, mas não é abaixada durante os anúncios.";
+    else if (n.anyRestricted) text = "Aparelhos restritos (desabilitados na lista) não aceitam controle remoto do Spotify.";
+    setText(spotifyDeviceNote, text);
+    spotifyDeviceNote.hidden = !text;
   }
 
   function selectedName(id) {
@@ -1235,10 +1665,19 @@
       const { ok, data } = await postJSON("/api/spotify/activate", { device_id: id });
       if (ok && data.ok) {
         sp.deviceId = id;
-        if (!auto) toast("Dispositivo ativo: " + name + ".", "success");
+        const warning = typeof data.warning === "string" ? str(data.warning, 220) : "";
+        if (warning) {
+          // o aparelho ficou salvo, mas algo ficou pela metade (não transferiu, sem volume...)
+          toast(warning, "warn", { duration: 9000 });
+        } else if (data.transferred === false) {
+          toast("O aparelho " + name + " ficou salvo, mas a música ainda não passou para ele. Dê play nele uma vez.", "warn", { duration: 9000 });
+        } else {
+          if (!auto) toast("Dispositivo ativo: " + name + ".", "success");
+          if (data.transferred === true) noteSpotifyCommandOk();
+        }
         scheduler.kick("spotify-now");
       } else {
-        toast("Não foi possível ativar esse dispositivo. Abra o Spotify nele e tente de novo.", "error");
+        toastSpotifyFailure(data, "Não foi possível ativar esse dispositivo. Abra o Spotify nele e tente de novo.");
         if (!auto) loadSpotifyDevices();
       }
     } catch (e) {
@@ -1255,10 +1694,15 @@
     btnSpotifyRefreshDevices.setAttribute("aria-busy", "true");
     try {
       const { data } = await getJSON("/api/spotify/devices", { timeout: 10000 });
-      const list = data.ok && Array.isArray(data.devices) ? data.devices : [];
-      renderDevices(list, !data.ok);
+      if (data.ok && Array.isArray(data.devices)) {
+        noteSpotifyReadOk();
+        renderDevices(data.devices, "");
+      } else {
+        noteSpotifyFailure(data, "read");
+        renderDevices([], str(data.error, 200) || "Não foi possível listar os aparelhos agora.");
+      }
     } catch (e) {
-      renderDevices([], true);
+      renderDevices([], "Sem resposta do servidor ao listar os aparelhos.");
     } finally {
       sp.devicesLoading = false;
       btnSpotifyRefreshDevices.classList.remove("is-loading");
@@ -1271,6 +1715,7 @@
   spotifyDeviceSelect.addEventListener("change", () => {
     const id = spotifyDeviceSelect.value;
     sp.autoTried = id; // escolha manual: a automática não repete
+    updateDeviceNote();
     activateDevice(id, selectedName(id), false);
   });
 
@@ -1304,11 +1749,13 @@
     const o = opts || {};
     try {
       const { ok, data } = await postJSON(path, body || {});
-      if (ok && data.ok) return true;
-      if (!o.quiet) {
-        const detail = typeof data.error === "string" && data.error ? data.error : "";
-        toast(detail || "O Spotify não aceitou o comando. Confira se o app está aberto no computador da loja.", "error");
+      if (ok && data.ok) {
+        noteSpotifyCommandOk();
+        return true;
       }
+      // o servidor manda o texto pronto por causa (error) e um código fixo (codigo)
+      if (o.quiet) noteSpotifyFailure(data, "cmd");
+      else toastSpotifyFailure(data, "O Spotify não aceitou o comando. Confira se o app está aberto no computador da loja.");
     } catch (e) {
       if (!o.quiet) toast("Sem resposta do servidor.", "error");
     }
@@ -1352,11 +1799,16 @@
     try {
       const { data } = await getJSON("/api/spotify/now-playing", { timeout: 8000 });
       if (data.ok === false) {
-        // (o contrato atual devolve sempre ok:true; o status periódico cobre a perda de conexão)
-        // pode ter perdido a conexão: reconfere (no máx. a cada 15 s)
-        if (Date.now() - sp.lastStatusCheck > 15000) refreshSpotifyStatus();
+        // falha real (v2.4.2): mostra a causa e reconfere a conexão (sem martelar o servidor)
+        const codigo = noteSpotifyFailure(data, "read");
+        // causa que não se resolve sozinha: o cartão não pode seguir afirmando que algo toca
+        // (título, barra e botão voltam ao "nada tocando"); em limite/rede mantém a última faixa
+        if (codigo === "premium" || codigo === "sem_dispositivo" || codigo === "reconectar") applySpotifyNow({});
+        const espera = codigo === "reconectar" ? 4000 : 15000;
+        if (Date.now() - sp.lastStatusCheck > espera) refreshSpotifyStatus();
         return;
       }
+      noteSpotifyReadOk();
       applySpotifyNow(data);
     } catch (e) { /* silencioso: tenta no próximo ciclo */ }
   }
@@ -1569,8 +2021,13 @@
     try {
       const { ok, data } = await getJSON("/api/spotify/search?q=" + encodeURIComponent(q), { signal: searchCtrl.signal, timeout: 12000 });
       if (mine !== searchSeq) return;
-      if (!ok || !data.ok) resultsMessage("Não foi possível buscar agora. Tente de novo em instantes.");
-      else renderResults(data, q);
+      if (!ok || !data.ok) {
+        noteSpotifyFailure(data, "read");
+        resultsMessage(typeof data.error === "string" && data.error ? data.error : "Não foi possível buscar agora. Tente de novo em instantes.");
+      } else {
+        noteSpotifyReadOk();
+        renderResults(data, q);
+      }
     } catch (e) {
       if (mine !== searchSeq) return; // substituída por uma busca mais nova
       resultsMessage(e && e.name === "TimeoutError" ? "A busca demorou demais. Tente de novo." : "Erro na busca.");
@@ -1605,10 +2062,17 @@
     }
   });
 
-  // ---- Retorno do /spotify/callback (?spotify=connected|error) ----
+  // ---- Retorno do /spotify/login e /spotify/callback ----
+  // ?spotify=connected | nocfg | local | rate | error&motivo=negado|state|credenciais|rede|redirect
+  // (lista FIXA do servidor: qualquer outro valor é ignorado)
   function handleSpotifyRedirectBack() {
     let result = null;
-    try { result = new URLSearchParams(window.location.search).get("spotify"); } catch (e) { return; }
+    let motivo = null;
+    try {
+      const q = new URLSearchParams(window.location.search);
+      result = q.get("spotify");
+      motivo = q.get("motivo");
+    } catch (e) { return; }
     if (!result) return;
     try { window.history.replaceState({}, document.title, window.location.pathname); } catch (e) { /* ignora */ }
     // leva o usuário direto ao módulo de música/Spotify (sem animar: é o carregamento da página)
@@ -1617,11 +2081,28 @@
     panelMusic.dataset.active = "true";
     sourceGroup.set("spotify", true);
     syncPanes();
-    if (result === "connected") {
-      toast("Spotify conectado com sucesso.", "success");
-    } else {
-      toast("Não foi possível conectar ao Spotify — confira o Client ID/Secret e tente de novo.", "error");
-    }
+    // (o boot() limpa avisos e fecha o diálogo; por isso os avisos só saem em startApp, via finishSpotifyRedirectBack)
+    if (result === "connected") { sp.back = "connected"; return; }
+    let kind = "";
+    // erro sem motivo conhecido (link antigo, servidor mais velho): aviso genérico em vez de silêncio
+    if (result === "error") kind = SP_BACK_MOTIVOS.includes(motivo) ? motivo : "rede";
+    else if (SP_BACK_FALHAS.includes(result)) kind = result;
+    if (!kind) return;
+    showSpotifyAlert(kind); // o motivo fica escrito no card, mesmo depois que o aviso some
+    sp.back = kind;
+  }
+
+  /** Avisos da volta do login, mostrados quando o app já está liberado (startApp). */
+  function finishSpotifyRedirectBack() {
+    const back = sp.back;
+    sp.back = "";
+    if (!back) return;
+    if (back === "connected") { toast("Spotify conectado com sucesso.", "success"); return; }
+    const a = SP_ALERTAS[back];
+    if (!a) return;
+    toast(a.title + ".", a.info ? "warn" : "error", { duration: 9000 });
+    // sem config: leva direto aos campos
+    if (back === "nocfg" && !isRemote()) openSettings(undefined, { aviso: a.text });
   }
 
   // ======================================================================
@@ -4539,6 +5020,57 @@
     settingsError.hidden = !message;
   }
 
+  /** Aviso (não é erro) no topo dos campos do Spotify: ex. "falta configurar antes de conectar". */
+  function showSettingsWarn(message) {
+    setText(settingsWarnText, message || "");
+    settingsWarn.hidden = !message;
+  }
+
+  // ---- Client ID / Client Secret: 32 hexadecimais, com limpeza do que vem junto ao copiar ----
+  const SP_CODE_FIELDS = [
+    { input: settingsClientId, label: "Client ID", campo: "client_id" },
+    { input: settingsClientSecret, label: "Client Secret", campo: "client_secret" },
+  ];
+
+  /** Tira espaços, quebras de linha, aspas (retas ou curvas) e caracteres invisíveis; põe em minúsculas. */
+  function cleanSpotifyCode(value) {
+    return String(value || "").replace(/[\s\u00a0\u200b-\u200f\u2028\u2029\u2060\ufeff"'`\u201c\u201d\u2018\u2019\u00ab\u00bb]/g, "").toLowerCase();
+  }
+
+  function markCodeInvalid(input, invalid) {
+    if (invalid) input.setAttribute("aria-invalid", "true");
+    else input.removeAttribute("aria-invalid");
+  }
+
+  function clearCodeInvalid() {
+    SP_CODE_FIELDS.forEach((f) => markCodeInvalid(f.input, false));
+  }
+
+  /** Mostra o erro de um dos dois códigos e leva o foco até ele. */
+  function showCodeError(field) {
+    markCodeInvalid(field.input, true);
+    showSettingsError(field.label + ": " + SP_CODE_MSG);
+    field.input.focus();
+  }
+
+  SP_CODE_FIELDS.forEach((field) => {
+    const el = field.input;
+    // ao colar/sair do campo, já mostra o valor limpo (o que será enviado)
+    el.addEventListener("paste", () => setTimeout(() => { el.value = cleanSpotifyCode(el.value); }, 0));
+    el.addEventListener("change", () => {
+      el.value = cleanSpotifyCode(el.value);
+      if (el.value && !SP_CODE_RE.test(el.value)) {
+        markCodeInvalid(el, true);
+        showSettingsError(field.label + ": " + SP_CODE_MSG);
+      }
+    });
+    el.addEventListener("input", () => {
+      if (el.getAttribute("aria-invalid") !== "true") return;
+      markCodeInvalid(el, false);
+      if (!SP_CODE_FIELDS.some((f) => f.input.getAttribute("aria-invalid") === "true")) showSettingsError("");
+    });
+  });
+
   function closeSettings() {
     if (!settingsDialog.open) return;
     if (prefersReducedMotion()) { settingsDialog.close(); return; }
@@ -4559,9 +5091,11 @@
   }
 
   /** `target === "net"` rola até "Acesso pela rede" e foca o campo do PIN. */
-  async function openSettings(target) {
+  async function openSettings(target, opts) {
     if (settingsDialog.open) return;
     showSettingsError("");
+    clearCodeInvalid();
+    showSettingsWarn(opts && typeof opts.aviso === "string" ? opts.aviso : "");
     resetNetForm();
     renderNetSection();
     settingsClientSecret.value = "";
@@ -4615,20 +5149,23 @@
   settingsForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (btnSettingsSave.getAttribute("aria-disabled") === "true" || isRemote()) return;
-    const clientId = settingsClientId.value.trim();
-    const secret = settingsClientSecret.value.trim();
-    if (clientId.length > 128 || secret.length > 128) {
-      showSettingsError("Client ID e Client Secret aceitam até 128 caracteres.");
-      return;
-    }
+    // limpa o que costuma vir junto ao copiar (espaços, aspas) e confere o formato antes de enviar
+    const clientId = cleanSpotifyCode(settingsClientId.value);
+    const secret = cleanSpotifyCode(settingsClientSecret.value);
+    settingsClientId.value = clientId;
+    settingsClientSecret.value = secret;
     showSettingsError("");
-    const body = {};
-    if (clientId) body.client_id = clientId; // vazio nunca é enviado (apagaria o salvo)
-    if (secret) body.client_secret = secret;
+    clearCodeInvalid();
     if (!clientId && !secret) {
       showSettingsError("Preencha o Client ID ou o Client Secret.");
       return;
     }
+    const values = [clientId, secret];
+    const bad = SP_CODE_FIELDS.find((f, i) => values[i] && !SP_CODE_RE.test(values[i]));
+    if (bad) { showCodeError(bad); return; }
+    const body = {};
+    if (clientId) body.client_id = clientId; // vazio nunca é enviado (apagaria o salvo)
+    if (secret) body.client_secret = secret;
 
     btnSettingsSave.setAttribute("aria-disabled", "true");
     btnSettingsSave.classList.add("is-loading");
@@ -4637,9 +5174,14 @@
       if (ok && data.ok) {
         settingsClientSecret.value = "";
         closeSettings();
-        toast("Configuração do Spotify salva.", "success");
+        const needsConnect = sp.connected === false;
+        toast(needsConnect ? "Configuração do Spotify salva. Agora clique em Conectar Spotify." : "Configuração do Spotify salva.", "success");
+        if (sp.alert === "nocfg" || sp.alert === "credenciais") { sp.alert = null; renderSpotifyAlert(); }
+        refreshSpotifyStatus(); // o card passa de "Configure" para "Conecte"
       } else {
-        showSettingsError(typeof data.error === "string" && data.error ? data.error : "Não foi possível salvar a configuração.");
+        const field = SP_CODE_FIELDS.find((f) => f.campo === data.campo);
+        if (ok === false && field && data.error === SP_CODE_MSG) showCodeError(field);
+        else showSettingsError(typeof data.error === "string" && data.error ? data.error : "Não foi possível salvar a configuração.");
       }
     } catch (err) {
       showSettingsError("Não foi possível salvar a configuração do Spotify.");
@@ -6049,6 +6591,11 @@
   function startApp() {
     authLocked = false;
     sp.connected = null; // reavalia o Spotify do zero (inclusive após novo login)
+    // as assinaturas de render valem só para a sessão anterior: força o primeiro desenho a escrever
+    sp.lampSig = sp.noticeSig = sp.calloutSig = sp.alertSig = SIG_REINICIO;
+    sp.reason = null;
+    sp.problem = null;
+    sp.volPend = false;
     showSpotifyState("loading");
     setYoutubeLamp("unknown");
     setLamp(lampInternetBulb, "off");
@@ -6079,6 +6626,7 @@
     scheduler.add("lib", libPoll, 15000, { enabled: libActive, immediate: true });
 
     refreshSpotifyStatus();
+    finishSpotifyRedirectBack();
 
     // O script da API do YouTube é "defer" e roda depois deste arquivo; se por
     // algum motivo ele já estiver pronto, cria o player agora.

@@ -294,7 +294,7 @@ alternativa; se as duas existirem, vale a `PROCLAMARE_*`.
 
 ---
 
-## 3. Conectar o Spotify (passo a passo, só precisa fazer uma vez)
+## 3. Conectar o Spotify (passo a passo)
 
 Diferente da v1, a música do Spotify **não toca pelo navegador** — ela toca
 pelo **aplicativo oficial do Spotify**, instalado e logado no computador da
@@ -304,37 +304,51 @@ Connect**. É exatamente por isso que o controle funciona de qualquer
 computador: quem manda o comando não precisa ser quem está com o Spotify
 aberto.
 
-**Requisitos:**
-- Conta Spotify **Premium** (o Spotify recusa comandos de reprodução para
-  contas gratuitas).
+**Requisitos (regras do Spotify em 2026):**
+- A conta que **cria o aplicativo** no painel de desenvolvedores precisa ser
+  **Premium**. Um aplicativo em *Development Mode* (o modo de qualquer app novo)
+  só funciona enquanto a conta dona dele for Premium.
+- Só quem está cadastrado pode usar o aplicativo: a **dona** do app e **até 5
+  contas** adicionadas em **User Management** (no painel do app, em *Settings*).
+  Qualquer outra conta recebe erro **403** em tudo — o Proclamare mostra isso
+  como "A conta não tem acesso ao Spotify".
+- Para tocar, trocar de música e mudar o dispositivo, a conta conectada
+  também precisa ser **Premium**.
 - O aplicativo oficial do Spotify instalado e **logado** no computador da
   loja (pode ser o app de desktop do Windows/Mac/Linux).
 
-**Passo a passo:**
+**Passo a passo (uma vez só):**
 
-1. Entre em **[developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)** com a conta Spotify que vai tocar a música na loja.
-2. Clique em **Create app**. Dê qualquer nome (ex.: "Proclamare").
+1. Entre em **[developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)** com a conta Spotify Premium que vai tocar a música na loja.
+2. Clique em **Create app**. Dê qualquer nome (ex.: "Proclamare") e uma
+   descrição curta. Em **Which API/SDKs are you planning to use?** marque
+   **Web API**.
 3. Em **Redirect URIs**, cadastre exatamente `http://127.0.0.1:8502/spotify/callback`
-   (o mesmo endereço mostrado no painel **Configurar Spotify**). O Spotify só
-   aceita `http` para o IP de loopback `127.0.0.1` — `localhost` e o IP da rede
-   (ex.: `192.168.0.23`) são recusados. Por isso a conexão (passos 5 e 6) deve
-   ser feita **no computador da loja, abrindo `http://127.0.0.1:8502`**. Se
-   precisar conectar de outro aparelho, use HTTPS (um proxy como Caddy/nginx com
-   certificado), cadastre o URI `https://...` e informe-o em
-   `PROCLAMARE_SPOTIFY_REDIRECT`. **Atenção:** um proxy no PC da loja faz todo
-   aparelho parecer "o PC da loja" e ignorar o PIN; nesse caso
+   (o mesmo endereço mostrado no painel **Configurar Spotify**, com o botão de
+   copiar) e salve. O Spotify só aceita `http` para o IP de loopback `127.0.0.1`
+   — `localhost` e o IP da rede (ex.: `192.168.0.23`) são recusados. Por isso a
+   conexão (passo 6) deve ser feita **no computador da loja, abrindo
+   `http://127.0.0.1:8502`**. Se precisar conectar de outro aparelho, use HTTPS
+   (um proxy como Caddy/nginx com certificado), cadastre o URI `https://...` e
+   informe-o em `PROCLAMARE_SPOTIFY_REDIRECT`. **Atenção:** um proxy no PC da
+   loja faz todo aparelho parecer "o PC da loja" e ignorar o PIN; nesse caso
    `PROCLAMARE_CONFIAR_LOOPBACK=0` é obrigatório (veja "Acesso pela rede (PIN)").
-4. Copie o **Client ID** e o **Client Secret** mostrados no painel do
-   Spotify (clique em "View client secret" para revelar o segredo).
+4. No painel do app, abra **Settings**. Copie o **Client ID** e, em **View
+   client secret**, o **Client Secret**. Cada um tem **32 letras e números**.
 5. No computador da loja, abra `http://127.0.0.1:8502`, clique em **Configurar
-   Spotify** (rodapé da página), cole o Client ID e o Client Secret e salve.
-6. Ainda no computador da loja, clique em **Conectar Spotify** e faça login
-   normalmente — isso só precisa ser feito uma vez. Depois que o token está
-   salvo, todos os outros computadores de controle usam o Spotify normalmente.
+   Spotify**, cole o Client ID e o Client Secret e salve. Se vier algum espaço
+   ou aspas junto na cópia, o Proclamare tira sozinho; se o código não tiver 32
+   letras e números, ele avisa "Cole só o código (32 letras e números)".
+6. Ainda no computador da loja, clique em **Conectar Spotify**, faça login e
+   aceite. Se você clicar em Conectar antes de salvar o Client ID/Secret, o
+   Proclamare abre o **Configurar Spotify** com um aviso, em vez de tentar o login.
 7. **No computador da loja**, abra o app oficial do Spotify e dê play em
    qualquer música uma vez (só para ele "aparecer" como dispositivo).
 8. De volta no Proclamare, clique em **Atualizar** ao lado de "Dispositivo"
-   e escolha o Spotify do computador da loja na lista.
+   e escolha o Spotify do computador da loja na lista. Aparelhos marcados como
+   *restritos* ficam desabilitados (o Spotify não deixa controlá-los) e os que
+   não aceitam volume tocam normalmente, mas a música deles **não é abaixada**
+   durante os anúncios.
 
 Pronto — a partir daqui, qualquer computador de controle que abrir o
 Proclamare já enxerga esse mesmo dispositivo conectado e pode buscar
@@ -344,6 +358,51 @@ músicas, tocar, pausar e ajustar o volume.
 loja (arquivo `config.json`, que nunca deve ser compartilhado ou enviado
 para a internet) — é o que permite o servidor renovar sozinho o acesso ao
 Spotify sem pedir login de novo a cada uso.
+
+### A conexão vale por cerca de 6 meses
+
+O Spotify faz a autorização expirar mais ou menos **6 meses** depois de você
+aceitar (e ela também some se você remover o acesso do app na sua conta
+Spotify ou trocar o Client Secret). Quando isso acontece:
+
+- a lâmpada **Spotify**, no topo, fica âmbar com **Reconectar** e o painel
+  mostra o cartão **Reconecte o Spotify**;
+- o servidor para de tentar renovar sozinho (não adianta esperar);
+- é só clicar em **Reconectar Spotify**, no computador da loja, e aceitar de
+  novo. O Client ID e o Client Secret continuam salvos.
+
+### O que a lâmpada do Spotify quer dizer
+
+| Lâmpada / aviso | Significa | O que fazer |
+|---|---|---|
+| **Conectado** (verde) | Tudo certo. | — |
+| **Configurar** (apagada) | Falta o Client ID/Client Secret. | **Configurar Spotify** (passos 4 e 5). |
+| **Desconectado** (apagada) | Credenciais salvas, falta autorizar. | **Conectar Spotify** (passo 6). |
+| **Reconectar** (âmbar) | A autorização venceu ou foi revogada. | **Reconectar Spotify** (acima). |
+| **Sem acesso** (âmbar) | O Spotify recusou (403): a conta não é Premium, não é a dona do app ou não está em *User Management*. | Confira a conta (requisitos acima). Para outra conta usar o app, adicione o nome e o e-mail dela em *User Management* (até 5). |
+| **App fechado** (âmbar) | Nenhum aparelho Spotify ativo (404). | Abra o Spotify no PC da loja e dê play uma vez; depois **Atualizar aparelhos**. |
+| **Limite** (âmbar) | O Spotify pediu uma pausa por excesso de pedidos (429). | Espere o tempo indicado (alguns segundos). |
+| **Instável** / **Sem conexão** (âmbar) | O Spotify ou a internet do PC da loja não responderam. | Nada, o painel tenta de novo sozinho. Se durar, confira a internet. |
+
+Quando um anúncio toca, o painel também pode avisar que **a música não
+abaixou** ou que **o volume não voltou ao normal**. No segundo caso o
+Proclamare continua tentando sozinho por até 30 minutos (aparece o aviso "O
+volume da música ainda está baixo"); se preferir, ajuste o volume no próprio
+painel.
+
+### Se o Spotify mostrar "INVALID_CLIENT: Invalid redirect URI"
+
+Esse é o texto exato do erro, e ele aparece na própria tela do Spotify: nesse
+caso o Spotify **não volta** ao Proclamare. (Se o painel mostrar esse mesmo
+título ao voltar do login, a causa é a mesma.) Quer dizer que o **Redirect URI** cadastrado no
+painel de desenvolvedores não é idêntico ao do Proclamare. Confira, caractere a
+caractere (com ou sem a `/` no final já derruba o login), o endereço mostrado em
+**Configurar Spotify** — normalmente `http://127.0.0.1:8502/spotify/callback` —
+com o que está em **Settings → Redirect URIs** do app, salve lá e tente
+conectar de novo. Outros motivos que o painel mostra ao voltar do login:
+conexão **recusada** (você cancelou), **pedido expirado** (tela do Spotify
+aberta por muito tempo: tente de novo), **Client ID ou Secret não aceitos** e
+**falha de rede** com o Spotify.
 
 ---
 
@@ -537,17 +596,33 @@ dá para remover (só enviar).
 
 ---
 
-## 5. Sobre direitos autorais (ECAD) — leia antes de usar em loja
+## 5. Sobre direitos autorais (ECAD e termos do Spotify) — leia antes de usar em loja
 
 Contas pessoais do Spotify e do YouTube são licenciadas para **uso
 pessoal**, não para execução pública em um estabelecimento comercial. Tocar
 música para os clientes dentro da loja normalmente exige licenciamento à
 parte — no Brasil, isso passa pelo **ECAD**. Isso é independente de você ter
-Spotify Premium ou não. Não sou advogado — isto é só um alerta factual;
-vale confirmar com o ECAD ou um serviço de música ambiente licenciado antes
-de colocar em uso contínuo na loja. (Foi por isso, inclusive, que os
-concorrentes pesquisados antes — Rádio Mercado, ListenPlay — anunciam
-"playlists licenciadas" como diferencial.)
+Spotify Premium ou não.
+
+Há um segundo ponto, separado do ECAD: os próprios **termos do Spotify**
+(os termos de uso e a *Developer Policy* da Web API) não permitem usar uma
+conta pessoal/Premium para tocar música em um estabelecimento comercial
+nem criar, com a API, um serviço de música ambiente para esse fim. Ou seja,
+mesmo pagando o ECAD, o Spotify pessoal não é a fonte apropriada para a loja.
+Os termos mudam; confira os vigentes em spotify.com/legal.
+
+Caminhos que costumam ser seguros:
+
+- **Minhas músicas** (seção 4b) com arquivos que a loja **tem licença para
+  tocar** (músicas compradas ou liberadas para uso comercial; o ECAD continua
+  valendo para a execução pública).
+- Um **serviço de música ambiente licenciado** para comércio (os concorrentes
+  pesquisados antes — Rádio Mercado, ListenPlay — anunciam "playlists
+  licenciadas" como diferencial).
+
+Não sou advogado — isto é só um alerta factual; vale confirmar com o ECAD e
+com o fornecedor da música antes de colocar em uso contínuo na loja. O
+Spotify continua útil no Proclamare para **testes** e uso pessoal.
 
 ---
 
@@ -775,14 +850,16 @@ escolha de saída (apelido e uma referência interna) e continua fora do Git.
 - **Outro computador não abre o endereço:** confirme que está na mesma
   rede da loja, que usou o IP certo (não `localhost`) e que a porta 8502
   não está bloqueada pelo firewall do computador da loja (seção 2).
-- **Spotify não toca / dispositivo não aparece:** confirme que (1) a conta é
-  Premium, (2) o app oficial do Spotify está aberto e logado no computador
-  da loja, (3) você já deu play nele uma vez, (4) o Redirect URI cadastrado
-  no painel do Spotify é *idêntico* ao mostrado em "Configurar Spotify" —
-  com ou sem a barra `/` no final já derruba o login — e (5) clique em
-  "Atualizar" para buscar o dispositivo de novo. Lembre-se de que o URI
-  cadastrado deve ser `http://127.0.0.1:8502/spotify/callback` (ou o valor de
-  `PROCLAMARE_SPOTIFY_REDIRECT`) e a conexão feita pelo computador da loja.
+- **Spotify não toca / dispositivo não aparece:** veja a tabela "O que a
+  lâmpada do Spotify quer dizer" (seção 3). Resumo: (1) a conta que criou o app
+  precisa ser Premium e quem usa precisa ser a dona ou estar em *User
+  Management* (até 5 contas); (2) o app oficial do Spotify está aberto e logado
+  no computador da loja; (3) você já deu play nele uma vez; (4) o Redirect URI
+  cadastrado no painel do Spotify é *idêntico* ao mostrado em "Configurar
+  Spotify" (erro "INVALID_CLIENT: Invalid redirect URI"); (5) a conexão vale
+  cerca de 6 meses — se a lâmpada estiver âmbar com "Reconectar", clique em
+  **Reconectar Spotify**; e (6) clique em **Atualizar aparelhos** para buscar o
+  dispositivo de novo.
 - **YouTube não obedece comandos de outro computador:** confira se algum
   computador está com a aba aberta e marcada como "O tocador" — sem isso,
   não existe ninguém para executar os comandos (a lâmpada mostra "Nenhum
