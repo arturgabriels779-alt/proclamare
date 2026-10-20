@@ -9272,7 +9272,7 @@
   const seg = {
     ok: false, alerta: false, falhas24: 0, falhasNovas: 0, bloqueioS: 0,
     logins: [], ultimos: [], fortes: [], fracos: [], confianca: true, modo: "auto", pendentes: 0,
-    travado: false, bloqueios: 0,
+    travado: false, travaManual: false, bloqueios: 0,
     sig: "", remotos: null, remotosSig: null, remotosBusy: false, busy: false, tudoTimer: 0,
   };
 
@@ -9306,6 +9306,7 @@
     seg.modo = t.modo === "0" || t.modo === "1" ? t.modo : "auto";
     seg.pendentes = segInt(d.pendentes_remotos);
     seg.travado = d.login_travado === true;
+    seg.travaManual = d.login_trava_manual === true;   // só o dono destrava (bloqueio_global_s vem null)
     seg.bloqueios = segInt(d.bloqueios_ativos);
   }
 
@@ -9340,7 +9341,7 @@
       btnSettings.title = rotulo;
     }
     if (!show) return;
-    const sig = JSON.stringify([seg.alerta, seg.falhas24, seg.falhasNovas, seg.bloqueioS, seg.logins, seg.ultimos, seg.fortes, seg.fracos, seg.confianca, seg.modo, seg.travado, seg.bloqueios]);
+    const sig = JSON.stringify([seg.alerta, seg.falhas24, seg.falhasNovas, seg.bloqueioS, seg.logins, seg.ultimos, seg.fortes, seg.fracos, seg.confianca, seg.modo, seg.travado, seg.travaManual, seg.bloqueios]);
     if (sig === seg.sig) return;
     seg.sig = sig;
 
@@ -9350,7 +9351,10 @@
     const notas = [];
     if (seg.travado) {
       const horas = Math.max(1, Math.ceil(seg.bloqueioS / 3600));
-      notas.push(["seg__note--bad", "Login pela rede travado para aparelhos novos (muitas tentativas erradas). Acaba sozinho em até " + horas + (horas === 1 ? " hora" : " horas") + ", ou libere aqui. Aparelhos que já usam o PIN e quem já está conectado não são afetados."]);
+      const quando = seg.travaManual
+        ? "Foi a segunda vez em 7 dias: só acaba quando você liberar aqui."
+        : "Acaba sozinho em até " + horas + (horas === 1 ? " hora" : " horas") + ", ou libere aqui.";
+      notas.push(["seg__note--bad", "Login pela rede travado para aparelhos desconhecidos (muitas tentativas erradas). " + quando + " Quem já está conectado não é afetado."]);
     }
     if (seg.bloqueios > 0) {
       notas.push(["", (seg.bloqueios === 1 ? "1 aparelho/rede bloqueado" : seg.bloqueios + " aparelhos/redes bloqueados") + " agora por errar o PIN."]);

@@ -294,12 +294,18 @@ alternativa; se as duas existirem, vale a `PROCLAMARE_*`.
     horas sem bloqueio**.
   - **Por faixa de rede:** 20 erros em 10 minutos somando vários aparelhos da mesma faixa (`/24` no
     IPv4, como `192.168.0.x`; `/64` no IPv6) bloqueiam a faixa por **10 minutos fixos** (esse
-    bloqueio **não escala**), mesmo que o invasor troque de IP. **Aparelhos que já entraram com o
-    PIN nos últimos 90 dias não são afetados** por esse bloqueio da faixa.
-  - **Teto diário:** 300 PINs errados em 24 horas travam o login pela rede **para aparelhos que
-    nunca entraram antes**. Aparelhos que já entraram com o PIN nos últimos 90 dias continuam
-    podendo entrar (com o limite por aparelho). A trava acaba sozinha 24 horas depois do último
-    erro, ou antes se o dono clicar em **Liberar login pela rede** no PC da loja.
+    bloqueio **não escala**), mesmo que o invasor troque de IP. **Aparelhos "conhecidos" (com o cookie de
+    aparelho, ver abaixo) não são afetados** por esse bloqueio da faixa.
+  - **Teto diário:** se alguém errar o PIN 300 vezes em 24 horas (somando todos os aparelhos), o
+    Proclamare trava o login pela rede para aparelhos que ele ainda não conhece. Um aparelho
+    "conhecido" é um celular ou computador que já entrou com o PIN certo **naquele navegador**: o
+    navegador guarda um cookie de aparelho por 180 dias, renovados enquanto você usa o painel. Esse cookie não dá acesso a nada; só dá
+    ao aparelho direito a até 5 tentativas erradas durante a trava. Quem apagou os cookies, usa
+    outro navegador ou foi desconectado pela troca do PIN conta como desconhecido.
+  - A **primeira trava** acaba sozinha 24 horas depois. Se houver uma **segunda trava em menos de
+    7 dias**, ela só acaba quando o dono clicar em **Liberar login pela rede** no PC da loja
+    (Configurações > Segurança). Trocar o PIN também destrava e apaga o histórico. Sessões já
+    abertas e o PC da loja nunca são afetados.
   - **Logins certos** também têm limite: no máximo 10 por minuto por aparelho.
   - **Liberar login pela rede** zera os bloqueios do momento e a trava do teto diário e não
     derruba ninguém. Por padrão **não zera a escalada** dos aparelhos (o próximo erro volta ao

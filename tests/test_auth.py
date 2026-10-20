@@ -103,8 +103,19 @@ class BaseAuth(unittest.TestCase):
         kw.setdefault("headers", {})
         return getattr(self.r, metodo)(caminho, base_url=HOST_REMOTO, environ_base=ip_remoto(ip), **kw)
 
-    def login(self, pin: str = PIN, ip: "int | str" = 50) -> Any:
-        return self.remoto("post", "/api/auth/login", ip=ip, json={"pin": pin})
+    def login(self, pin: str = PIN, ip: "int | str" = 50, aparelho: "str | None" = None) -> Any:
+        """Login remoto; `aparelho` = o valor do cookie de aparelho (o cliente de teste não guarda cookies)."""
+        headers = {"Cookie": f"{server.COOKIE_APARELHO}={aparelho}"} if aparelho else {}
+        return self.remoto("post", "/api/auth/login", ip=ip, json={"pin": pin}, headers=headers)
+
+    def entrar(self, ip: "int | str" = 50) -> str:
+        """Login certo: devolve o valor do cookie de APARELHO que o servidor emitiu."""
+        r = self.login(PIN, ip=ip)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        for c in r.headers.getlist("Set-Cookie"):
+            if c.startswith(server.COOKIE_APARELHO + "="):
+                return c.split(";", 1)[0].split("=", 1)[1]
+        self.fail("o login certo não emitiu o cookie de aparelho")
 
     def token_valido(self) -> str:
         return server._emitir_token(server.load_config())[0]
@@ -152,14 +163,14 @@ class TesteTentativas(BaseAuth):
         d = [self.login("000001").get_json() for _ in range(3)]
         self.assertEqual([x["tentativas_restantes"] for x in d], [4, 3, 2])
 
-    def errar(self, ip: str, n: int = 1, conhecido: bool = False) -> int:
+    def errar(self, ip: str, n: int = 1, aparelho: "str | None" = None) -> int:
         """n PINs errados SEM passar pelo HTTP (rápido): devolve os segundos de bloqueio da última tentativa."""
         bloqueado = 0
         for _ in range(n):
-            permitida, seg, _motivo = server._login_reservar(ip, conhecido)
+            permitida, seg, _motivo = server._login_reservar(ip, aparelho)
             if not permitida:
                 return seg
-            bloqueado, _restantes, _motivo = server._login_falhou(ip, conhecido)
+            bloqueado, _restantes, _motivo = server._login_falhou(ip, aparelho)
         return bloqueado
 
     def test_escalada_por_ip_dobra_ate_24h_e_decai(self) -> None:
@@ -197,23 +208,32 @@ class TesteTentativas(BaseAuth):
         for k in range(4):
             self.errar(f"{base}.{primeiro + k}", 5)
 
-    def test_n1_funcionario_conhecido_entra_durante_o_ataque_de_faixa(self) -> None:
-        self.assertEqual(self.login(PIN, ip="192.168.7.50").status_code, 200)   # entrou antes: passa a ser conhecido
+    def test_n1_funcionario_com_cookie_entra_durante_o_ataque_de_faixa(self) -> None:
+        cookie = self.entrar("192.168.7.50")                             # entrou antes: o aparelho recebeu o cookie
         self.ataque_de_faixa("192.168.7", 10)
-        r = self.login(PIN, ip="192.168.7.50")
-        self.assertEqual(r.status_code, 200)                              # fora do bloqueio por faixa
+        self.assertEqual(self.login(PIN, ip="192.168.7.50", aparelho=cookie).status_code, 200)   # fora da faixa
+        r = self.login(PIN, ip="192.168.7.50")                            # MESMO IP, sem cookie: NÃO é isento
+        self.assertEqual((r.status_code, r.get_json()["codigo"]), (429, "bloqueio_rede"))
         r = self.login(PIN, ip="192.168.7.60")                            # desconhecido: leva no máximo 10 min
         self.assertEqual((r.status_code, r.get_json()["codigo"]), (429, "bloqueio_rede"))
         self.assertLessEqual(r.get_json()["bloqueado_por_s"], 600)
 
+    def test_n1_cookie_de_outro_pin_ou_adulterado_nao_isenta(self) -> None:
+        cookie = self.entrar("192.168.7.50")
+        self.ataque_de_faixa("192.168.7", 10)
+        for ruim in (cookie[:-3] + "AAA", "x" * 50, cookie.split(".")[0], ""):
+            self.assertEqual(self.login(PIN, ip="192.168.7.51", aparelho=ruim or None).status_code, 429, ruim[:10])
+
     def test_n1_conhecido_continua_sujeito_ao_limite_por_ip(self) -> None:
-        self.login(PIN, ip="192.168.7.50")
-        self.assertEqual(self.errar("192.168.7.50", 5, conhecido=True), 300)
-        self.assertEqual(self.login(PIN, ip="192.168.7.50").status_code, 429)
+        cookie = self.entrar("192.168.7.50")
+        ident = server._aparelho_valido(cookie, server.load_config())
+        self.assertEqual(self.errar("192.168.7.50", 5, aparelho=ident), 300)
+        self.assertEqual(self.login(PIN, ip="192.168.7.50", aparelho=cookie).status_code, 429)
 
     def test_n1_erros_de_conhecido_nao_contam_para_a_faixa(self) -> None:
+        ident = "a" * 16
         for k in range(5):
-            self.errar(f"192.168.7.{50 + k}", 4, conhecido=True)         # 20 erros de IPs conhecidos
+            self.errar(f"192.168.7.{50 + k}", 4, aparelho=ident)         # 20 erros de aparelhos conhecidos
         self.assertEqual(self.login(PIN, ip="192.168.7.99").status_code, 200)
 
     def test_n1_faixa_nao_escala_mas_o_ip_sim(self) -> None:
@@ -293,35 +313,241 @@ class TesteTentativas(BaseAuth):
         self.assertEqual(self.c.post("/api/auth/liberar", json={}).status_code, 200)
         self.assertEqual(self.login(PIN, ip="172.16.5.5").status_code, 200)
 
-    def test_trava_conhecido_com_pin_certo_entra(self) -> None:
-        self.assertEqual(self.login(PIN, ip="192.168.4.20").status_code, 200)    # funcionário: entrou antes (conhecido)
+    def test_trava_conhecido_via_cookie_entra_mas_ip_conhecido_sem_cookie_nao(self) -> None:
+        cookie = self.entrar("192.168.4.20")                              # funcionário: entrou antes
         self.esgotar_o_dia()                                              # atacante com muitos IPs estoura o teto
         self.assertTrue(server._login_esta_travado())
-        self.assertEqual(self.login(PIN, ip="192.168.4.20").status_code, 200)    # conhecido continua entrando
+        self.assertEqual(self.login(PIN, ip="192.168.4.20", aparelho=cookie).status_code, 200)
+        r = self.login(PIN, ip="192.168.4.20")                            # o IP é "conhecido" mas sem cookie: NÃO é isento
+        self.assertEqual((r.status_code, r.get_json()["travado"]), (429, True))
         r = self.login(PIN, ip="192.168.4.21")                            # desconhecido: travado
         self.assertEqual((r.status_code, r.get_json()["travado"]), (429, True))
 
-    def test_trava_conhecido_errando_e_barrado_pelo_limite_por_ip(self) -> None:
-        self.login(PIN, ip="192.168.4.20")
+    def test_trava_orcamento_fixo_de_5_erros_por_aparelho(self) -> None:
+        cookie = self.entrar("192.168.4.20")
+        outro = self.entrar("192.168.4.21")
         self.esgotar_o_dia()
-        codigos = [self.login("000001", ip="192.168.4.20") for _ in range(5)]
+        for i in range(server.LOGIN_TRAVA_ORCAMENTO):                     # 5 erros em IPs diferentes (sem o limite por IP)
+            r = self.login("000001", ip=f"192.168.9.{i + 1}", aparelho=cookie)
+            self.assertEqual(r.status_code, 401, i)
+        r = self.login(PIN, ip="192.168.9.50", aparelho=cookie)           # esgotou: nem o PIN certo entra
+        self.assertEqual((r.status_code, r.get_json()["travado"]), (429, True))
+        self.assertEqual(self.login(PIN, ip="192.168.9.51", aparelho=outro).status_code, 200)   # outro aparelho: orçamento próprio
+        self.rel.avancar(3 * 3600)
+        self.assertEqual(self.login(PIN, ip="192.168.9.50", aparelho=cookie).status_code, 429)   # o orçamento NÃO renova
+
+    def test_trava_conhecido_errando_na_mesma_ip_e_barrado_pelo_limite_por_ip(self) -> None:
+        cookie = self.entrar("192.168.4.20")
+        self.esgotar_o_dia()
+        codigos = [self.login("000001", ip="192.168.4.20", aparelho=cookie) for _ in range(5)]
         self.assertEqual([c.status_code for c in codigos], [401, 401, 401, 401, 429])
         ultimo = codigos[-1].get_json()
-        self.assertNotIn("travado", ultimo)                               # é o bloqueio POR IP (5 min), não a trava
+        self.assertNotIn("travado", ultimo)                               # é o bloqueio POR IP (5 min)
         self.assertEqual(ultimo["bloqueado_por_s"], 300)
-        self.assertEqual(self.login(PIN, ip="192.168.4.20").status_code, 429)
-        self.rel.avancar(301)
-        self.assertEqual(self.login(PIN, ip="192.168.4.20").status_code, 200)
 
-    def test_erro_de_conhecido_mantem_a_trava_por_mais_24h(self) -> None:
-        self.login(PIN, ip="192.168.4.20")
+    def test_erro_de_conhecido_nao_prolonga_a_trava(self) -> None:
+        cookie = self.entrar("192.168.4.20")
         self.esgotar_o_dia()
         self.rel.avancar(20 * 3600)
-        self.login("000001", ip="192.168.4.20")                           # erro que mantém a trava
-        self.rel.avancar(20 * 3600)                                       # 40 h do primeiro, 20 h do último erro
-        self.assertEqual(self.login(PIN, ip="172.16.5.5").status_code, 429)
-        self.rel.avancar(4 * 3600 + 1)
+        self.login("000001", ip="192.168.4.20", aparelho=cookie)          # erro do conhecido (conta no histórico)
+        self.rel.avancar(4 * 3600 + 1)                                    # 24 h desde a trava
         self.assertEqual(self.login(PIN, ip="172.16.5.5").status_code, 200)
+
+    def test_primeira_trava_expira_a_segunda_em_7_dias_e_manual(self) -> None:
+        self.esgotar_o_dia()
+        st = self.c.get("/api/auth/status").get_json()
+        self.assertEqual((st["seguranca"]["login_trava_manual"], st["bloqueio_global_s"] > 0), (False, True))
+        self.rel.avancar(24 * 3600 + 1)
+        self.assertEqual(self.login(PIN, ip="172.16.5.5").status_code, 200)    # a 1ª expirou sozinha
+        self.rel.avancar(3 * 24 * 3600)
+        self.esgotar_o_dia()                                              # 2ª trava, 4 dias depois da 1ª
+        st = self.c.get("/api/auth/status").get_json()
+        self.assertTrue(st["seguranca"]["login_trava_manual"])
+        self.assertIsNone(st["bloqueio_global_s"])                        # null = só o dono destrava
+        self.rel.avancar(5 * 24 * 3600)                                   # dias depois: continua travada
+        r = self.login(PIN, ip="172.16.5.5")
+        self.assertEqual((r.status_code, r.get_json()["travado"], r.get_json()["trava_manual"]), (429, True, True))
+        self.assertEqual(self.c.post("/api/auth/liberar", json={}).status_code, 200)    # o dono destrava
+        self.assertEqual(self.login(PIN, ip="172.16.5.5").status_code, 200)
+        self.assertEqual(self.c.get("/api/auth/status").get_json()["seguranca"]["login_trava_manual"], False)
+
+    def test_trava_depois_de_mais_de_7_dias_volta_a_ser_automatica(self) -> None:
+        self.esgotar_o_dia()
+        self.rel.avancar(8 * 24 * 3600)
+        self.esgotar_o_dia()
+        self.assertFalse(self.c.get("/api/auth/status").get_json()["seguranca"]["login_trava_manual"])
+
+    def test_cookie_de_aparelho_invalida_ao_trocar_o_pin_ou_revogar(self) -> None:
+        cookie = self.entrar("192.168.4.20")
+        cfg = server.load_config()
+        self.assertIsNotNone(server._aparelho_valido(cookie, cfg))
+        self.c.post("/api/auth/revogar", json={})
+        self.assertIsNone(server._aparelho_valido(cookie, server.load_config()))
+        cookie = self.entrar("192.168.4.20")
+        self.c.post("/api/auth/pin", json={"pin": OUTRO_PIN})
+        self.assertIsNone(server._aparelho_valido(cookie, server.load_config()))
+        server._tuneis_estado.update(fortes=[])
+        self.esgotar_o_dia()
+        r = self.remoto("post", "/api/auth/login", ip="192.168.4.20", json={"pin": OUTRO_PIN},
+                        headers={"Cookie": f"{server.COOKIE_APARELHO}={cookie}"})
+        self.assertEqual((r.status_code, r.get_json().get("travado")), (429, True), r.get_json())       # cookie velho = desconhecido
+
+    def test_cookie_de_aparelho_tem_os_atributos_certos_e_nao_da_acesso(self) -> None:
+        r = self.login(PIN, ip="192.168.4.20")
+        c = next(x for x in r.headers.getlist("Set-Cookie") if x.startswith(server.COOKIE_APARELHO))
+        for atributo in ("HttpOnly", "SameSite=Strict", "Path=/api/auth", f"Max-Age={180 * 24 * 3600}"):
+            self.assertIn(atributo, c)
+        cookie = c.split(";", 1)[0].split("=", 1)[1]
+        r = self.remoto("get", "/api/mensagens", headers={"Cookie": f"{server.COOKIE_APARELHO}={cookie}"})
+        self.assertEqual(r.status_code, 401)                              # sozinho não abre nada
+        self.assertNotIn(server.COOKIE_APARELHO, self.c.post("/api/auth/login", json={"pin": PIN}).headers.get("Set-Cookie", ""))   # PC local: sem cookie
+        self.assertEqual(self.login("000001").status_code, 401)
+        self.assertNotIn(server.COOKIE_APARELHO, "".join(self.login("000001").headers.getlist("Set-Cookie")))   # erro: sem cookie
+
+    # ---- M1: o cookie de aparelho é emitido/renovado para quem tem SESSÃO válida
+    def cookie_de_aparelho_do(self, resp: Any) -> "str | None":
+        for c in resp.headers.getlist("Set-Cookie"):
+            if c.startswith(server.COOKIE_APARELHO + "="):
+                return c.split(";", 1)[0].split("=", 1)[1]
+        return None
+
+    def status_com(self, sessao: str, aparelho: "str | None" = None) -> Any:
+        cab = {"Cookie": f"{COOKIE}={sessao}" + (f"; {server.COOKIE_APARELHO}={aparelho}" if aparelho else "")}
+        return self.remoto("get", "/api/auth/status", headers=cab)
+
+    def test_m1_sessao_antiga_sem_cookie_ganha_um_no_status(self) -> None:
+        sessao = self.token_valido()
+        r = self.status_com(sessao)
+        novo = self.cookie_de_aparelho_do(r)
+        self.assertIsNotNone(novo)
+        self.assertIsNotNone(server._aparelho_valido(novo, server.load_config()))
+        self.assertIn("Path=/api/auth", [c for c in r.headers.getlist("Set-Cookie") if c.startswith(server.COOKIE_APARELHO)][0])
+        self.assertIsNone(self.cookie_de_aparelho_do(self.status_com(sessao, novo)))     # válido e longe do fim: não reemite
+        self.assertIsNone(self.cookie_de_aparelho_do(self.remoto("get", "/api/auth/status")))   # sem sessão: nada
+        self.assertIsNone(self.cookie_de_aparelho_do(self.c.get("/api/auth/status")))           # PC da loja: nada
+
+    def test_m1_cookie_perto_do_fim_e_renovado_mantendo_o_id(self) -> None:
+        sessao = self.token_valido()
+        with mock.patch.object(server, "APARELHO_DURACAO_S", 10 * 24 * 3600):
+            velho = server._emitir_cookie_aparelho(server.load_config())               # vence em 10 dias (< 30)
+        ident = server._aparelho_valido(velho, server.load_config())
+        novo = self.cookie_de_aparelho_do(self.status_com(sessao, velho))
+        self.assertIsNotNone(novo)
+        self.assertEqual(server._aparelho_valido(novo, server.load_config()), ident)    # o MESMO aparelho
+        exp = server._aparelho_info(novo, server.load_config())[1]
+        self.assertGreater(exp - self.rel.t, 170 * 24 * 3600)                    # 180 dias de novo
+
+    def test_m1_cookie_invalido_e_substituido_por_um_novo(self) -> None:
+        sessao = self.token_valido()
+        novo = self.cookie_de_aparelho_do(self.status_com(sessao, "lixo.lixo"))
+        self.assertIsNotNone(server._aparelho_valido(novo, server.load_config()))
+
+    def test_m1_sessao_no_teto_e_trava_manual_novo_login_conta_como_conhecido(self) -> None:
+        cookie = self.entrar("192.168.4.20")                              # sessão e aparelho nascem juntos
+        t0 = self.rel.t
+        self.rel.avancar(89 * 24 * 3600 + 23 * 3600)                      # ~1 h do teto de 90 dias da sessão
+        sessao = server._emitir_token(server.load_config(), iat=t0)[0]    # (a sessão renovada pelo uso, mantendo o iat)
+        self.assertEqual(self.status_com(sessao, cookie).get_json()["autenticado"], True)   # sessão a 1 dia do teto
+        self.assertIsNone(self.cookie_de_aparelho_do(self.status_com(sessao, cookie)))      # cookie ainda tem ~90 dias
+        self.esgotar_o_dia()
+        self.rel.avancar(24 * 3600 + 1)                                   # sessão passou do teto de 90 dias
+        self.assertEqual(self.status_com(sessao, cookie).get_json()["autenticado"], False)
+        self.esgotar_o_dia()                                              # 2ª trava em < 7 dias: manual
+        self.assertTrue(server._login_trava_e_manual())
+        self.assertEqual(self.login(PIN, ip="192.168.4.20", aparelho=cookie).status_code, 200)   # ainda conhecido
+        self.assertEqual(self.login(PIN, ip="192.168.4.20").status_code, 429)
+
+    # ---- M2: orçamento reservado antes do PBKDF2
+    def test_m2_reservas_concorrentes_nao_passam_de_5_por_aparelho(self) -> None:
+        self.esgotar_o_dia()
+        ident = "b" * 16
+        permitidas = []
+        barreira = threading.Barrier(24)
+
+        def tentar(i: int) -> None:
+            barreira.wait()
+            ok, _, _ = server._login_reservar(f"10.5.{i}.1", ident)       # IPs diferentes, mesmo cookie
+            if ok:
+                permitidas.append(i)
+
+        fios = [threading.Thread(target=tentar, args=(i,)) for i in range(24)]
+        for f in fios:
+            f.start()
+        for f in fios:
+            f.join(10)
+        self.assertEqual(len(permitidas), server.LOGIN_TRAVA_ORCAMENTO)
+
+    def test_m2_acerto_devolve_a_reserva_e_o_erro_nao_desconta_em_dobro(self) -> None:
+        self.esgotar_o_dia()
+        ident = "c" * 16
+        for i in range(3):
+            self.assertTrue(server._login_reservar(f"10.6.{i}.1", ident)[0])
+            server._login_sucesso(f"10.6.{i}.1", ident)                   # acertou: a reserva volta
+        self.assertEqual(server._login_trava_orcamento.get(ident, 0), 0)
+        for i in range(server.LOGIN_TRAVA_ORCAMENTO):
+            ip = f"10.7.{i}.1"
+            self.assertTrue(server._login_reservar(ip, ident)[0])
+            server._login_falhou(ip, ident)                               # errou: gasta UMA vez (a da reserva)
+        self.assertEqual(server._login_trava_orcamento[ident], server.LOGIN_TRAVA_ORCAMENTO)
+        self.assertFalse(server._login_reservar("10.8.0.1", ident)[0])
+
+    # ---- B1 / B2: histórico de travas
+    def test_b1_trava_com_data_do_futuro_e_descartada_e_o_prazo_restaurado_nao_passa_de_24h(self) -> None:
+        agora = self.rel.t
+        doc = server._seg_sanear({"travas": [{"t": agora + 10_000, "manual": True}, {"t": agora + 200, "manual": False},
+                                             {"t": agora - 60, "manual": False}]}, agora)
+        self.assertEqual([x["t"] for x in doc["travas"]], [agora + 200, agora - 60])
+        cfg = server.load_config()
+        cfg["seguranca"] = {"travas": [{"t": agora + 200, "manual": False}]}
+        server.save_config(cfg)
+        self.esquecer_a_memoria()
+        server._login_restaurar_do_disco()
+        self.assertTrue(server._login_esta_travado())
+        self.assertLessEqual(server._login_trava_ate - self.rel.monotonic(), server.FALHAS_JANELA_S)
+
+    def test_b2_trava_manual_vigente_nao_cai_pelo_corte_de_30_dias(self) -> None:
+        agora = self.rel.t
+        antiga = agora - 40 * 24 * 3600
+        doc = server._seg_sanear({"liberado_em": antiga - 100, "travas": [
+            {"t": antiga, "manual": True}, {"t": antiga + 5, "manual": False}]}, agora)
+        self.assertEqual(doc["travas"], [{"t": antiga, "manual": True}])      # a manual vigente fica; a automática velha cai
+        doc = server._seg_sanear({"liberado_em": antiga + 100, "travas": [{"t": antiga, "manual": True}]}, agora)
+        self.assertEqual(doc["travas"], [])                                   # manual de ANTES da liberação: cai
+        cfg = server.load_config()
+        cfg["seguranca"] = {"travas": [{"t": antiga, "manual": True}]}
+        server.save_config(cfg)
+        self.esquecer_a_memoria()
+        server._login_restaurar_do_disco()
+        self.assertTrue(server._login_trava_e_manual())                       # e continua valendo depois de reiniciar
+
+    # ---- B4
+    def test_b4_429_da_trava_manual_nao_traz_numero_de_segundos(self) -> None:
+        self.esgotar_o_dia()
+        r = self.login(PIN, ip="172.16.5.5").get_json()
+        self.assertEqual((r["travado"], r["trava_manual"], isinstance(r["bloqueado_por_s"], int)), (True, False, True))
+        self.rel.avancar(24 * 3600 + 1)
+        self.esgotar_o_dia()
+        r = self.login(PIN, ip="172.16.5.5").get_json()
+        self.assertEqual((r["travado"], r["trava_manual"], r["bloqueado_por_s"]), (True, True, None))
+
+    def test_reinicio_preserva_a_trava_o_prazo_e_o_historico(self) -> None:
+        self.esgotar_o_dia()
+        self.esquecer_a_memoria()
+        server._login_restaurar_do_disco()
+        self.assertTrue(server._login_esta_travado())
+        self.assertFalse(server._login_trava_e_manual())
+        self.rel.avancar(24 * 3600 + 1)
+        self.assertEqual(self.login(PIN, ip="172.16.5.5").status_code, 200)
+        self.rel.avancar(24 * 3600)
+        self.esgotar_o_dia()                                              # 2ª trava em < 7 dias: manual
+        self.assertTrue(server._login_trava_e_manual())
+        self.assertEqual(len(server._seg_ler()["travas"]), 2)
+        self.esquecer_a_memoria()
+        server._login_restaurar_do_disco()
+        self.assertTrue(server._login_esta_travado())
+        self.assertTrue(server._login_trava_e_manual())                   # o histórico sobreviveu
+        self.rel.avancar(10 * 24 * 3600)
+        self.assertEqual(self.login(PIN, ip="172.16.5.5").status_code, 429)
 
     def test_restaurar_do_disco_usa_o_mesmo_prazo_do_ultimo_erro(self) -> None:
         for _ in range(server.LOGIN_DIA_MAX_ERROS):
@@ -372,8 +598,11 @@ class TesteTentativas(BaseAuth):
         with server._login_lock:
             server._login_ips.clear()
             server._login_dia.clear()
-            server._login_global_tmp = None
             server._login_travado = False
+            server._login_trava_manual = False
+            server._login_trava_ate = 0.0
+            server._login_trava_orcamento.clear()
+            server._login_travas.clear()
 
     def test_n5_reiniciar_nao_devolve_300_tentativas_nem_destrava(self) -> None:
         for i in range(server.LOGIN_DIA_MAX_ERROS):

@@ -145,14 +145,21 @@ Contrato v2.7.1 (correções da auditoria de segurança)
     errados -> bloqueio de 5 min que DOBRA a cada bloqueio seguido (10, 20 min ... até 24 h) e só desce um nível a
     cada 24 h sem bloqueio; o nível é gravado no config.json (seguranca.niveis, até 200 IPs) e volta depois de
     reiniciar. (2) POR FAIXA /24 (IPv4, também para ::ffff:a.b.c.d; /64 no IPv6): 20 erros em 10 min somando os IPs
-    da faixa -> bloqueio FIXO de 10 min, SEM escalada (uma faixa é a Wi-Fi inteira); IPs que já entraram com o PIN
-    certo nos últimos 90 dias (seguranca.ips) ficam FORA da faixa (não contam e não são barrados por ela; seguem só o
+    da faixa -> bloqueio FIXO de 10 min, SEM escalada (uma faixa é a Wi-Fi inteira); aparelhos com COOKIE DE
+    APARELHO válido (veja abaixo; nunca o IP) ficam FORA da faixa (não contam e não são barrados por ela; seguem só o
     limite por IP). 429 da faixa: "codigo": "bloqueio_rede", "Muitas tentativas vindas desta rede". (3) TETO GERAL
     DIÁRIO: 300 erros em 24 h no total -> o login pela rede TRAVA para quem NÃO é conhecido (429 com "travado":
-    true, "bloqueado_por_s" = o que falta para a trava expirar). IPs conhecidos (login certo nos últimos 90 dias)
-    continuam podendo tentar, sujeitos só ao limite/escalada POR IP (um atacante com muitos IPs não derruba o login
-    da equipe). A trava EXPIRA sozinha 24 h depois do último erro que a manteve; o dono pode liberar antes
-    (alerta e "login_travado" continuam enquanto durar); na partida a contagem e a trava são refeitas a partir de seguranca.falhas (reiniciar não
+    true, "trava_manual": bool, "bloqueado_por_s" = o que falta para a trava automática expirar; null na manual). aparelhos CONHECIDOS
+    continuam podendo tentar (um atacante com muitos IPs não derruba o login da equipe), mas com um ORÇAMENTO FIXO de
+    5 erros por aparelho por trava (não renova; esgotou = 429 travado) e sujeitos ao limite/escalada POR IP. "Conhecido"
+    é provado por um COOKIE DE APARELHO ("proclamare_aparelho": HMAC derivado da chave de sessão, amarrado à
+    acesso_versao, HttpOnly, SameSite=Strict, Path=/api/auth, 180 dias DESLIZANTES), emitido no login certo, renovado no
+    GET /api/auth/status de quem tem sessão válida (se faltar ou vencer em < 30 dias) e invalidado ao trocar
+    o PIN ou revogar - NUNCA pelo IP (reaproveitável/forjável na LAN); ele só muda o limite de tentativas, não dá
+    acesso a nada; o mesmo cookie é o que isenta da faixa /24. Erros de conhecidos entram no histórico mas NÃO
+    prolongam a trava. A 1ª trava numa janela móvel de 7 dias EXPIRA sozinha 24 h depois; uma 2ª trava dentro de 7
+    dias fica até o dono liberar no PC (fail-closed, "login_trava_manual": true); o histórico de travas (só datas,
+    seguranca.travas, até 10) sobrevive a reinício. O dono pode liberar a qualquer momento; na partida a contagem e a trava são refeitas a partir de seguranca.falhas (reiniciar não
     devolve 300 tentativas; seguranca.liberado_em impede que erros anteriores a uma liberação religuem a trava).
     Logins CERTOS: no máximo 10/min por IP (429). POST /api/auth/liberar {"zerar_escalada"?: bool} (só local; {}
     continua válido) tira os bloqueios ativos e o trava SEM derrubar sessões nem trocar o PIN; mantém o nível de
@@ -170,7 +177,8 @@ Contrato v2.7.1 (correções da auditoria de segurança)
     "pendentes_remotos": int (= pendentes.total)}. Os contadores ficam no config.json (chave "seguranca": falhas
     das últimas 24 h, últimos 20 logins, IPs conhecidos por 90 dias, "visto_ate" e "novos" = logins de IP novo ainda
     não vistos, à parte, até 100: 20 logins comuns não apagam o alerta; login certo de IP já conhecido há menos de
-    1 h não regrava o arquivo) e SOBREVIVEM a reinício. "bloqueio_global_s" agora é, só quando travado, o que falta para a trava expirar (até 86400; 0 senão).
+    1 h não regrava o arquivo) e SOBREVIVEM a reinício. "bloqueio_global_s" = segundos até a trava AUTOMÁTICA expirar (1..86400), 0 sem trava e null na trava manual;
+    "login_trava_manual": bool.
     "alerta" liga com 5+ PINs errados desde o último "visto", login travado ou algum IP/rede bloqueado, login de IP
     nunca visto ainda não visto, ou encaminhamento de rede detectado. POST /api/auth/alertas/visto {} (só local) marca como visto.
     falhas_recentes e bloqueio_global_s (v2.2) continuam, agora persistidos.
@@ -1646,14 +1654,15 @@ API_PUBLICAS = frozenset({
 #      (seguranca.niveis, no máximo 200 IPs): reiniciar o servidor não devolve ao atacante os bloqueios curtos.
 #   2. POR FAIXA /24 (IPv4; /64 no IPv6): 20 erros em 10 min somando os IPs da faixa -> bloqueio FIXO de 10 min, SEM
 #      escalada (uma faixa é a Wi-Fi inteira: escalar deixaria um atacante derrubar o login da equipe por horas).
-#      IPs que já entraram com o PIN certo nos últimos 90 dias (seguranca.ips) FICAM FORA da faixa: não contam para
-#      ela nem são barrados por ela; seguem só o limite por IP (camada 1).
-#   3. TETO GERAL DIÁRIO: 300 erros em 24 h no total -> o login pela rede TRAVA para quem NÃO é conhecido. IPs
-#      conhecidos (login certo nos últimos 90 dias, seguranca.ips - a mesma regra que isenta da faixa) continuam
-#      podendo tentar, sujeitos só ao limite/escalada POR IP: um atacante com muitos IPs não derruba o login da
-#      equipe. A trava EXPIRA sozinha 24 h depois do último erro que a manteve; o dono pode liberar antes
-#      (POST /api/auth/liberar) ou trocar o PIN / revogar as sessões. Vale também depois de reiniciar (a contagem
-#      é refeita a partir de seguranca.falhas, com o mesmo prazo).
+#      Aparelhos com COOKIE DE APARELHO válido (nunca o IP) FICAM FORA da faixa: não contam para ela nem são
+#      barrados por ela; seguem só o limite por IP (camada 1).
+#   3. TETO GERAL DIÁRIO: 300 erros em 24 h no total -> o login pela rede TRAVA para aparelhos DESCONHECIDOS.
+#      "Conhecido" é provado por um COOKIE DE APARELHO assinado (emitido no login certo; nunca pelo IP, que é
+#      reaproveitável e forjável na LAN). Aparelho conhecido ainda tem um ORÇAMENTO FIXO de 5 erros por trava (não
+#      renova; esgotou = 429 travado como os outros) e segue o limite/escalada por IP. Erros de conhecidos entram no
+#      histórico mas NÃO prolongam a trava. A 1ª trava numa janela móvel de 7 dias acaba sozinha 24 h depois;
+#      uma 2ª trava dentro de 7 dias fica até o dono liberar no PC (fail-closed) - o histórico de travas (só datas)
+#      é gravado e sobrevive a reinício. Liberar (POST /api/auth/liberar) destrava qualquer uma.
 # "Liberar" zera os bloqueios e o trava, mas NÃO o nível de escalada por IP, a menos que peça {"zerar_escalada": true};
 # trocar o PIN ou revogar zera tudo, inclusive os níveis. Logins CERTOS também têm limite: 10/min por IP.
 LOGIN_IP_MAX_ERROS = 5
@@ -1664,6 +1673,9 @@ LOGIN_REDE_BLOQUEIO_S = 600.0   # bloqueio da FAIXA: fixo, nunca escala
 LOGIN_BLOQUEIO_MAX_S = 24 * 3600.0
 LOGIN_DECAI_S = 24 * 3600.0     # desce um nível de escalada a cada período sem bloqueio
 LOGIN_DIA_MAX_ERROS = 300
+LOGIN_TRAVA_ORCAMENTO = 5        # erros que um aparelho CONHECIDO (cookie válido) ainda pode dar durante uma trava
+TRAVA_REINCIDENCIA_S = 7 * 24 * 3600.0   # 2ª trava dentro deste prazo: só o dono destrava
+SEG_TRAVAS_MAX = 10              # histórico de travas gravado (só datas)
 LOGIN_OK_MAX_POR_MIN = 10
 LOGIN_LOCAL_MAX = 30  # tentativas de login por 5 min vindas do "PC da loja" (que nem precisa de PIN)
 LOGIN_IP_MAX_CHAVES = 1024
@@ -1673,7 +1685,10 @@ _login_lock = threading.Lock()
 _login_ips: dict[str, dict[str, Any]] = {}
 _login_dia: deque = deque()          # monotonic de cada PIN errado nas últimas 24 h (teto geral diário)
 _login_travado = False               # True: teto diário estourou; desconhecidos barrados até expirar ou o dono liberar
-_login_trava_ate = 0.0               # monotonic: a trava expira aqui (24 h depois do último erro que a manteve)
+_login_trava_ate = 0.0               # monotonic: a trava AUTOMÁTICA expira aqui (24 h depois do último erro que a causou)
+_login_trava_manual = False          # True: 2ª trava em menos de 7 dias; não expira, só o dono libera no PC
+_login_trava_orcamento: dict[str, int] = {}   # id do aparelho conhecido -> erros gastos NESTA trava (não renova)
+_login_travas: list[float] = []      # epoch de cada trava (histórico, também gravado em seguranca.travas)
 _login_falhas: deque = deque(maxlen=5000)  # time.time() de cada PIN errado (remoto), p/ o painel
 _versao_vista: int | None = None
 
@@ -1911,6 +1926,16 @@ def validar_pin_novo(pin: Any) -> str:
     return pin
 
 
+def _marcar_versao_vista(cfg: dict) -> None:
+    """
+    Esta troca de acesso_versao foi FEITA POR AQUI (e zera o login logo depois): registra a versão como "já vista", senão o
+    primeiro login seguinte acharia que a versão mudou "por fora" (CLI) e zeraria DE NOVO os erros e a trava acumulados
+    no intervalo.
+    """
+    global _versao_vista
+    _versao_vista = _versao_acesso(cfg)
+
+
 def aplicar_pin(pin: str | None) -> bool:
     """
     Define/troca (str já validada) ou remove (None) o PIN: nova chave HMAC e
@@ -1928,32 +1953,107 @@ def aplicar_pin(pin: str | None) -> bool:
         cfg["acesso_versao"] = _versao_acesso(cfg) + 1
         _gravar_config_atomico(cfg)
         configurado = pin_configurado(cfg)
+        _marcar_versao_vista(cfg)
     _login_resetar_global()
     return configurado
 
 
 # --- Limite de tentativas ---------------------------------------------------------
+# --- Cookie de APARELHO (rodada final) -----------------------------------------------------------
+# "Aparelho conhecido" é provado por um cookie assinado, NÃO pelo IP (IP é reaproveitável/forjável na LAN). Emitido no
+# login certo (só remoto), HttpOnly, SameSite=Strict, Path=/api/auth, 180 dias deslizantes, assinado com uma chave DERIVADA da chave
+# de sessão e amarrado à acesso_versao: trocar o PIN (a chave gira) ou revogar invalida todos. NÃO dá acesso a nada:
+# só muda o limite de tentativas de login (sai da faixa /24 e entra no orçamento fixo da trava diária).
+COOKIE_APARELHO = "proclamare_aparelho"
+APARELHO_DURACAO_S = 180 * 24 * 3600          # vida útil; renovado (deslizante) a cada GET /api/auth/status com sessão
+APARELHO_RENOVAR_ABAIXO_S = 30 * 24 * 3600    # renova quando faltar menos que isto
+
+
+def _chave_aparelho(cfg: dict) -> bytes | None:
+    chave = _chave_acesso(cfg)
+    return None if chave is None else hmac.new(chave, b"proclamare-aparelho-v1", hashlib.sha256).digest()
+
+
+def _emitir_cookie_aparelho(cfg: dict, aparelho_id: str | None = None) -> str:
+    """Token do aparelho: {id, exp, v}. Reaproveita o id de um cookie válido (a identidade do aparelho não muda)."""
+    chave = _chave_aparelho(cfg)
+    assert chave is not None
+    carga = json.dumps({"id": aparelho_id or secrets.token_hex(8), "exp": int(time.time()) + APARELHO_DURACAO_S,
+                        "v": _versao_acesso(cfg)}, separators=(",", ":"))
+    parte = _b64u(carga.encode("utf-8"))
+    return parte + "." + _assinar(chave, parte)
+
+
+def _aparelho_valido(token: str | None, cfg: dict) -> str | None:
+    """O id do aparelho se o cookie é legítimo (assinatura, validade, versão de acesso); senão None."""
+    info = _aparelho_info(token, cfg)
+    return None if info is None else info[0]
+
+
+def _aparelho_info(token: str | None, cfg: dict) -> tuple[str, float] | None:
+    """(id, exp) do cookie de aparelho legítimo (assinatura, validade, versão de acesso); senão None."""
+    if not token or len(token) > 300 or not pin_configurado(cfg):
+        return None
+    chave = _chave_aparelho(cfg)
+    partes = token.split(".")
+    if chave is None or len(partes) != 2:
+        return None
+    try:
+        if not hmac.compare_digest(partes[1].encode("ascii"), _assinar(chave, partes[0]).encode("ascii")):
+            return None
+        carga = json.loads(_b64u_dec(partes[0]))
+    except (ValueError, TypeError, UnicodeError):
+        return None
+    if not isinstance(carga, dict):
+        return None
+    ident, exp, v = carga.get("id"), carga.get("exp"), carga.get("v")
+    if (not isinstance(ident, str) or not re.fullmatch(r"[0-9a-f]{16}", ident) or isinstance(exp, bool)
+            or not isinstance(exp, (int, float)) or time.time() >= exp
+            or not (isinstance(v, int) and not isinstance(v, bool) and v == _versao_acesso(cfg))):
+        return None
+    return ident, float(exp)
+
+
+def _renovar_cookie_aparelho(resp: Response, cfg: dict) -> None:
+    """
+    Quem tem SESSÃO válida já provou o PIN: se o cookie de aparelho falta, venceu ou vence em menos de 30 dias,
+    emite/renova (mantendo o id se o cookie atual ainda é válido). Cobre sessões abertas antes desta função
+    existir e o teto de 90 dias da sessão (que antes derrubava o cookie junto). Chamado no GET /api/auth/status.
+    """
+    info = _aparelho_info(request.cookies.get(COOKIE_APARELHO), cfg)
+    if info is None or info[1] - time.time() < APARELHO_RENOVAR_ABAIXO_S:
+        _definir_cookie_aparelho(resp, _emitir_cookie_aparelho(cfg, info[0] if info else None))
+
+
+def _definir_cookie_aparelho(resp: Response, token: str) -> None:
+    resp.set_cookie(COOKIE_APARELHO, token, max_age=APARELHO_DURACAO_S, httponly=True, samesite="Strict",
+                    path="/api/auth")
+
+
 def _login_resetar_global() -> None:
     """
-    Zera TUDO do login (bloqueios, contadores, níveis de escalada - também no disco - e o trava diário) em
-    troca/remoção do PIN, revogação local ou mudança de acesso_versao por fora.
+    Zera TUDO do login (bloqueios, contadores, níveis de escalada - também no disco -, a trava diária e o histórico
+    de travas) em troca/remoção do PIN, revogação local ou mudança de acesso_versao por fora.
     """
-    global _login_travado, _login_trava_ate
+    global _login_travado, _login_trava_ate, _login_trava_manual
     with _login_lock:
         _login_ips.clear()
         _login_dia.clear()
         _login_travado = False
         _login_trava_ate = 0.0
-    _seg_marcar_liberado(zerar_niveis=True)
+        _login_trava_manual = False
+        _login_trava_orcamento.clear()
+        _login_travas.clear()
+    _seg_marcar_liberado(zerar_niveis=True, zerar_travas=True)
 
 
 def _login_liberar(zerar_escalada: bool = False) -> None:
     """
-    "Liberar login pela rede" (só o PC da loja): tira todos os bloqueios ativos e o trava diário. MANTÉM o nível de
-    escalada de cada IP (o próximo bloqueio de quem insiste continua longo), salvo `zerar_escalada` (aí zera também
-    os níveis, no disco inclusive). Nunca mexe nas sessões.
+    "Liberar login pela rede" (só o PC da loja): tira todos os bloqueios ativos e a trava diária (mesmo a manual).
+    MANTÉM o nível de escalada de cada IP (salvo `zerar_escalada`) e o histórico de travas (uma nova trava em menos
+    de 7 dias continua sendo manual). Nunca mexe nas sessões.
     """
-    global _login_travado, _login_trava_ate
+    global _login_travado, _login_trava_ate, _login_trava_manual
     with _login_lock:
         for reg in _login_ips.values():
             reg["t"].clear()
@@ -1964,6 +2064,8 @@ def _login_liberar(zerar_escalada: bool = False) -> None:
         _login_dia.clear()
         _login_travado = False
         _login_trava_ate = 0.0
+        _login_trava_manual = False
+        _login_trava_orcamento.clear()
     _seg_marcar_liberado(zerar_niveis=zerar_escalada)
 
 
@@ -1992,14 +2094,15 @@ def _login_registro(chave: str) -> dict[str, Any]:
 
 
 def _login_limpar(agora: float) -> None:
-    """(com _login_lock) Descarta registros vencidos; limita o tamanho do dicionário; expira a trava diária."""
+    """(com _login_lock) Descarta registros vencidos; limita o tamanho do dicionário; expira a trava AUTOMÁTICA."""
     global _login_travado
     while _login_dia and agora - _login_dia[0] > FALHAS_JANELA_S:
         _login_dia.popleft()
-    if _login_travado and agora >= _login_trava_ate:   # 24 h sem nenhum erro que a mantivesse
+    if _login_travado and not _login_trava_manual and agora >= _login_trava_ate:   # 24 h desde o último erro que a causou
         _login_travado = False
         _login_dia.clear()
-        log.info("A trava do login pela rede expirou (24 h sem novos erros).")
+        _login_trava_orcamento.clear()
+        log.info("A trava do login pela rede expirou (24 h desde o início da trava).")
     for chave in list(_login_ips):
         reg = _login_ips[chave]
         janela = LOGIN_IP_BLOQUEIO_S if chave.startswith("ip:") else LOGIN_REDE_JANELA_S
@@ -2038,19 +2141,26 @@ def _login_bloquear(reg: dict[str, Any], agora: float, escalar: bool = True) -> 
     return int(duracao)
 
 
-def _login_reservar(ip: str, conhecido: bool = False) -> tuple[bool, int, str | None]:
+def _login_reservar(ip: str, aparelho: str | None = None) -> tuple[bool, int, str | None]:
     """
     Registra uma tentativa ANTES de verificar o PIN (uma rajada paralela não passa do limite). Devolve
     (permitida, segundos_bloqueado, motivo) com motivo "ip" | "rede" | "travado" | None. Tentativa já bloqueada não
-    é contada nem logada (sem inundar o log). Travado pelo teto diário: desconhecidos levam (False, segundos até a trava expirar, "travado"); conhecidos não.
-    `conhecido` = o IP já entrou com o PIN certo nos últimos 90 dias: fica FORA da contagem e do bloqueio da faixa.
+    é contada nem logada (sem inundar o log).
+    `aparelho` = id de um cookie de aparelho VÁLIDO (None = desconhecido): fica FORA do bloqueio por faixa e, durante a
+    trava diária, tem um orçamento FIXO de LOGIN_TRAVA_ORCAMENTO erros por trava (sem renovar). Desconhecido na trava:
+    (False, segundos até expirar - ou 24 h se for manual -, "travado").
     """
     agora = time.monotonic()
-    rede = None if conhecido else _chave_rede(ip)
+    rede = None if aparelho else _chave_rede(ip)
     with _login_lock:
         _login_limpar(agora)
-        if _login_travado and not conhecido:   # conhecido segue só o limite por IP (abaixo)
-            return False, _segundos(_login_trava_ate - agora), "travado"
+        gasta_orcamento = False
+        if _login_travado:
+            esgotado = aparelho is None or _login_trava_orcamento.get(aparelho, 0) >= LOGIN_TRAVA_ORCAMENTO
+            if esgotado:
+                resta = 0 if _login_trava_manual else _segundos(_login_trava_ate - agora)
+                return False, resta, "travado"
+            gasta_orcamento = True
         reg_ip = _login_registro("ip:" + ip)
         reg_rede = _login_registro(rede) if rede else None
         if agora < reg_ip["bloq"]:
@@ -2062,6 +2172,8 @@ def _login_reservar(ip: str, conhecido: bool = False) -> tuple[bool, int, str | 
         reg_ip["t"].append(agora)
         if reg_rede is not None:
             reg_rede["t"].append(agora)
+        if gasta_orcamento:   # RESERVA a tentativa antes do PBKDF2: rajadas concorrentes não passam de 5 por aparelho
+            _login_trava_orcamento[aparelho] = _login_trava_orcamento.get(aparelho, 0) + 1
         return True, 0, None
 
 
@@ -2070,16 +2182,23 @@ def _login_esta_travado() -> bool:
         return _login_travado
 
 
-def _login_falhou(ip: str, conhecido: bool = False) -> tuple[int, int, str | None]:
+def _login_trava_e_manual() -> bool:
+    with _login_lock:
+        return _login_travado and _login_trava_manual
+
+
+def _login_falhou(ip: str, aparelho: str | None = None) -> tuple[int, int, str | None]:
     """
     PIN errado. Devolve (segundos_de_bloqueio, tentativas_restantes, motivo). Se ESTA tentativa dispara o bloqueio
-    (do IP, da faixa ou o trava diário), os segundos vêm > 0 e o cliente recebe 429 já agora. Loga uma vez por
-    bloqueio, nunca por requisição (e SEM o IP: o IP fica só na auditoria).
+    (do IP, da faixa ou a trava diária), os segundos vêm > 0 e o cliente recebe 429 já agora. Loga uma vez por
+    bloqueio, nunca por requisição (e SEM o IP: o IP fica só na auditoria). Durante a trava o erro de um aparelho
+    conhecido entra no histórico e gasta o orçamento dele, mas NÃO prolonga a trava.
     """
-    global _login_travado, _login_trava_ate
+    global _login_travado, _login_trava_ate, _login_trava_manual
     agora = time.monotonic()
     bloqueado = 0
     motivo: str | None = None
+    nova_trava = False
     with _login_lock:
         _login_falhas.append(time.time())
         _login_dia.append(agora)
@@ -2089,7 +2208,7 @@ def _login_falhou(ip: str, conhecido: bool = False) -> tuple[int, int, str | Non
             bloqueado = _login_bloquear(reg, agora)
             motivo = "ip"
             log.warning("Login remoto bloqueado por %d min: muitos PINs errados de um aparelho.", bloqueado // 60)
-        chave_rede = None if conhecido else _chave_rede(ip)
+        chave_rede = None if aparelho else _chave_rede(ip)
         if chave_rede:
             rede = _login_registro(chave_rede)
             if len(rede["t"]) >= LOGIN_REDE_MAX_ERROS and agora >= rede["bloq"]:
@@ -2097,25 +2216,36 @@ def _login_falhou(ip: str, conhecido: bool = False) -> tuple[int, int, str | Non
                 if not bloqueado:
                     bloqueado, motivo = dur, "rede"
                 log.warning("Login remoto bloqueado por %d min: muitos PINs errados vindos da mesma rede.", dur // 60)
-        if _login_travado:   # cada erro (de conhecido, que ainda pode tentar) mantém a trava por mais 24 h
-            _login_trava_ate = agora + FALHAS_JANELA_S
-        elif len(_login_dia) >= LOGIN_DIA_MAX_ERROS:
+        if not _login_travado and len(_login_dia) >= LOGIN_DIA_MAX_ERROS:   # (o orçamento já foi gasto no _login_reservar)
+            agora_epoch = time.time()
+            # 2ª trava dentro de 7 dias: fica até o dono liberar (fail-closed); a 1ª expira sozinha em 24 h
+            _login_trava_manual = any(agora_epoch - t < TRAVA_REINCIDENCIA_S for t in _login_travas)
+            _login_travas.append(agora_epoch)
+            del _login_travas[:-SEG_TRAVAS_MAX]
             _login_travado = True
             _login_trava_ate = agora + FALHAS_JANELA_S
-            if not conhecido:
+            _login_trava_orcamento.clear()
+            nova_trava = True
+            if not aparelho:
                 bloqueado, motivo = int(FALHAS_JANELA_S), "travado"
-            log.warning("%d PINs errados em 24 h: o login pela rede está TRAVADO até o dono liberar no PC da loja.",
-                        LOGIN_DIA_MAX_ERROS)
+            log.warning("%d PINs errados em 24 h: o login pela rede está TRAVADO para aparelhos desconhecidos%s.",
+                        LOGIN_DIA_MAX_ERROS,
+                        " até o dono liberar no PC da loja (2ª trava em menos de 7 dias)" if _login_trava_manual
+                        else " (expira sozinha em 24 h)")
+    if nova_trava:
+        _seg_persistir_travas()
     return bloqueado, restantes, motivo
 
 
-def _login_sucesso(ip: str, conhecido: bool = False) -> None:
+def _login_sucesso(ip: str, aparelho: str | None = None) -> None:
     """
     Acerto remoto: zera o contador DAQUELE IP e devolve a tentativa reservada ao contador da faixa. NÃO zera a
     escalada nem o teto diário (só ação local ou decaimento).
     """
-    chave_rede = None if conhecido else _chave_rede(ip)
+    chave_rede = None if aparelho else _chave_rede(ip)
     with _login_lock:
+        if _login_travado and aparelho and _login_trava_orcamento.get(aparelho, 0) > 0:
+            _login_trava_orcamento[aparelho] -= 1   # acerto devolve a tentativa reservada (só erro gasta orçamento)
         reg = _login_ips.get("ip:" + ip)
         if reg is not None:
             reg["t"].clear()
@@ -2136,29 +2266,44 @@ def _login_niveis_para_disco() -> dict[str, dict[str, Any]]:
 
 def _login_restaurar_do_disco() -> None:
     """
-    Na partida (e nos testes): refaz o contador diário a partir de seguranca.falhas das últimas 24 h (e a trava, se
-    houver 300 ou mais desde a última liberação) e os níveis de escalada por IP. Sem isto, reiniciar o servidor
-    devolveria 300 tentativas novas e os bloqueios curtos a quem já tinha escalado.
+    Na partida (e nos testes): refaz o contador diário a partir de seguranca.falhas das últimas 24 h, o histórico de
+    travas (seguranca.travas), a trava vigente (a última trava registrada depois da última liberação que ainda não
+    expirou - ou é manual) e os níveis de escalada por IP. O orçamento dos aparelhos conhecidos na trava recomeça
+    (só memória). Sem isto, reiniciar o servidor devolveria 300 tentativas e os bloqueios curtos a quem já escalou.
     """
-    global _login_travado, _login_trava_ate
+    global _login_travado, _login_trava_ate, _login_trava_manual
     seg = _seg_ler()
     agora_mono, agora = time.monotonic(), time.time()
     desde = max(agora - FALHAS_JANELA_S, seg.get("liberado_em", 0.0))
     recentes = [t for t in seg["falhas"] if t > desde]
+    travas = [x for x in seg["travas"]]
+    ativa = next((x for x in reversed(travas) if x["t"] > seg.get("liberado_em", 0.0)
+                  and (x["manual"] or agora - x["t"] < FALHAS_JANELA_S)), None)
+    registrar = False
+    if ativa is None and len(recentes) >= LOGIN_DIA_MAX_ERROS:   # trava sem registro (versão anterior): registra agora
+        manual = any(agora - x["t"] < TRAVA_REINCIDENCIA_S for x in travas)
+        ativa = {"t": max(recentes), "manual": manual}
+        travas.append(ativa)
+        registrar = True
     with _login_lock:
         _login_dia.clear()
         _login_dia.extend(agora_mono - (agora - t) for t in sorted(recentes))
-        _login_travado = len(recentes) >= LOGIN_DIA_MAX_ERROS
-        # expira 24 h depois do ÚLTIMO erro registrado (o mesmo prazo de antes de reiniciar)
-        _login_trava_ate = agora_mono + (max(recentes) + FALHAS_JANELA_S - agora) if recentes else 0.0
+        _login_travas[:] = [x["t"] for x in travas][-SEG_TRAVAS_MAX:]
+        _login_travado = ativa is not None
+        _login_trava_manual = bool(ativa and ativa["manual"])
+        # (o prazo restante nunca passa de 24 h, mesmo com uma data estranha no arquivo)
+        _login_trava_ate = agora_mono + min(FALHAS_JANELA_S, max(0.0, ativa["t"] + FALHAS_JANELA_S - agora)) if ativa else 0.0
+        _login_trava_orcamento.clear()
         for ip, info in seg.get("niveis", {}).items():
             reg = _login_registro("ip:" + ip)
             reg["nivel"] = info["n"]
             reg["fim"] = agora_mono + (info["fim"] - agora)
             reg["bloq"] = reg["fim"] if info["fim"] > agora else 0.0
+    if registrar:
+        _seg_persistir_travas(travas)
     if _login_travado:
-        log.warning("O login pela rede continua TRAVADO (%d PINs errados em 24 h). Libere no PC da loja.",
-                    len(recentes))
+        log.warning("O login pela rede continua TRAVADO para aparelhos desconhecidos%s. Libere no PC da loja.",
+                    " (trava manual)" if _login_trava_manual else "")
 
 
 def _apagar_cookie(resp: Response) -> Response:
@@ -2167,18 +2312,21 @@ def _apagar_cookie(resp: Response) -> Response:
 
 
 def _resp_429(segundos: int, travado: bool = False, motivo: str | None = None,
-              suspenso: bool = False) -> tuple[Response, int]:
+              suspenso: bool = False, manual: bool = False) -> tuple[Response, int]:
     """
     429 de login. `travado`: teto diário ("travado": true). `motivo` "rede": a FAIXA está bloqueada ("codigo":
     "bloqueio_rede"). `suspenso`: o pedido veio do loopback mas o túnel suspendeu a confiança - repete o aviso do
     túnel ("codigo": "loopback_suspenso"), porque é assim que o dono no PC da loja descobre o motivo.
     """
     minutos = max(1, -(-segundos // 60))
-    corpo: dict[str, Any] = {"ok": False, "bloqueado_por_s": segundos}
+    corpo: dict[str, Any] = {"ok": False, "bloqueado_por_s": None if (travado and manual) else segundos}
     if travado:
         corpo["travado"] = True
+        corpo["trava_manual"] = manual
         corpo["error"] = ("Muitas tentativas erradas. O login pela rede foi travado: peça ao dono para liberar "
-                          "no PC da loja.")
+                          "no PC da loja." if manual else
+                          "Muitas tentativas erradas. O login pela rede foi travado por segurança: tente de novo "
+                          "mais tarde ou peça ao dono para liberar no PC da loja.")
     elif motivo == "rede":
         corpo["codigo"] = "bloqueio_rede"
         corpo["error"] = f"Muitas tentativas vindas desta rede. Tente novamente em {minutos} min."
@@ -2254,8 +2402,17 @@ def _seg_sanear(bruto: Any, agora: float | None = None) -> dict[str, Any]:
                 and _seg_ip(ip) != "?" and agora - fim <= LOGIN_DECAI_S * n):
             niveis[_seg_ip(ip)] = {"n": n, "fim": fim}
     liberado_em = _numero_epoch(bruto.get("liberado_em")) or 0.0
+    travas: list[dict[str, Any]] = []
+    for e in (bruto.get("travas") if isinstance(bruto.get("travas"), list) else [])[-SEG_TRAVAS_MAX:]:
+        t = _numero_epoch(e.get("t")) if isinstance(e, dict) else None
+        if t is None or t > agora + 300:   # data do futuro (relógio errado ou arquivo adulterado): descarta
+            continue
+        manual = e.get("manual") is True
+        # a trava MANUAL vigente (depois da última liberação) nunca cai pelo corte de 30 dias: só o dono a tira
+        if agora - t <= 30 * 24 * 3600.0 or (manual and t > liberado_em):
+            travas.append({"t": t, "manual": manual})
     return {"falhas": falhas, "logins": logins, "ips": ips, "visto_ate": visto_ate, "novos": novos,
-            "niveis": niveis, "liberado_em": liberado_em}
+            "niveis": niveis, "liberado_em": liberado_em, "travas": travas}
 
 
 def _seg_ler(cfg: dict | None = None) -> dict[str, Any]:
@@ -2325,7 +2482,7 @@ def _seg_reset_pendentes() -> None:
             _seg_flush_timer = None
 
 
-def _seg_marcar_liberado(zerar_niveis: bool) -> None:
+def _seg_marcar_liberado(zerar_niveis: bool, zerar_travas: bool = False) -> None:
     """
     O dono liberou o login (ou trocou o PIN / revogou): os PINs errados de ANTES não podem religar o trava quando o
     servidor reiniciar (seguranca.liberado_em) e, com `zerar_niveis`, os níveis de escalada guardados saem do disco.
@@ -2333,7 +2490,7 @@ def _seg_marcar_liberado(zerar_niveis: bool) -> None:
     with _seg_pend_lock:
         _seg_falhas_pend.clear()
     seg = _seg_ler()
-    if not (seg["falhas"] or (zerar_niveis and seg["niveis"])):
+    if not (seg["falhas"] or seg["travas"] or (zerar_niveis and seg["niveis"])):
         return   # nada a esquecer: não regrava o config à toa
     agora = time.time()
 
@@ -2341,8 +2498,20 @@ def _seg_marcar_liberado(zerar_niveis: bool) -> None:
         doc["liberado_em"] = agora
         if zerar_niveis:
             doc["niveis"] = {}
+        if zerar_travas:
+            doc["travas"] = []
 
     _seg_mutar(_aplicar)
+
+
+def _seg_persistir_travas(travas: list[dict[str, Any]] | None = None) -> None:
+    """Grava o histórico de travas (só datas e se foi manual; no máximo SEG_TRAVAS_MAX). Sem argumento, acrescenta a última."""
+    if travas is None:
+        with _login_lock:
+            nova = {"t": _login_travas[-1] if _login_travas else time.time(), "manual": _login_trava_manual}
+        _seg_mutar(lambda doc: doc.update(travas=(doc["travas"] + [nova])[-SEG_TRAVAS_MAX:]))
+    else:
+        _seg_mutar(lambda doc: doc.update(travas=travas[-SEG_TRAVAS_MAX:]))
 
 
 def _seg_persistir_niveis() -> None:
@@ -2384,7 +2553,8 @@ def _iso_local(epoch: float) -> str:
     return datetime.fromtimestamp(epoch).astimezone().isoformat(timespec="seconds")
 
 
-def _seg_resumo(cfg: dict, bloqueio_global_s: int, travado: bool = False, bloqueados: int = 0) -> dict[str, Any]:
+def _seg_resumo(cfg: dict, bloqueio_global_s: int | None, travado: bool = False, bloqueados: int = 0,
+                trava_manual: bool = False) -> dict[str, Any]:
     """
     O que o painel LOCAL mostra como aviso (campo "seguranca" do /api/auth/status). "alerta" liga quando há
     5+ PINs errados desde a última vez que o dono marcou como visto, um bloqueio global ativo, um login
@@ -2404,6 +2574,7 @@ def _seg_resumo(cfg: dict, bloqueio_global_s: int, travado: bool = False, bloque
         "alerta": (falhas_novas >= SEG_ALERTA_FALHAS or travado or bloqueados > 0 or bool(novos)
                    or bool(tuneis["fortes"])),
         "login_travado": travado,
+        "login_trava_manual": bool(travado and trava_manual),
         "bloqueios_ativos": bloqueados,
         "pendentes": pendentes,
         "falhas_24h": sum(1 for t in seg["falhas"] if agora - t <= FALHAS_JANELA_S),
@@ -2443,14 +2614,19 @@ def auth_status() -> Response:
             _login_limpar(agora)
             travado = _login_travado
             bloqueados = sum(1 for r in _login_ips.values() if agora < r["bloq"])
-            restante_trava = _segundos(_login_trava_ate - agora) if travado else 0
-        bloqueio = restante_trava
-        seg = _seg_resumo(cfg, bloqueio, travado, bloqueados)
+            manual = _login_travado and _login_trava_manual
+            restante_trava = _segundos(_login_trava_ate - agora) if travado and not manual else 0
+        # bloqueio_global_s: segundos até a trava AUTOMÁTICA expirar; 0 sem trava; null na trava MANUAL (só o dono destrava)
+        bloqueio = None if manual else restante_trava
+        seg = _seg_resumo(cfg, bloqueio, travado, bloqueados, manual)
         # falhas_recentes/bloqueio_global_s: os campos da v2.2 (agora persistidos, 24 h)
         resp["falhas_recentes"] = seg["falhas_24h"]
         resp["bloqueio_global_s"] = bloqueio
         resp["seguranca"] = seg
-    return jsonify(resp)
+    resposta = jsonify(resp)
+    if not local and resp["autenticado"]:   # sessão válida = PIN provado: emite/renova o cookie de aparelho
+        _renovar_cookie_aparelho(resposta, cfg)
+    return resposta
 
 
 @app.post("/api/auth/login")
@@ -2465,8 +2641,8 @@ def auth_login() -> Any:
     ip = request.remote_addr or "?"
     local = _requisicao_local()
     restantes = LOGIN_IP_MAX_ERROS
-    # IP que já entrou com o PIN certo nos últimos 90 dias fica FORA do bloqueio por faixa (só o limite por IP vale)
-    conhecido = _seg_ip(ip) in _seg_ler(cfg)["ips"]
+    # Aparelho CONHECIDO = cookie de aparelho válido (nunca o IP): fica fora da faixa /24 e tem orçamento na trava
+    aparelho = _aparelho_valido(request.cookies.get(COOKIE_APARELHO), cfg) if not local else None
     suspenso = (not local and _tunel_suspende_loopback() and _local_por(
         ip, request.host, any(h in request.headers for h in CABECALHOS_DE_PROXY), ignorar_tunel=True))
     if local:
@@ -2475,28 +2651,28 @@ def auth_login() -> Any:
         if excedeu_limite("login-local", LOGIN_LOCAL_MAX, 300.0):
             return _resp_429(300)
     else:
-        permitida, bloqueado_s, motivo = _login_reservar(ip, conhecido)
+        permitida, bloqueado_s, motivo = _login_reservar(ip, aparelho)
         if not permitida:
-            return _resp_429(bloqueado_s, motivo == "travado", motivo, suspenso)
+            return _resp_429(bloqueado_s, motivo == "travado", motivo, suspenso, _login_trava_e_manual())
     it, salt, esperado = _ler_hash_pin(cfg["acesso_pin_hash"])  # type: ignore[misc]
     # Mesmo custo de PBKDF2 em acerto e erro; comparação em tempo constante.
     certo = hmac.compare_digest(_hash_pin(pin, salt, it), esperado)
     if not certo:
         if not local:
-            bloqueado_s, restantes, motivo = _login_falhou(ip, conhecido)
+            bloqueado_s, restantes, motivo = _login_falhou(ip, aparelho)
             _seg_registrar_falha()
             auditar("login", resultado="pin_errado", bloqueado_s=bloqueado_s or None, motivo=motivo)
             if bloqueado_s:
                 if motivo == "ip":
                     _seg_persistir_niveis()   # o nível de escalada sobrevive a reinício
-                return _resp_429(bloqueado_s, motivo == "travado", motivo, suspenso)
+                return _resp_429(bloqueado_s, motivo == "travado", motivo, suspenso, _login_trava_e_manual())
         else:
             auditar("login", resultado="pin_errado")
         log.warning("Login com PIN incorreto (origem %s).", "local" if local else "remoto")   # o IP fica só na auditoria
         return jsonify({"ok": False, "error": "PIN incorreto.", "tentativas_restantes": restantes}), 401
     novo = False
     if not local:
-        _login_sucesso(ip, conhecido)
+        _login_sucesso(ip, aparelho)
         if excedeu_limite("login-ok:" + ip, LOGIN_OK_MAX_POR_MIN, 60.0):   # logins CERTOS em rajada também têm teto
             auditar("login", resultado="limite")
             return _resp_429(60, suspenso=suspenso)
@@ -2507,6 +2683,8 @@ def auth_login() -> Any:
     resp = jsonify({"ok": True})
     novo_token, vida = _emitir_token(cfg)
     _definir_cookie_sessao(resp, novo_token, vida)
+    if not local:   # o aparelho passa a ser "conhecido" (só afeta o limite de tentativas de login; não dá acesso)
+        _definir_cookie_aparelho(resp, _emitir_cookie_aparelho(cfg, aparelho))
     return resp
 
 
@@ -2581,6 +2759,7 @@ def auth_revogar() -> Response:
         cfg = load_config()
         cfg["acesso_versao"] = _versao_acesso(cfg) + 1
         _gravar_config_atomico(cfg)
+        _marcar_versao_vista(cfg)
     _login_resetar_global()
     log.info("Todas as sessões de acesso pela rede foram revogadas.")
     revisao = _revisar_apos_acesso(opcoes)
