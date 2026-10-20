@@ -14,7 +14,8 @@
 
 .PARAMETER SemDependencias
     Pula a criacao do .venv, o pip install e a auditoria; usa o Python atual encontrado.
-    Neste modo o instalador NAO baixa Python.
+    Neste modo o instalador NAO baixa Python. O Proclamare roda com "python -I" (modo isolado), que ignora
+    pacotes instalados com "pip install --user": instale-os no proprio Python.
 
 .PARAMETER PermitirSemHashes
     So se requirements.lock estiver faltando: aceita instalar pelo requirements.txt SEM verificacao
@@ -27,8 +28,21 @@
     Nao cria (e REMOVE, se existir) o atalho de inicializacao, sem perguntar.
 
 .PARAMETER Desinstalar
-    Remove os atalhos e pergunta se deve apagar o .venv e o Python baixado pelo Proclamare.
-    Nao apaga o programa nem o config.json, e NUNCA mexe em um Python instalado por voce.
+    Remove os atalhos (e a tarefa "religar sozinho", se existir) e pergunta se deve apagar o .venv e o
+    Python baixado pelo Proclamare. Por padrao NAO apaga o programa nem os seus dados (config.json, listas,
+    programacao, logs), e NUNCA mexe em um Python instalado por voce.
+
+.PARAMETER ApagarDados
+    Com -Desinstalar: ja responde "sim" a pergunta de apagar os DADOS do Proclamare (config.json com
+    PIN e segredo do Spotify, listas.json, programacao*.json, logs\ e audios_temp\), mas AINDA PEDE
+    para digitar APAGAR. So apaga arquivos dentro da pasta do programa; a pasta de musicas nunca e tocada.
+
+.PARAMETER ReiniciarAutomatico
+    Cria (sem perguntar) a tarefa do SEU usuario "religar sozinho": a cada 5 minutos, no seu logon, roda
+    "Proclamare.pyw --vigia", que so religa o servidor se ele CAIU. Sem administrador e sem privilegios.
+
+.PARAMETER NaoReiniciarAutomatico
+    Nao cria (e REMOVE, se existir) a tarefa "religar sozinho", sem perguntar.
 
 .PARAMETER PastaPython
     (Avancado) Pasta do Python do Proclamare. Padrao: %LOCALAPPDATA%\Proclamare\python-<versao>.
@@ -52,7 +66,10 @@ param(
     [switch]$Desinstalar,
     [string]$PastaPython = '',
     [switch]$IgnorarPythonDoSistema,
-    [switch]$RemoverPythonPrivado
+    [switch]$RemoverPythonPrivado,
+    [switch]$ApagarDados,
+    [switch]$ReiniciarAutomatico,
+    [switch]$NaoReiniciarAutomatico
 )
 
 $ErrorActionPreference = 'Stop'
@@ -74,7 +91,7 @@ $PowerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powe
 # para Windows (as 3.12.11 em diante so tem codigo-fonte). Conferido em 2026-10: o SHA-512 abaixo e o
 # publicado no catalogo do nuget.org, e os binarios do pacote sao byte a byte iguais aos do
 # "embeddable package" do python.org (3.12.10, MD5 fe8ef205f2e9c3ba44d0cf9954e1abd3).
-# ATENCAO (revisar ate 2027-04): como a 3.12.10 nao recebe mais correcoes de seguranca em binario, trocar
+# ATENCAO (revisar ate 2027-04; auditoria P31): como a 3.12.10 nao recebe mais correcoes de seguranca em binario, trocar
 # para uma versao que ainda receba (3.13.x; ou 3.14.x quando o requirements.lock liberar o pygame no 3.14).
 # Antes de trocar, validar o fluxo inteiro em um PC limpo e conferir o SHA-512 no catalogo do nuget.org.
 # Para trocar de versao: mude juntas as linhas de versao, tamanho, SHA-256, SHA-512 e caminho mais longo.
@@ -84,6 +101,10 @@ $PyTamanho = [long]14515433
 $PySha256 = '0eb85c2dfccccf1b17352de4c397f69194035b7d37149eacc16f1147d93de3b8'
 $PySha512Base64 = 'u9pNz2iKlCEbYtUJaKkbOPMF0LjR7NkCafdKhvigpPzrt8oWKgdTpHaR6z3wyWQAm9PYGUxv0Zr66NX9AeHMDw=='
 $PyAssinante = 'Python Software Foundation'
+# Patch MINIMO EXIGIDO de um Python que ja existe no computador: abaixo disso o instalador o ignora (faltam
+# correcoes de seguranca conhecidas). Os valores sao um piso conservador por serie, NAO "o ultimo release com
+# binarios"; revisar junto com $PyVersao (ate 2027-04).
+$PatchMinimo = @{ '3.10' = 11; '3.11' = 9; '3.12' = 10; '3.13' = 5 }
 $PyCaminhoMaisLongo = 77   # maior caminho relativo dentro do pacote (muda com a versao; so serve p/ avisar cedo)
 $PyDll = 'python' + (($PyVersao.Split('.')[0..1]) -join '') + '.dll'
 $PyMarcador = '.proclamare-python.json'   # marca as pastas criadas por este instalador (so elas sao apagadas)
@@ -366,13 +387,116 @@ function Desligar-Servidor([string]$PythonwExe) {
     $anterior = $env:PROCLAMARE_NO_BROWSER
     try {
         $env:PROCLAMARE_NO_BROWSER = '1'   # sem caixa de mensagem: o aviso vai so para a saida oculta
-        $proc = Start-Process -FilePath $PythonwExe -ArgumentList ('"' + $Pyw + '" --parar') `
+        $proc = Start-Process -FilePath $PythonwExe -ArgumentList ('-I "' + $Pyw + '" --parar') `
             -WorkingDirectory $Raiz -WindowStyle Hidden -PassThru
         $null = $proc.Handle
         if (-not $proc.WaitForExit(30000)) { try { $proc.Kill() } catch { } }
     } catch { } finally {
         if ($null -eq $anterior) { Remove-Item Env:\PROCLAMARE_NO_BROWSER -ErrorAction SilentlyContinue }
         else { $env:PROCLAMARE_NO_BROWSER = $anterior }
+    }
+}
+
+# ---- Dados do usuario (P11): so DENTRO da pasta do programa, sem seguir links ------------------
+# Arquivos de dados: config.json* (PIN, Client Secret e tokens do Spotify, copias .corrompido-*),
+# listas.json*, programacao*.json* (inclui programacao.visto.json) e os .tmp orfaos da gravacao atomica.
+# Pastas: logs\ (IPs dos aparelhos) e audios_temp\ (audio dos anuncios). A pasta de musicas NUNCA e tocada.
+function Listar-ArquivosDeDados {
+    $lista = @()
+    foreach ($padrao in @('config.json*', 'listas.json*', 'programacao*.json*', '.config.*.tmp', '.listas.*.tmp', '.programacao.*.tmp')) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $Raiz -File -Force -Filter $padrao -ErrorAction SilentlyContinue)) {
+            if (($f.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or $f.DirectoryName -ne $Raiz) { continue }
+            $lista += $f.FullName
+        }
+    }
+    return @($lista | Select-Object -Unique)
+}
+
+function Listar-PastasDeDados {
+    $lista = @()
+    foreach ($nome in @('logs', 'audios_temp')) {
+        $c = Join-Path $Raiz $nome
+        if ((Test-Path -LiteralPath $c -PathType Container) -and -not (Pasta-Eh-Link $c)) { $lista += $c }
+    }
+    return $lista
+}
+
+# Devolve $true se apagou (ou nao havia nada); $false se o usuario cancelou.
+function Apagar-Dados {
+    $arquivos = @(Listar-ArquivosDeDados)
+    $pastas = @(Listar-PastasDeDados)
+    if ($arquivos.Count -eq 0 -and $pastas.Count -eq 0) {
+        Write-Host '    Não há dados do Proclamare para apagar.'
+        return $true
+    }
+    Write-Host '    Serão apagados (somente dentro da pasta do programa):'
+    foreach ($a in $arquivos) { Write-Host "      $a" }
+    foreach ($d in $pastas) { Write-Host "      $d\  (pasta inteira)" }
+    Write-Host '    A pasta de músicas, o Python e o resto do programa NÃO são tocados.'
+    $conf = Read-Host 'Digite APAGAR (em maiúsculas) para confirmar, ou Enter para cancelar'
+    if ($conf.Trim() -cne 'APAGAR') {
+        Write-Host '    Cancelado: nenhum dado foi apagado.'
+        return $false
+    }
+    # Servidor ligado segura os arquivos: desliga antes (pelo .venv, se existir).
+    $pw = Join-Path $Raiz '.venv\Scripts\pythonw.exe'
+    if (Test-Path -LiteralPath $pw) { Desligar-Servidor $pw }
+    $falhou = 0
+    foreach ($a in $arquivos) {
+        try { Remove-Item -LiteralPath $a -Force -ErrorAction Stop; Escrever-Ok "apagado: $a" } catch { $falhou++; Write-Host "    Não consegui apagar: $a" -ForegroundColor Yellow }
+    }
+    foreach ($d in $pastas) {
+        try {
+            # Nunca segue link: apaga o conteudo da pasta (que ja nao e link) e a propria pasta.
+            Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction Stop
+            Escrever-Ok "apagada: $d"
+        } catch { $falhou++; Write-Host "    Não consegui apagar tudo em: $d (arquivo em uso?)" -ForegroundColor Yellow }
+    }
+    if ($falhou -gt 0) {
+        Write-Host '    Alguns itens ficaram: desligue o Proclamare (Menu Iniciar > Desligar Proclamare) e rode a desinstalação de novo.' -ForegroundColor Yellow
+    } else {
+        Write-Host '    Dica: se o segredo do Spotify estava salvo, revogue o app também em https://www.spotify.com/account/apps/ .' -ForegroundColor Gray
+    }
+    return $true
+}
+
+# ---- Tarefa opcional "religar sozinho" (P24): tarefa do PROPRIO usuario, sem privilegios ------------
+# A cada 5 min (e no logon) roda "Proclamare.pyw --vigia", que so religa o servidor se ele CAIU.
+# Nao e servico, nao pede administrador, nao roda como SYSTEM.
+$NomeTarefa = if ($PastaAtalhos) { 'Proclamare - religar sozinho (teste)' } else { 'Proclamare - religar sozinho' }
+$PastaTarefa = '\Proclamare\'
+
+function Tarefa-Existe {
+    try { $null = Get-ScheduledTask -TaskName $NomeTarefa -TaskPath $PastaTarefa -ErrorAction Stop; return $true } catch { return $false }
+}
+
+function Remover-Tarefa {
+    if (-not (Tarefa-Existe)) { return $false }
+    try {
+        Unregister-ScheduledTask -TaskName $NomeTarefa -TaskPath $PastaTarefa -Confirm:$false -ErrorAction Stop
+        Escrever-Ok "tarefa removida: $PastaTarefa$NomeTarefa"
+        return $true
+    } catch {
+        Write-Host "    Não consegui remover a tarefa '$NomeTarefa': $($_.Exception.Message)" -ForegroundColor Yellow
+        return $false
+    }
+}
+
+function Criar-Tarefa([string]$Pythonw) {
+    try {
+        $usuario = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $acao = New-ScheduledTaskAction -Execute $Pythonw -Argument ('-I "' + $Pyw + '" --vigia') -WorkingDirectory $Raiz
+        $gatilho = New-ScheduledTaskTrigger -AtLogOn -User $usuario
+        $gatilho.Repetition = (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)).Repetition
+        $config = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+            -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 3)
+        $principal = New-ScheduledTaskPrincipal -UserId $usuario -LogonType Interactive -RunLevel Limited
+        $desc = 'Religa o Proclamare SE ele cair (nao faz nada se foi desligado de proposito). Tarefa do seu usuario, sem privilegios.'
+        [void](Register-ScheduledTask -TaskName $NomeTarefa -TaskPath $PastaTarefa -Action $acao -Trigger $gatilho `
+            -Settings $config -Principal $principal -Description $desc -Force -ErrorAction Stop)
+        Escrever-Ok "tarefa criada: $PastaTarefa$NomeTarefa (a cada 5 minutos, só religa se o Proclamare caiu)"
+    } catch {
+        Write-Host "    AVISO: não foi possível criar a tarefa 'religar sozinho': $($_.Exception.Message)" -ForegroundColor Yellow
     }
 }
 
@@ -387,6 +511,19 @@ if ($Desinstalar) {
         if (Remover-Atalho $Destinos[$chave]) { $algum = $true }
     }
     if (-not $algum) { Write-Host '    Nenhum atalho encontrado.' }
+    [void](Remover-Tarefa)
+
+    # Dados do usuario (PIN, segredo do Spotify, listas, horarios, logs): so com decisao EXPLICITA.
+    Escrever-Passo 'Dados do Proclamare (config.json, listas, programação, logs)'
+    $querApagarDados = [bool]$ApagarDados
+    if (-not $querApagarDados) {
+        Write-Host '    Eles guardam o PIN, o segredo do Spotify e os IPs dos aparelhos. Mantê-los é o normal (para reinstalar depois);'
+        Write-Host '    apague se este computador vai ser devolvido, vendido ou descartado.'
+        $resp = Read-Host 'Apagar também os DADOS do Proclamare? (S/N, padrão N)'
+        $querApagarDados = $resp -match '^\s*[sSyY]'
+    }
+    $dadosApagados = $false
+    if ($querApagarDados) { $dadosApagados = [bool](Apagar-Dados | Select-Object -Last 1) } else { Write-Host '    Dados mantidos.' }
 
     $venv = Join-Path $Raiz '.venv'
     $venvApagado = $false
@@ -459,7 +596,9 @@ if ($Desinstalar) {
             Write-Host '    Python do Proclamare mantido.'
         }
     }
-    Write-Host "`nProclamare desinstalado. A pasta do programa e o config.json foram mantidos." -ForegroundColor Green
+    $msgFim = if ($dadosApagados) { 'A pasta do programa foi mantida (apague-a à mão, se quiser).' }
+              else { 'A pasta do programa e os seus dados (config.json etc.) foram mantidos.' }
+    Write-Host "`nProclamare desinstalado. $msgFim" -ForegroundColor Green
     if (-not $PastaAtalhos) { [void](Read-Host 'Pressione Enter para fechar') }
     exit 0
 }
@@ -474,10 +613,15 @@ foreach ($pc in $pastasChecar) {
     if ((Test-Path -LiteralPath $pc) -and (Pasta-Gravavel-Por-Todos $pc)) { $pastasPerigo += $pc }
 }
 if ($pastasPerigo.Count -gt 0) {
-    Write-Host ("`nAVISO: estas pastas podem ser alteradas por qualquer usuário deste computador:`n    " +
+    # RECUSA (auditoria P25/B4): atalhos, Inicializacao e a tarefa "religar sozinho" executariam codigo que
+    # QUALQUER usuario do computador pode trocar. Nao ha ajuste automatico seguro da DACL de uma pasta que
+    # o instalador nao criou (poderia quebrar outro programa), entao o caminho e mover a pasta.
+    Falhar ("estas pastas podem ser alteradas por qualquer usuário deste computador:`n    " +
         ($pastasPerigo -join "`n    ") +
-        "`n       Outra pessoa poderia trocar os arquivos do Proclamare. Recomendado: mova a pasta`n" +
-        "       para dentro da sua pasta de usuário (ex.: Documentos) e rode o instalador de novo.") -ForegroundColor Yellow
+        "`n    Outra pessoa poderia trocar os arquivos do Proclamare e eles rodariam com a sua conta.`n" +
+        "    Nada foi instalado. Mova a pasta do programa para dentro do seu perfil (ex.: %LOCALAPPDATA%\Programs\Proclamare`n" +
+        "    ou Documentos) e rode o instalador de novo. Se a pasta tem de ficar onde está, tire a permissão de escrita de`n" +
+        "    'Usuários'/'Todos' (ex.: icacls <pasta> /inheritance:r /grant:r `"%USERNAME%:(OI)(CI)F`" `"SYSTEM:(OI)(CI)F`" `"Administradores:(OI)(CI)F`").")
 }
 
 # ---- 1. Python: procurar o que ja existe e, so se nao houver, baixar -----
@@ -584,12 +728,23 @@ function Testar-Python([string]$Exe) {
         return $null
     }
     if ($partes[2] -ne 'ok') { return $null }
+    # Patch minimo da serie (P31): um 3.12.0 ou 3.10.4 nao tem as correcoes de seguranca.
+    $vp = $partes[1].Split('.')
+    if ($vp.Count -ge 3) {
+        $serie = $vp[0] + '.' + $vp[1]
+        if ($PatchMinimo.ContainsKey($serie) -and ([int]$vp[2] -lt [int]$PatchMinimo[$serie])) {
+            Registrar-Rejeitado 'patch' "Python $($partes[1]) em $caminho (versão antiga; o mínimo aceito da série $serie é $serie.$($PatchMinimo[$serie]))"
+            return $null
+        }
+    }
     return @{ Caminho = $caminho; Versao = $partes[1]; Privado = $false }
 }
 
-# Preferencia entre versoes (a mesma de antes): 3.12, 3.11, 3.13, 3.10.
+# Preferencia entre versoes: 3.12 (e o runtime que o Proclamare baixa e testa), depois 3.13, 3.11 e 3.10.
+# O 3.10 chega ao fim de vida em out/2026 e o 3.11 so recebe correcoes em codigo-fonte: o instalador avisa
+# se escolher um deles.
 function Ordem-Versao([string]$Tag) {
-    $ordem = @('3.12', '3.11', '3.13', '3.10')
+    $ordem = @('3.12', '3.13', '3.11', '3.10')
     for ($i = 0; $i -lt $ordem.Count; $i++) {
         if ($Tag -match ('(^|[^0-9])' + [regex]::Escape($ordem[$i]) + '([^0-9]|$)')) { return $i }
     }
@@ -657,7 +812,7 @@ function Candidatos-Registro {
 function Candidatos-Pastas {
     $lista = @()
     $seq = 0
-    foreach ($m in 12, 11, 13, 10) {
+    foreach ($m in 12, 13, 11, 10) {
         $tag = "3.$m"
         $exes = @()
         if ($env:LOCALAPPDATA) {
@@ -1126,6 +1281,10 @@ function Obter-Python([bool]$PermitirBaixar) {
             Escrever-Ok "Python do Proclamare (baixado antes): $($achado.Caminho) (Python $($achado.Versao)). Não é preciso baixar nada."
         } else {
             Escrever-Ok "Python encontrado: $($achado.Caminho) (Python $($achado.Versao)). Não é preciso baixar nada."
+            if ($achado.Versao -match '^3\.1[01]\.') {
+                Write-Host ("    AVISO: o Python $($achado.Versao) já não recebe correções de segurança em programa pronto`n" +
+                    '    (3.10 chega ao fim de vida em out/2026). Funciona, mas prefira instalar o Python 3.12 ou 3.13.') -ForegroundColor Yellow
+            }
         }
         return $achado
     }
@@ -1134,6 +1293,10 @@ function Obter-Python([bool]$PermitirBaixar) {
             'versao' {
                 Write-Host ("    Encontrei o $($rej.Texto), mas o Proclamare ainda não funciona com ele (precisa do 3.10 a 3.13).`n" +
                     '    Ele será mantido como está; não vou alterá-lo.') -ForegroundColor Yellow
+            }
+            'patch' {
+                Write-Host ("    Encontrei o $($rej.Texto).`n" +
+                    '    Por segurança não vou usá-lo; ele será mantido como está (atualize-o, se quiser).') -ForegroundColor Yellow
             }
             'semvenv' {
                 Write-Host ("    Encontrei o $($rej.Texto), mas ele foi instalado sem o módulo venv/pip, e o Proclamare precisa deles.`n" +
@@ -1184,11 +1347,10 @@ function Python-Base-Do-Venv([string]$VenvDir) {
     return ''
 }
 
-# Procura o pip-audit (comando no PATH ou modulo do Python escolhido). Nao instala nada:
-# so roda se o usuario ja o tiver. Devolve @{ Exe; Args } ou $null.
+# Procura o pip-audit como MODULO do Python de base ja validado (Motivo-Inseguro: dono e pasta conferidos).
+# NUNCA executa um "pip-audit" achado no PATH (um diretorio gravavel por outros poderia ter um falso;
+# auditoria P21). Nao instala nada: so roda se o modulo ja existir. Devolve @{ Exe; Args } ou $null.
 function Achar-PipAudit([string]$PythonBase) {
-    $cmd = Get-Command pip-audit -ErrorAction SilentlyContinue
-    if ($cmd) { return @{ Exe = $cmd.Source; Args = @() } }
     if (-not $PythonBase) { return $null }
     try {
         & $PythonBase -I -m pip_audit --version *> $null
@@ -1202,9 +1364,9 @@ function Achar-PipAudit([string]$PythonBase) {
 function Auditar-Dependencias([string]$PythonBase, [string]$Lock) {
     $audit = Achar-PipAudit $PythonBase
     if (-not $audit) {
-        Write-Host ("    pip-audit não encontrado (opcional): a verificação de vulnerabilidades foi pulada.`n" +
-            "    Para ativá-la, instale-o FORA do ambiente do Proclamare (ex.: py -m pip install --user pip-audit)`n" +
-            "    e rode o instalador de novo.")
+        Write-Host ("    pip-audit não encontrado no Python de base (opcional): a verificação de vulnerabilidades foi pulada.`n" +
+            "    Para ativá-la, instale-o no Python de base, FORA do .venv do Proclamare (ex.: py -m pip install pip-audit),`n" +
+            "    e rode o instalador de novo. (O repositório também audita o requirements.lock a cada mudança.)")
         return
     }
     Escrever-Passo 'Verificando vulnerabilidades conhecidas nas dependências (pip-audit, só aviso)...'
@@ -1244,6 +1406,15 @@ if ($SemDependencias) {
     $py = Obter-Python $false
     $python = $py.Caminho
     Escrever-Passo 'Pulando .venv e pip (-SemDependencias): usando o Python atual.'
+    # O servidor roda com "python -I", que NAO enxerga pacotes instalados com "pip install --user". Confere
+    # com o mesmo modo, para avisar agora e nao deixar o painel falhar ao ligar.
+    $chk = Rodar-Processo $python @('-I', '-c', 'import flask, waitress, requests, edge_tts, pygame, pyttsx3, mutagen, psutil') 60
+    if ($chk.Estourou -or $chk.Codigo -ne 0) {
+        Write-Host ("    AVISO: este Python não tem todos os pacotes do Proclamare visíveis no modo isolado (-I).`n" +
+            "    O Proclamare roda com 'python -I', que IGNORA pacotes instalados com 'pip install --user'.`n" +
+            "    Instale-os no Python em si (sem --user): <python> -m pip install --require-hashes --only-binary :all: --no-deps -r requirements.lock`n" +
+            '    (ou rode o instalador sem -SemDependencias, que cria o .venv).') -ForegroundColor Yellow
+    }
     $pythonw = Join-Path (Split-Path -Parent $python) 'pythonw.exe'
 } else {
     $venvDir = Join-Path $Raiz '.venv'
@@ -1296,7 +1467,8 @@ if ($SemDependencias) {
             '       Vou instalar pelo requirements.txt, SEM verificação de hashes (menos seguro).' +
             "`n       Baixe o projeto completo de novo para ter o requirements.lock.") -ForegroundColor Yellow
         Escrever-Passo 'Instalando as dependências SEM verificação de hashes (precisa de internet)...'
-        $argsPip = @('-I', '-m', 'pip', 'install', '-r', $Requisitos)
+        # requirements.txt tem versoes exatas; --only-binary nunca compila codigo-fonte (sem hash das ferramentas de build).
+        $argsPip = @('-I', '-m', 'pip', 'install', '--only-binary', ':all:', '-r', $Requisitos)
     }
     $ErrorActionPreference = 'Continue'   # avisos do pip no stderr não devem abortar
     & $venvPython @argsPip
@@ -1319,7 +1491,7 @@ if ($SemDependencias) {
         # O pip-audit (opcional) roda no Python de base. Se o .venv ja existia (nenhuma busca foi feita) e o
         # pip-audit nao e um comando, pega o Python de base na propria configuracao do .venv (pyvenv.cfg):
         # sem varrer o computador de novo e sem baixar nada.
-        if (-not $python -and -not (Get-Command pip-audit -ErrorAction SilentlyContinue)) {
+        if (-not $python) {
             $python = Python-Base-Do-Venv $venvDir
         }
         Auditar-Dependencias $python $TravaHashes
@@ -1330,9 +1502,11 @@ if (-not (Test-Path -LiteralPath $pythonw)) { Falhar "Não encontrei o pythonw.e
 
 # ---- 3. Atalhos --------------------------------------------------------
 Escrever-Passo 'Criando os atalhos...'
-$argLigar = '"' + $Pyw + '"'
-$argSilencioso = '"' + $Pyw + '" --silencioso'
-$argParar = '"' + $Pyw + '" --parar'
+# -I (modo isolado) em TODOS os atalhos: o lancador so usa a biblioteca padrao e assim ignora PYTHONPATH,
+# o site do usuario e a pasta atual.
+$argLigar = '-I "' + $Pyw + '"'
+$argSilencioso = '-I "' + $Pyw + '" --silencioso'
+$argParar = '-I "' + $Pyw + '" --parar'
 $argDesinstalar = '-NoProfile -ExecutionPolicy Bypass -File "' + $Script + '" -Desinstalar'
 if ($PastaPython) { $argDesinstalar += ' -PastaPython "' + $PastaPythonPriv + '"' }   # o desinstalador acha o mesmo Python
 $descLigar = 'Liga o Proclamare (anúncios de voz e música da loja) e abre o painel.'
@@ -1365,6 +1539,24 @@ if ($quer) {
     } else {
         Write-Host "`nO Proclamare NÃO iniciará junto com o Windows."
     }
+}
+
+# ---- 5. Religar sozinho se cair (opcional) ----------------------------
+$querVigia = $false
+if ($ReiniciarAutomatico) {
+    $querVigia = $true
+} elseif (-not $NaoReiniciarAutomatico) {
+    Write-Host ''
+    Write-Host 'Se o Proclamare cair (travar, ou o Windows reiniciar de madrugada), ele pode ser religado sozinho'
+    Write-Host '(uma tarefa do SEU usuário, sem administrador, que roda a cada 5 minutos e só age se ele caiu).'
+    $resp = Read-Host 'Religar sozinho se cair? (S/N)'
+    $querVigia = $resp -match '^\s*[sSyY]'
+}
+if ($querVigia) {
+    Escrever-Passo 'Criando a tarefa "religar sozinho"...'
+    Criar-Tarefa $pythonw
+} else {
+    if (Remover-Tarefa) { Write-Host "`nO Proclamare não será mais religado sozinho (tarefa removida)." }
 }
 
 if ($py -and $py.Privado) {

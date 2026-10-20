@@ -253,7 +253,7 @@ class TesteLeituraECriacao(Base):
 class TesteValidacaoDeCriar(Base):
     def test_nome_invalido(self) -> None:
         casos = [None, 5, True, [], {}, "", "   ", "x" * 41, "Linha\ndois", "Tab\taqui", "nulo\x00",
-                 "bidi‮abc", "ocul​to", "privado", "sub\ud800rogado"]
+                 "bidi\u202eabc", "ocul\u200bto", "privado", "sub\ud800rogado"]
         for nome in casos:
             with self.subTest(nome=repr(nome)[:30]):
                 r = self.c.post("/api/listas", json={"nome": nome})
@@ -264,7 +264,7 @@ class TesteValidacaoDeCriar(Base):
 
     def test_nome_no_limite_e_com_emoji(self) -> None:
         self.assertEqual(self.criar("x" * 40).status_code, 201)
-        self.assertEqual(self.criar("Natal 🎄👨‍👩‍👧").status_code, 201)   # ZWJ (emoji composto) é aceito
+        self.assertEqual(self.criar("Natal 🎄👨\u200d👩\u200d👧").status_code, 201)   # ZWJ (emoji composto) é aceito
 
     def test_chave_desconhecida(self) -> None:
         for corpo in ({"nome": "A", "x": 1}, {"nome": "A", "musicas": [], "versao": 1}, {"nome": "A", "id": "abcd1234"}):

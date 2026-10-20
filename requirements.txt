@@ -1,11 +1,17 @@
-Flask>=3.1
-Werkzeug>=3.1.9
-requests>=2.32.4
-edge-tts>=6.1.9
-pyttsx3>=2.90
-pygame>=2.5.0
-pywin32; platform_system == "Windows"
-waitress>=3.0.1
+# Versoes EXATAS (as mesmas do requirements.lock, que traz os hashes). No Windows o instalador usa o lock;
+# este arquivo serve para Linux/macOS e para o modo -PermitirSemHashes do instalador, e por isso
+# nao pode ter faixas abertas (>=): a instalacao seria diferente a cada dia.
+# Mudou uma linha? Regenere o requirements.lock na mesma tarefa:
+#   pip-compile --generate-hashes --allow-unsafe --strip-extras requirements.txt
+# Instalar sempre com: pip install --only-binary :all: -r requirements.txt
+Flask==3.1.3
+Werkzeug==3.1.9
+requests==2.34.2
+edge-tts==7.3.1
+pyttsx3==2.99
+pygame==2.6.1
+pywin32==312; platform_system == "Windows"
+waitress==3.0.2
 # Diagnostico de som (tools/diagnostico_som.py) e base da F1 (saidas de som)
 pycaw==20260927; platform_system == "Windows"
 psutil==7.2.2

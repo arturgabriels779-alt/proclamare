@@ -174,7 +174,7 @@ class TesteSalvar(Base):
         self.assertEqual(r.get_json()["mensagens"][0]["id"], "fab-1")
 
     def test_strip_crlf_e_emoji_composto(self) -> None:
-        zwj = "\U0001F468‍\U0001F469"
+        zwj = "\U0001F468\u200d\U0001F469"
         r = self.salvar([msg("  Nome  ", "  linha 1\r\nlinha 2\n\nlinha 4 " + zwj + "  ")])
         self.assertEqual(r.status_code, 200)
         m = r.get_json()["mensagens"][0]
@@ -272,9 +272,9 @@ class TesteLimitesEEsquema(Base):
 
     def test_caracteres_de_controle_recusados(self) -> None:
         ruins = ["a\x00b", "a\x07b", "a\tb", "a\rb", "a\x1bb", "a\x7fb", "a\x85b",
-                 "a‮b",          # inverte a direção do texto
-                 "a​b",          # espaço de largura zero
-                 "a﻿b", "a⁦b", "a\ud800b", "ab"]
+                 "a\u202eb",          # inverte a direção do texto
+                 "a\u200bb",          # espaço de largura zero
+                 "a\ufeffb", "a\u2066b", "a\ud800b", "ab"]
         for ruim in ruins:
             with self.subTest(texto=ascii(ruim)):
                 self.erro(self.salvar([msg(texto=ruim)], versao=0), "texto", 0)

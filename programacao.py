@@ -90,6 +90,7 @@ _CATEGORIAS_RECUSADAS = frozenset({"Cc", "Cf", "Cs", "Co"})
 _FORMATO_OK = frozenset({chr(0x200C), chr(0x200D)})
 
 CHAVES_DOC = frozenset({"versao", "itens"})
+CHAVES_SO_SERVIDOR = frozenset({"origem", "criado_por", "alterado_em"})   # gravadas só pelo servidor (nunca vêm do cliente)
 CHAVES_ITEM = frozenset({"id", "ativo", "tipo", "alvo", "nome", "hora", "dias", "data", "embaralhar",
                          "voz", "motor", "velocidade"})
 
@@ -223,6 +224,24 @@ def validar_texto(valor: Any, maximo: int, *, multilinha: bool) -> tuple[str | N
         if unicodedata.category(ch) in _CATEGORIAS_RECUSADAS:
             return None, "caractere"
     return texto, None
+
+
+def limpar_exibicao(valor: str) -> str:
+    """
+    Limpeza (sem recusar) de um texto de EXIBIÇÃO que vem de fora, como o título de uma música do YouTube ou o nome
+    de uma playlist do Spotify: a MESMA regra de categorias de `validar_texto` - controle (Cc), formato (Cf, menos
+    ZWJ/ZWNJ), substituto (Cs) e uso privado (Co) saem; espaços Unicode (Zs/Zl/Zp) e tab/quebra de linha viram um
+    espaço comum (um título com espaço largo não pode perder a separação entre palavras); ZWJ/ZWNJ ficam (emoji
+    e escrita indiana dependem deles). Não corta o tamanho nem faz strip: quem chama decide.
+    """
+    saida = []
+    for ch in valor:
+        cat = unicodedata.category(ch)
+        if cat in ("Zs", "Zl", "Zp") or ch in ("\t", "\n", "\r"):
+            saida.append(" ")
+        elif ch in _FORMATO_OK or cat not in _CATEGORIAS_RECUSADAS:
+            saida.append(ch)
+    return "".join(saida)
 
 
 def texto_limpo(valor: Any, maximo: int, *, multilinha: bool) -> str | None:
@@ -401,14 +420,86 @@ def sanear_documento(bruto: Any) -> dict:
         if not isinstance(b, dict) or not isinstance(b.get("id"), str):
             continue
         try:
-            item = _validar_item({k: v for k, v in b.items() if k != "origem"}, 0, {b["id"]: {}},
+            item = _validar_item({k: v for k, v in b.items() if k not in CHAVES_SO_SERVIDOR}, 0, {b["id"]: {}},
                                  date.min, vistos)
         except ErroValidacao:
             continue
-        if b.get("origem") in ORIGENS_ITEM:   # quem criou/alterou por último (o servidor define; o cliente não manda)
+        if b.get("origem") in ORIGENS_ITEM:   # quem alterou o CONTEÚDO por último (o servidor define; o cliente não manda)
             item["origem"] = b["origem"]
+        # v2.7.1 (P04): quem criou (imutável; item antigo sem o campo herda a origem que tinha) e quando o
+        # conteúdo mudou pela última vez (epoch). Também só o servidor grava.
+        criado = b.get("criado_por") if b.get("criado_por") in ORIGENS_ITEM else item.get("origem")
+        if criado is not None:
+            item["criado_por"] = criado
+        em = b.get("alterado_em")
+        if _inteiro_puro(em) and 0 <= em <= 2**40:
+            item["alterado_em"] = em
         doc["itens"].append(item)
     return doc
+
+
+COPIAS_CORROMPIDAS_MAX = 3   # cópias "<arquivo>.corrompido-*" guardadas por arquivo (as mais novas)
+TMP_ORFAO_IDADE_S = 3600.0   # temporário de gravação atômica abandonado há mais que isto é apagado na partida
+
+
+def salvar_copia_protegida(caminho: Path, dados: bytes, restringir: Callable[[Path], None]) -> Path:
+    """
+    Guarda `dados` em "<caminho.name>.corrompido-<AAAAMMDD-HHMMSS>[-n]" ao lado do original. O arquivo é criado
+    VAZIO e exclusivo, recebe a permissão restrita (chmod + DACL do Windows) e SÓ ENTÃO recebe os dados:
+    nunca existe uma cópia com segredo e a ACL herdada da pasta (P46). Depois poda para as mais novas.
+    """
+    hora = time.strftime("%Y%m%d-%H%M%S")
+    n = 0
+    while True:
+        destino = caminho.with_name(f"{caminho.name}.corrompido-{hora}" + (f"-{n}" if n else ""))
+        try:
+            with open(destino, "xb"):
+                break
+        except FileExistsError:
+            n += 1
+    with contextlib.suppress(OSError):
+        os.chmod(destino, 0o600)
+    restringir(destino)
+    destino.write_bytes(dados)
+    podar_copias(caminho)
+    return destino
+
+
+def podar_copias(caminho: Path, maximo: int = COPIAS_CORROMPIDAS_MAX) -> int:
+    """Apaga as cópias "<arquivo>.corrompido-*" mais antigas, deixando só as `maximo` mais novas."""
+    try:
+        copias = sorted(caminho.parent.glob(caminho.name + ".corrompido-*"),
+                        key=lambda f: (f.stat().st_mtime, f.name), reverse=True)
+    except OSError:
+        return 0
+    apagadas = 0
+    for velha in copias[maximo:]:
+        with contextlib.suppress(OSError):
+            velha.unlink()
+            apagadas += 1
+    return apagadas
+
+
+def limpar_temporarios_orfaos(pasta: Path, prefixos: tuple[str, ...], idade_s: float = TMP_ORFAO_IDADE_S) -> int:
+    """
+    Apaga "<prefixo>*.tmp" com mais de `idade_s` na pasta: sobras de uma gravação atômica interrompida
+    (PC desligado entre o mkstemp e o os.replace), que guardam a configuração inteira, segredos incluídos.
+    """
+    agora = time.time()
+    apagados = 0
+    for prefixo in prefixos:
+        try:
+            achados = list(pasta.glob(prefixo + "*.tmp"))
+        except OSError:
+            continue
+        for arq in achados:
+            try:
+                if arq.is_file() and agora - arq.stat().st_mtime > idade_s:
+                    arq.unlink()
+                    apagados += 1
+            except OSError:
+                continue
+    return apagados
 
 
 # --- armazém de arquivo único -------------------------------------------------------------------
@@ -478,16 +569,7 @@ class ArquivoJson:
                     return   # íntegro
             except (ValueError, RecursionError):
                 pass
-            hora = time.strftime("%Y%m%d-%H%M%S")
-            destino = caminho.with_name(f"{caminho.name}.corrompido-{hora}")
-            n = 1
-            while destino.exists():
-                destino = caminho.with_name(f"{caminho.name}.corrompido-{hora}-{n}")
-                n += 1
-            destino.write_bytes(dados)
-            with contextlib.suppress(OSError):
-                os.chmod(destino, 0o600)
-            self._restringir(destino)
+            destino = salvar_copia_protegida(caminho, dados, self._restringir)
             self._copiados.add(chave)
             log.error("%s corrompido: cópia guardada em %s.", self._rotulo, destino.name)
         except OSError as exc:
@@ -791,6 +873,37 @@ class Programacao:
                 log.warning("Não foi possível gravar o último instante visto.", exc_info=True)
         return len(enfileirados)
 
+    def cancelar_fila(self, filtro: Callable[[dict], bool], motivo: str = "removido",
+                      texto: str = "O horário foi removido ou desativado antes de tocar.") -> int:
+        """
+        Tira da fila (itens que já venceram e esperam a vez) os pedidos AGENDADOS para os quais
+        `filtro(item)` é verdadeiro, registrando "não tocou" no histórico. NUNCA mexe no "Tocar agora"
+        (manual: roda numa thread própria, fora da fila) nem no que já está tocando. Devolve quantos
+        saíram. Chamado ao regravar a programação e ao revogar o acesso.
+        """
+        saiu: list[_Pedido] = []
+        with self._lock:
+            restantes: deque[_Pedido] = deque()
+            for pedido in self._fila:
+                cancela = pedido.ctx.origem == "agendado" and filtro(pedido.item)
+                (saiu if cancela else restantes).append(pedido)
+            self._fila = restantes
+        for pedido in saiu:
+            self._registrar(pedido.item, pedido.ctx.origem, "nao_tocou", motivo=motivo, texto=texto)
+        return len(saiu)
+
+    def _item_atual(self, item: dict) -> dict | None:
+        """O item de `item["id"]` como está AGORA na programação (ativo), ou None se foi apagado/desativado."""
+        try:
+            for atual in self._itens():
+                if atual.get("id") == item.get("id"):
+                    return atual if atual.get("ativo") else None
+        except Exception:   # noqa: BLE001 - se não der para reler, vale o que foi enfileirado
+            log.warning("Não foi possível reler a programação antes de tocar; vale o item enfileirado.",
+                        exc_info=True)
+            return item
+        return None
+
     def _estender_prazo(self, pedido: _Pedido) -> None:
         """
         Quem esperou na fila porque o item anterior ainda tocava ganha `espera_s` (para esperar um
@@ -869,6 +982,13 @@ class Programacao:
         try:
             if ctx.origem == "agendado" and self._mono() > ctx.prazo_mono:
                 raise NaoTocou("atrasado", "O horário passou enquanto outro item ainda tocava.")
+            if ctx.origem == "agendado":
+                # v2.7.1 (P13): o pedido guarda uma cópia do item de quando venceu. Reler pelo id antes de
+                # tocar: item apagado ou desativado nesse meio-tempo não toca, e uma edição vale.
+                atual = self._item_atual(item)
+                if atual is None:
+                    raise NaoTocou("removido", "O horário foi removido ou desativado antes de tocar.")
+                item = pedido.item = dict(atual)
             extra = self._executar(item, ctx) or {}
         except NaoTocou as e:
             status, motivo, texto = e.status, e.motivo, e.texto

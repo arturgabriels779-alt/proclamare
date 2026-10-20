@@ -1,0 +1,37 @@
+# Atualizacoes semanais de dependencias e de acoes do GitHub.
+# ATENCAO (pip): o Dependabot altera requirements.txt, mas o requirements.lock (com hashes) e o que o
+# instalador usa. Um PR de pip so deve ser aceito junto com a regeneracao do lock:
+#   pip-compile --generate-hashes --allow-unsafe --strip-extras requirements.txt
+# O waitress esta travado em 3.0.2 (waitress_limites.py usa API interna): por isso as versoes novas dele
+# sao ignoradas aqui; atualize-o a mao, depois de rodar os testes.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "waitress"
+    labels:
+      - "dependencias"
+
+  # Ferramentas do CI (pip-audit, bandit): .github/requirements-ci.txt (com hashes).
+  - package-ecosystem: "pip"
+    directory: "/.github"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencias"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencias"

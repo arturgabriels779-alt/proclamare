@@ -1016,7 +1016,8 @@ class TesteRotasEsquema(BaseProg):
         self.assertEqual((r.status_code, r.get_json()["indice"]), (400, 0))
 
     def test_limite_de_100_itens(self) -> None:
-        cem = [self.corpo_anuncio(hora=f"{i // 60:02d}:{i % 60:02d}", alvo="a") for i in range(100)]
+        # (metade na segunda, metade na terça: o teto de interrupções por dia é 72, o de itens é 100)
+        cem = [self.corpo_anuncio(hora=f"{i // 60:02d}:{i % 60:02d}", alvo="a", dias=[1 + i % 2]) for i in range(100)]
         self.assertEqual(self.salvar_itens(cem).status_code, 200)
         r = self.salvar_itens(cem + [self.corpo_anuncio()])
         self.assertEqual((r.status_code, r.get_json()["campo"]), (400, "itens"))

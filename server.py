@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -31,6 +31,233 @@ da loja. Serve a interface (static/) e cuida de três coisas:
                                computadores também consigam controlá-la.
                                A aba tocadora recebe os comandos por
                                long-poll (latência quase instantânea).
+
+Inventário de rotas (v2.7.1)
+----------------------------
+  Uma linha por rota e método: acesso | limite por IP | corpo. Acesso: "publica" = sem sessão; "pin" = PC da loja OU
+  aparelho com sessão (PIN); "local" = SÓ o PC da loja (403 para qualquer aparelho remoto, mesmo com PIN). Toda rota
+  nova nasce "pin" (before_request); só /api/status e /api/auth/* (e o callback do OAuth) são públicas. O teste
+  tests/test_higiene.py compara esta tabela com app.url_map: rota sem linha aqui (ou linha sem rota) quebra a suíte.
+  GET  /                                   publica | - | -
+  GET  /static/<path:filename>             publica | - | -
+  GET  /api/status                         publica | - | -
+  GET  /api/auth/status                    publica | - | - (campos de ataque/segurança só para o PC local)
+  POST /api/auth/login                     publica | 5 erros/5 min por IP (dobra até 24 h), 20 por /24, 300/dia no total; 10 acertos/min; local 30/5 min | {"pin"}
+  POST /api/auth/logout                    publica | - | {}
+  POST /api/auth/pin                       local | - | {"pin": str|null, + opções de revisão}
+  POST /api/auth/revogar                   local | - | {opções de revisão}
+  POST /api/auth/liberar                   local | - | {}
+  POST /api/auth/alertas/visto             local | - | {}
+  GET  /api/seguranca/remotos              local | - | -
+  POST /api/seguranca/remotos/aprovar      local | - | {"tipo","id"} | {"todos":true}
+  POST /api/sistema/desligar               local | - | {}
+  POST /api/announce                       pin | 10/min por IP remoto | {"text","engine"?,"voice"?,"speed"?,"offline_voice_id"?}
+  GET  /api/voices                         pin | - | -
+  GET  /api/youtube/state                  pin | - | -
+  POST /api/youtube/state                  pin | 60/10 s | heartbeat da aba Tocador (chaves conhecidas; outra = 400)
+  GET  /api/youtube/commands               pin | 4 long-polls simultâneos | -
+  POST /api/youtube/command                pin | 30/10 s (seek 10/4 s) | {"action","params"?}
+  POST /api/youtube/queue                  pin | adições 20/10 s | {"op", ... conforme a op}
+  GET  /api/musicas                        pin | - | -
+  GET  /api/musicas/<music_id>/audio       pin | - | -
+  GET  /api/musicas/<music_id>/capa        pin | 600/min | -
+  POST /api/musicas/enviar                 pin | 12/min, 1 envio por vez | multipart (até 100 MB só local/sessão)
+  POST /api/musicas/remover                local | - | {"id"}
+  POST /api/musicas/abrir-pasta            local | - | {}
+  POST /api/musicas/atualizar              pin | 6/min | {"aguardar"?}
+  GET  /api/mensagens                      pin | - | -
+  POST /api/mensagens                      pin | 20/min | {"versao","mensagens"} (60 KB)
+  POST /api/mensagens/restaurar            pin | 20/min | {"versao"}
+  GET  /api/listas                         pin | - | -
+  POST /api/listas                         pin | 20/min | {"nome","itens"?|"musicas"?} (60 KB)
+  POST /api/listas/da-fila                 pin | 20/min | {"nome","incluir_atual"?}
+  GET  /api/listas/<lista_id>              pin | busca de títulos 60/min | -
+  POST /api/listas/<lista_id>              pin | 20/min | {"versao","nome"?,"itens"?|"musicas"?} (60 KB)
+  POST /api/listas/<lista_id>/apagar       pin | 20/min | {"versao"}
+  POST /api/listas/<lista_id>/tocar        pin | 6/10 s | {"embaralhar"?}
+  GET  /api/programacao                    pin | - | -
+  POST /api/programacao                    pin | 20/min | {"versao","itens"} (60 KB)
+  POST /api/programacao/<item_id>/testar   pin | 6/min | {}
+  POST /api/programacao/parar              pin | 20/min | {}
+  GET  /api/som/estado                     pin | - | -
+  GET  /api/som/saidas                     pin | - | -
+  POST /api/som/descobrir                  pin | 6/min | {"tipos"?}
+  POST /api/som/saida                      pin | 30/min (campos do PC = local) | {"sid", ...}
+  POST /api/som/testar                     pin | 3/min (10/10 min no total) | {"sid","abaixar_musica"?}
+  POST /api/som/preferencias               pin | 30/min | merge parcial
+  GET  /api/spotify/config                 pin | - | -
+  POST /api/spotify/config                 local | - | {"client_id"?,"client_secret"?}
+  POST /api/spotify/desconectar            local | - | {"apagar_credenciais"?}
+  GET  /api/spotify/status                 pin | - | -
+  GET  /api/spotify/devices                pin | - | -
+  GET  /api/spotify/search                 pin | - | ?q=
+  GET  /api/spotify/now-playing            pin | - | -
+  POST /api/spotify/activate               pin | 20/10 s | {"device_id"}
+  POST /api/spotify/play                   pin | 20/10 s | {"uri"|"context_uri"}
+  POST /api/spotify/pause                  pin | 20/10 s | {}
+  POST /api/spotify/next                   pin | 20/10 s | {}
+  POST /api/spotify/previous               pin | 20/10 s | {}
+  POST /api/spotify/volume                 pin | 20/10 s | {"value"}
+  GET  /api/spotify/atalhos                pin | - | -
+  POST /api/spotify/atalhos                pin | 20/min | {"nome","link"}
+  POST /api/spotify/atalhos/<atalho_id>    pin | 20/min | {"versao","nome"?,"link"?}
+  POST /api/spotify/atalhos/<atalho_id>/apagar  pin | 20/min | {"versao"}
+  POST /api/spotify/atalhos/<atalho_id>/tocar   pin | 6/10 s | {}
+  GET  /api/spotify/atual-contexto         pin | 20/10 s | -
+  GET  /spotify/login                      pin | 5/min | - (redireciona; nunca devolve texto)
+  GET  /spotify/callback                   publica | - | ?code=&state= (state de uso único)
+
+Contrato v2.7.1 (correções da auditoria de segurança)
+-----------------------------------------------------
+  Só ACRESCENTA campos e rotas e endurece defesas; um corpo com chave que o painel nunca mandou agora é 400.
+  Nada de texto, nome, título, link ou id vai para o log ou para a auditoria (só contagens e tokens curtos).
+  A) Transporte (waitress; criar_servidor_waitress() é a MESMA função do main() e dos testes de integração)
+  * P01: clear_untrusted_proxy_headers=False. Antes o waitress apagava X-Forwarded-For/Host/Proto e Forwarded
+    antes do Flask e a regra "cabeçalho de proxy tira o status de local" não funcionava (um X-Forwarded-For
+    bastava para virar "PC da loja"). Sem trusted_proxy nenhum deles é interpretado; remote_addr é o do socket.
+    CABECALHOS_DE_PROXY = Via, Forwarded, X-Forwarded-For/Host/Server/Proto/Port/By, X-Real-IP, CF-Connecting-IP,
+    True-Client-IP, Tailscale-User-Login. O filtro de corpo do waitress usa a MESMA lista.
+  * P03: channel_timeout 60 s (o long-poll é de 25 s e conta como requisição em andamento; um envio lento de
+    músicas só é cortado se ficar 60 s SEM chegar nenhum byte), connection_limit 400 (< 512 do select no Windows),
+    no máximo 64 conexões simultâneas por IP remoto e 300 no total dos remotos; o loopback é isento e sempre
+    sobra lugar para ele. A conexão que passa do teto é fechada antes de ler qualquer byte. Vale sempre (mesmo
+    com PROCLAMARE_MUSICAS_ENVIO=0). Um aviso por minuto no log, sem IP, com os tetos (por aparelho, total dos
+    remotos, geral).
+  * P06: PROCLAMARE_CONFIAR_LOOPBACK passa a ter 3 modos: "1" (loopback sempre é o PC da loja), "0" (ninguém é) e
+    "auto" (padrão): igual a "1" enquanto não houver encaminhamento de rede para a porta. A vigia "vigia-tunel"
+    (na partida e a cada 60 s; só leitura) procura: entrada do `netsh interface portproxy` (registro) cujo destino é
+    esta porta; processos cloudflared, ngrok, frpc, bore, chisel, socat, lt/localtunnel com a porta na linha de
+    comando (a porta casa por limite de dígitos: 8502 sim, 18502 não); ssh/plink com -R/-L/-D, juntos (-fNR, -NL) ou
+    como opção (-oRemoteForward=) e a porta. Só o NOME do processo é lido de todos; a linha de comando só dos
+    suspeitos. Achou ("fortes") = no modo auto o loopback deixa de valer (todos precisam de PIN), COM OU SEM PIN
+    configurado (sem PIN, manter a confiança seria fail-open: quem entra pelo túnel teria acesso total), e o log
+    avisa UMA vez. Para o dono não ficar trancado: GET /api/auth/status (PÚBLICO) ganha "loopback_suspenso" (bool;
+    só o booleano, nunca nome de processo) = endereço e Host de loopback, mas tratado como remoto por causa do
+    túnel (junto de "pin_configurado", que já existia); e o 403 "pin_nao_configurado" desse estado ganha
+    "codigo": "loopback_suspenso" e a mensagem MSG_LOOPBACK_SUSPENSO (fechar o encaminhamento, `python server.py
+    --definir-pin`, ou PROCLAMARE_CONFIAR_LOOPBACK=1). A vigia
+    DETECTA ALGUNS casos (portproxy, túneis conhecidos); não é garantia, por isso =0 continua sendo o seguro; processo de túnel sem a porta ("fracos") é só aviso no painel. Linha de
+    comando de processo nunca é logada nem guardada. Tailscale serve e túneis que o detector não vê continuam
+    exigindo PROCLAMARE_CONFIAR_LOOPBACK=0. Qualquer outra conta ou programa do PC continua sendo "o PC da loja"
+    (risco aceito: o loopback é compartilhado por todas as sessões do Windows). O login "local" tem limite folgado
+    (30 tentativas/5 min, 429).
+  * P07 (revisto na rodada 4): três camadas, nenhuma derruba sessões abertas nem o PC da loja. (1) POR IP: 5 PINs
+    errados -> bloqueio de 5 min que DOBRA a cada bloqueio seguido (10, 20 min ... até 24 h) e só desce um nível a
+    cada 24 h sem bloqueio; o nível é gravado no config.json (seguranca.niveis, até 200 IPs) e volta depois de
+    reiniciar. (2) POR FAIXA /24 (IPv4, também para ::ffff:a.b.c.d; /64 no IPv6): 20 erros em 10 min somando os IPs
+    da faixa -> bloqueio FIXO de 10 min, SEM escalada (uma faixa é a Wi-Fi inteira); IPs que já entraram com o PIN
+    certo nos últimos 90 dias (seguranca.ips) ficam FORA da faixa (não contam e não são barrados por ela; seguem só o
+    limite por IP). 429 da faixa: "codigo": "bloqueio_rede", "Muitas tentativas vindas desta rede". (3) TETO GERAL
+    DIÁRIO: 300 erros em 24 h no total -> o login pela rede TRAVA até o dono liberar no PC da loja (429 com
+    "travado": true); na partida a contagem e a trava são refeitas a partir de seguranca.falhas (reiniciar não
+    devolve 300 tentativas; seguranca.liberado_em impede que erros anteriores a uma liberação religuem a trava).
+    Logins CERTOS: no máximo 10/min por IP (429). POST /api/auth/liberar {"zerar_escalada"?: bool} (só local; {}
+    continua válido) tira os bloqueios ativos e o trava SEM derrubar sessões nem trocar o PIN; mantém o nível de
+    escalada por IP, a menos que {"zerar_escalada": true}. Trocar o PIN ou revogar as sessões zera tudo, inclusive
+    os níveis no disco. No estado "loopback_suspenso" o 429 de login para 127.0.0.1 repete o aviso do túnel
+    ("codigo": "loopback_suspenso" + MSG_LOOPBACK_SUSPENSO). O IP nunca vai para o log comum (só para a auditoria).
+    Os PINs errados são gravados no config.json em LOTE (no máximo 1 gravação a cada 30 s e ao desligar; o painel
+    conta também os pendentes em memória).
+  B) Alertas de PIN e logins novos (P12) - GET /api/auth/status, só para o PC local, ganha
+    "seguranca": {"alerta": bool, "falhas_24h": int, "falhas_novas": int, "bloqueio_global_s": int,
+    "logins_novos": [{"em": ISO com fuso, "ip"}], "ultimos_logins": [{"em","ip","novo": bool}] (até 10, o mais novo
+    primeiro), "visto_em": ISO|null, "tuneis": {"fortes": [nome], "fracos": [nome], "confianca_loopback": bool,
+    "modo": "0"|"1"|"auto"}, "login_travado": bool, "bloqueios_ativos": int (IPs/redes bloqueados agora),
+    "pendentes": {horarios,listas,atalhos,mensagens,musicas,som,criados_pela_rede,mudados_pela_rede,total},
+    "pendentes_remotos": int (= pendentes.total)}. Os contadores ficam no config.json (chave "seguranca": falhas
+    das últimas 24 h, últimos 20 logins, IPs conhecidos por 90 dias, "visto_ate" e "novos" = logins de IP novo ainda
+    não vistos, à parte, até 100: 20 logins comuns não apagam o alerta; login certo de IP já conhecido há menos de
+    1 h não regrava o arquivo) e SOBREVIVEM a reinício. "bloqueio_global_s" agora é 86400 só quando travado (0 senão).
+    "alerta" liga com 5+ PINs errados desde o último "visto", login travado ou algum IP/rede bloqueado, login de IP
+    nunca visto ainda não visto, ou encaminhamento de rede detectado. POST /api/auth/alertas/visto {} (só local) marca como visto.
+    falhas_recentes e bloqueio_global_s (v2.2) continuam, agora persistidos.
+  C) O que aparelhos remotos deixaram (P04)
+  * Carimbos gravados SÓ pelo servidor: horários (programacao.json) "origem" (quem alterou o CONTEÚDO por último;
+    ligar/desligar pelo PC não conta, ligar/desligar por um remoto conta), "criado_por" (imutável) e "alterado_em"
+    (epoch); listas e atalhos do Spotify (listas.json) e mensagens prontas (config.json) "criado_por",
+    "alterado_por" e "alterado_em". Registro anterior à v2.7.1 vale "local" (não há como saber). O cliente não pode mandar
+    nenhum (400 nos horários; nas listas/atalhos/mensagens a chave é desconhecida). Os GETs continuam iguais, salvo
+    os horários, que ganham "criado_por" e "alterado_em".
+  * "Pendente" = último autor remoto: horário com origem "remoto" OU que toca uma lista/playlist do Spotify cujo
+    último autor foi remoto ("motivo": "item" | "alvo"); lista, atalho e mensagem com alterado_por "remoto".
+  * GET /api/seguranca/remotos (só local) -> {ok, pendentes:{horarios,listas,atalhos,mensagens,musicas,som,
+    criados_pela_rede,mudados_pela_rede,total}, horarios:[{id,rotulo,tipo,hora,dias,data,ativo,motivo,alvo_nome,
+    criado_por,alterado_por,alterado_em}], listas:[{id,nome,total,criado_por,alterado_por,alterado_em}],
+    atalhos:[{id,nome,criado_por,...}], mensagens:[{id,titulo,criado_por,...}], musicas:[{id,titulo,enviada_em,
+    criado_por}], som:{pendente,alterado_em}} (o texto das mensagens e dos anúncios não vem aqui). "criados_pela_rede"
+    = o item NASCEU num aparelho remoto; "mudados_pela_rede" = é do dono mas um remoto mexeu no conteúdo (ou o horário
+    do dono toca uma lista/playlist alterada por remoto, motivo "alvo"). "alvo_nome" = nome da lista/playlist que o
+    horário toca (null nos outros tipos), o mesmo campo do GET /api/programacao. Músicas enviadas por remoto
+    (config.json "musicas_origem": só id e epoch) e mudanças de preferências de som por remoto
+    ("som_alterado_por") entram na revisão, mas NUNCA são apagadas pela rotina.
+  * POST /api/seguranca/remotos/aprovar (só local) {"tipo":"horario|lista|atalho|mensagem|musica|som","id"} (som:
+    id "preferencias") ou {"todos":true} -> {ok, aprovados, pendentes}: o dono assume o item (último autor vira
+    "local"; criado_por não muda). Aprovar um horário com motivo "alvo" aprova a lista/playlist dele (aprovados >= 1).
+    404 se o item não está pendente.
+  * Rodada 4 - revisão: "pendentes" ganha "apagaveis_pela_rede" (quantas listas+atalhos+mensagens o remover_remotos
+    realmente APAGA: criados por remoto E ainda com último autor remoto; horários criados pela rede são só desativados e
+    músicas nunca são apagadas) e "removidos_pela_rede" (só números, informativo, fora do "total": quantos itens um
+    aparelho REMOTO apagou - horários, listas, atalhos, mensagens -, por tipo em GET /api/seguranca/remotos
+    "removidos"; zera em aprovar {"tipo":"removidos","id":"todos"} ou {"todos":true}). A EDIÇÃO DO DONO APROVA
+    IMPLICITAMENTE: quem mexe no conteúdo no PC da loja passa a ser o último autor e o item sai da lista de pendentes
+    e do remover_remotos (criado_por continua "remoto"). Saídas de som aprovadas por aparelho remoto
+    (som.saidas[sid].aprovada_por == "remoto") entram no tipo "som" (pendentes.som = preferências + saídas;
+    inventário "som": {pendente, alterado_em, saidas}); aprovar {"tipo":"som","id":"preferencias"} assume também as
+    saídas (aprovada_por vira "local").
+  * Rodada 4 - vigia de túneis: processo suspeito cuja linha de comando não pôde ser lida (acesso negado) conta como
+    "fraco" (aviso); os nomes casam por PREFIXO (cloudflared*, ngrok*, frpc*, frps*, chisel*, bore*, devtunnel*, zrok*)
+    ou exato (socat, ncat, lt, localtunnel, ssh, plink). A vigia olha na partida e a cada 60 s: um encaminhamento
+    novo pode levar até 60 s para suspender a confiança no loopback (e, ao ser fechado, até 60 s para voltar).
+    MSG_LOOPBACK_SUSPENSO: (1) feche o encaminhamento; (2) para definir PIN desligue o Proclamare, rode
+    .venv\\Scripts\\python.exe server.py --definir-pin e ligue de novo; (3) PROCLAMARE_CONFIAR_LOOPBACK=1 só com o
+    alerta de que quem entrar pelo encaminhamento terá acesso total sem PIN.
+  * Os carimbos só mudam quando o CONTEÚDO muda: salvar uma lista/atalho/mensagem igual não marca ninguém. O teto
+    de PROG_REMOTO_LISTAS_DIA_MAX (10 por dia) também conta horários ativos que tocam lista/playlist ALTERADA por
+    remoto, e um remoto que edita o conteúdo de uma lista/playlist agendada pode estourá-lo (400 "limite_diario").
+  * Corrida conhecida: uma requisição remota que já estava em andamento quando o PIN mudou ou as sessões foram
+    revogadas pode terminar de gravar DEPOIS da revisão (janela de milissegundos). O que ela deixar aparece como
+    pendente em GET /api/seguranca/remotos; a revisão pode ser repetida.
+  * POST /api/auth/pin e POST /api/auth/revogar aceitam, além do que já tinham, as OPÇÕES DE REVISÃO (todas bool;
+    chave desconhecida ou não-bool = 400, antes de gravar qualquer coisa): "desativar_remotos" (padrão TRUE:
+    horários pendentes ficam inativos, saem da fila de execução e, se um está tocando, é interrompido),
+    "remover_remotos" (padrão false: apaga SÓ mensagens, listas e atalhos CRIADOS por remoto, criado_por
+    "remoto"; o que é do dono e foi só alterado por remoto fica pendente; mensagens: se não sobrar nenhuma volta à fábrica), "restaurar_mensagens" (padrão false: todas as mensagens voltam à fábrica),
+    "limpar_fila" (padrão false: esvazia a fila do Tocador). A resposta ganha "revisao": {horarios_desativados,
+    horarios_cancelados, parou_item, fila_limpa, mensagens_removidas, listas_removidas, atalhos_removidos,
+    mensagens_restauradas, itens_removidos} (ou {"falhou": true} se a revisão deu erro; a troca/revogação vale).
+    "programacao_remota" agora conta TODOS os horários pendentes (também os desativados e os que tocam algo
+    alterado por remoto). O painel mostra a confirmação ANTES de chamar.
+  * P13: um horário que já venceu e espera na fila é relido pelo id antes de tocar: apagado ou desativado nesse
+    meio-tempo = "não tocou" com motivo "removido" (uma edição vale). POST /api/programacao, a troca do PIN e a
+    revogação tiram da fila os pedidos dos horários removidos/desativados (cancelar_fila).
+  * P14: o teto de 60 min por dia da semana (400 "limite_diario") soma áudio + estimativa de fala dos anúncios
+    (len/7 s, no máximo 80 s cada). Dois tetos novos, mesmo código e mesma regra de só recusar o que PIORA um dia:
+    no máximo 72 horários ativos no mesmo dia da semana e no máximo 10 listas/playlists do Spotify ativas
+    criadas/alteradas por aparelho REMOTO por dia. Programação já salva acima do limite continua valendo.
+  D) Auditoria e logs (P05, P22)
+  * Arquivo próprio logs/auditoria.log (PROCLAMARE_AUDIT_FILE ou ao lado de PROCLAMARE_LOG_FILE), rotação por dia
+    (90 dias), data ISO 8601 com fuso, fora do log comum; o log comum ganha a mesma data e o waitress só registra
+    avisos. Linhas chave=valor: acao=, ip=, origem=local|remoto + campos. Ações: login (resultado=ok|pin_errado,
+    bloqueado_s), pin (resultado=definido|removido), revogar, login_liberar, alertas_visto, remotos_aprovar,
+    anuncio (caracteres=N resultado=ok|ocupado|limite|sem_internet|erro; nunca o texto), musicas_enviar
+    (aceitas, recusadas), spotify_config (campos=N), spotify_desconectar, desligar, e AGREGADAS (a 1ª de cada
+    minuto na hora + 1 linha de resumo quantidade=N) fila_musica, comando_musica e spotify_comando. As ações das
+    v2.5-v2.7 (mensagens, listas, atalhos, programação, saídas de som) seguem como estavam.
+  * POST /api/announce: no máximo 10 por minuto por IP REMOTO (429); o texto passa por programacao.validar_texto
+    (sem controle/formato/bidi; 400 "Campo 'text' tem um caractere que não é permitido."). O "now_playing" do heartbeat
+    tem controle/formato/substituto/uso privado REMOVIDOS (não recusados).
+  E) Spotify (P11): POST /api/spotify/desconectar {"apagar_credenciais"?: bool=false} (só local) apaga o refresh
+    token, o access token e o aparelho escolhido; com apagar_credenciais apaga também Client ID e Secret.
+    -> {ok}. Não revoga o app no Spotify (o dono remove em spotify.com/account/apps; o painel orienta).
+  F) Cabeçalhos (P16): Permissions-Policy (câmera, microfone, localização, USB... fechados; autoplay e
+    encrypted-media delegados ao YouTube), Cross-Origin-Resource-Policy e Cross-Origin-Opener-Policy "same-origin".
+    NÃO se usa COEP (quebraria o iframe do YouTube).
+  G) Esquema estrito nas rotas antigas (P44): youtube/state, command, queue (por op), spotify/play, volume,
+    activate e config com chave fora da lista = 400 "Campo desconhecido.". Em "params" do command, chaves extras
+    seguem ignoradas e nunca repassadas.
+  H) Dados no disco (P46): cópias "*.corrompido-*" são criadas vazias, recebem a ACL e só então os dados; ficam as 3
+    mais novas de cada arquivo; temporários ".config.*.tmp"/".listas.*.tmp"/".programacao.*.tmp" com mais de 1 h
+    são apagados na partida.
 
 Contrato v2.7 ("Salvar playlists": listas mistas com YouTube + atalhos do Spotify)
 ----------------------------------------------------------------------------------
@@ -303,10 +530,11 @@ Contrato v2.5 (Mensagens prontas editáveis + Desligar pelo painel)
     sumiu, então o lançador sobe um servidor novo; "Desligar Proclamare" do Menu Iniciar responde
     "não está ligado", sem erro). Corpo: só {} (chave extra = 400).
   * GET /api/auth/status ganha "pode_desligar": true só para o PC local (o painel mostra o botão ⏻).
-  * "Local" (PC da loja) agora exige também a AUSÊNCIA de qualquer cabeçalho de proxy (Via, Forwarded,
-    X-Forwarded-For, X-Forwarded-Host, X-Real-IP; CABECALHOS_DE_PROXY), no Flask e no filtro de corpo do
+  * "Local" (PC da loja) agora exige também a AUSÊNCIA de qualquer cabeçalho de proxy (CABECALHOS_DE_PROXY: Via,
+    Forwarded, X-Forwarded-*, X-Real-IP...; lista completa na v2.7.1), no Flask e no filtro de corpo do
     waitress: um proxy reverso no PC (ex.: Apache) que reescreve o Host não faz mais a rede inteira
-    parecer local. O navegador nunca manda esses cabeçalhos.
+    parecer local. O navegador nunca manda esses cabeçalhos. (Na v2.5 isto só valia para Via e X-Real-IP: o
+    waitress apagava os outros antes do Flask. Corrigido na v2.7.1, item P01.)
   * Corpo JSON aninhado demais (RecursionError) = 400, sem traceback no log.
 
 Contrato v2.4.2 (Spotify: erros com causa, reconexão e volume do anúncio)
@@ -524,7 +752,10 @@ Variáveis de ambiente (todas opcionais)
   PROCLAMARE_PORT        porta de escuta (padrão 8502)
   PROCLAMARE_LOG_LEVEL   nível de log: DEBUG, INFO, WARNING... (padrão INFO)
   PROCLAMARE_LOG_FILE    caminho de um arquivo de log (com rotação: 5 MB, 3 antigos).
-                         Sem ela, o log vai para o console.
+                         Sem ela, o log vai para o console. Datas ISO 8601 com fuso.
+  PROCLAMARE_AUDIT_FILE  arquivo da trilha de auditoria (padrão: auditoria.log ao lado do
+                         PROCLAMARE_LOG_FILE; rotação por dia, 90 dias). Sem log em arquivo, a
+                         auditoria sai no console, junto do log comum.
   PROCLAMARE_PID_FILE    caminho de um arquivo JSON onde o servidor registra
                          {"pid", "porta", "criado_em", "executavel"} ao começar a
                          servir (usado pelo lançador para desligar o processo certo);
@@ -543,14 +774,17 @@ Variáveis de ambiente (todas opcionais)
                          por vírgula (defesa contra DNS rebinding). IPs literais,
                          localhost e o nome deste computador já são aceitos.
   PROCLAMARE_CONFIAR_LOOPBACK
-                         "1" (padrão): conexões de loopback com Host 127.0.0.1/
-                         localhost/::1 e sem cabeçalho Via são "locais" (sem PIN).
+                         "auto" (padrão): conexões de loopback com Host 127.0.0.1/localhost/::1
+                         e sem cabeçalho de proxy são "locais" (sem PIN), EXCETO enquanto a vigia
+                         de túneis achar um encaminhamento para a porta (netsh portproxy,
+                         cloudflared, ngrok, ssh -L/-R...): aí ninguém é local até ele sair.
+                         "1": o loopback é SEMPRE o PC da loja (sem a vigia).
                          "0": ninguém é local — todos precisam de PIN e a troca do
                          PIN / config do Spotify pela web ficam indisponíveis (use
                          a CLI). OBRIGATÓRIO se houver proxy reverso (Caddy/nginx), túnel
-                         (SSH, cloudflared) ou redirecionamento de porta (netsh portproxy,
-                         WSL) no PC da loja: sem isso qualquer aparelho se passa pelo PC
-                         da loja e ignora o PIN.
+                         (SSH, cloudflared, tailscale serve) ou redirecionamento de porta
+                         (netsh portproxy, WSL) no PC da loja que a vigia não enxergue: todo
+                         encaminhamento TCP faz qualquer aparelho se passar pelo PC da loja.
 
 Veja docs/GUIA.md para instalação, execução, acesso remoto e PIN.
 """
@@ -569,6 +803,7 @@ import hmac
 import ipaddress
 import logging
 import logging.handlers
+import mimetypes
 import math
 import random
 import signal
@@ -598,7 +833,7 @@ import json
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from flask import Flask, Response, jsonify, redirect, request, send_file, send_from_directory
+from flask import Flask, Response, has_request_context, jsonify, redirect, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 from werkzeug.http import parse_cookie
 
@@ -615,6 +850,10 @@ import programacao
 import waitress_limites
 
 log = logging.getLogger("proclamare")
+# Trilha de auditoria (quem fez o quê): logger próprio, com arquivo, rotação e fuso próprios quando há
+# PROCLAMARE_LOG_FILE (veja _configurar_log). Só chave=valor com números e tokens curtos: NUNCA texto,
+# nome, título, link, id nem segredo.
+auditoria = logging.getLogger("proclamare.som.auditoria")
 
 
 def _env(nome: str, padrao: str = "") -> str:
@@ -652,6 +891,7 @@ def _porta_do_ambiente() -> int:
 PORT = _porta_do_ambiente()
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
+mimetypes.add_type("font/woff2", ".woff2")   # o Windows nem sempre conhece: sem isto o nosniff bloquearia a fonte local
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024  # 16 KB: todos os corpos JSON são minúsculos
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = None  # estáticos: ETag + "no-cache" (revalida com 304)
 app.json.sort_keys = False  # não gasta CPU ordenando chaves de cada resposta
@@ -705,6 +945,15 @@ def corpo_json() -> dict:
     if not isinstance(dados, dict):
         raise ErroApi("Corpo JSON inválido.")
     return dados
+
+
+def exigir_chaves(corpo: dict, permitidas: Any) -> None:
+    """
+    Esquema estrito (v2.7.1, P44): qualquer chave fora da lista branca = 400. Evita que um `update(body)`
+    futuro vire atribuição em massa. As rotas v2.5+ já eram estritas; as antigas passam por aqui.
+    """
+    if set(corpo) - set(permitidas):
+        raise ErroApi("Campo desconhecido.")
 
 
 def validar_int(valor: Any, nome: str, minimo: int, maximo: int, *, limitar: bool = False) -> int:
@@ -768,8 +1017,8 @@ CSP = (
     "default-src 'self'; "
     "script-src 'self' https://www.youtube.com https://s.ytimg.com; "
     "frame-src https://www.youtube.com https://www.youtube-nocookie.com; "
-    "style-src 'self' https://fonts.googleapis.com; "
-    "font-src https://fonts.gstatic.com; "
+    "style-src 'self'; "
+    "font-src 'self'; "
     "img-src 'self' data: https://i.scdn.co https://*.scdn.co "
     "https://*.spotifycdn.com https://i.ytimg.com; "
     "connect-src 'self'; base-uri 'self'; form-action 'self'; "
@@ -782,6 +1031,20 @@ CABECALHOS_SEGURANCA = {
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "X-Frame-Options": "SAMEORIGIN",
     "Content-Security-Policy": CSP,
+    # v2.7.1 (P16): reforços baratos do navegador. Permissions-Policy fecha o que o painel nunca usa
+    # (câmera, microfone, localização...) e DELEGA ao YouTube só o que o iframe do Tocador precisa
+    # (autoplay e encrypted-media); o que não é nomeado aqui segue o padrão do navegador (tela cheia,
+    # picture-in-picture, wake lock...). CORP/COOP "same-origin": outro site não embute o áudio/as
+    # capas do painel nem mantém uma referência à janela dele (o painel não abre popups). NÃO se usa
+    # COEP: ele quebraria o iframe do YouTube e as capas do Spotify.
+    "Permissions-Policy": (
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), "
+        "bluetooth=(), midi=(), display-capture=(), "
+        'autoplay=(self "https://www.youtube.com" "https://www.youtube-nocookie.com"), '
+        'encrypted-media=(self "https://www.youtube.com" "https://www.youtube-nocookie.com")'
+    ),
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Cross-Origin-Opener-Policy": "same-origin",
 }
 METODOS_ESCRITA = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
@@ -862,25 +1125,186 @@ def excedeu_limite(chave: str, maximo: int, janela_s: float) -> bool:
 HOSTS_LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
-def _confiar_loopback() -> bool:
-    """PROCLAMARE_CONFIAR_LOOPBACK (padrão "1"); "0" = nenhuma requisição é local."""
-    return _env("CONFIAR_LOOPBACK", "1").strip() != "0"
+def _modo_loopback() -> str:
+    """
+    PROCLAMARE_CONFIAR_LOOPBACK: "0" = ninguém é local; "1" = o loopback é sempre local; qualquer outro
+    valor (ou ausente) = "auto" (v2.7.1, P06): local, EXCETO enquanto houver um encaminhador TCP
+    apontando para esta porta (netsh portproxy, cloudflared, ngrok, ssh -L/-R...), que faria uma
+    conexão de fora chegar por 127.0.0.1 e se passar pelo PC da loja.
+    """
+    valor = _env("CONFIAR_LOOPBACK", "auto").strip().lower()
+    return valor if valor in ("0", "1") else "auto"
+
+
+def _tunel_suspende_loopback() -> bool:
+    """
+    A vigia achou um encaminhamento FORTE E o modo é "auto"? Então o loopback deixa de valer como o PC da loja,
+    COM OU SEM PIN (sem PIN, manter a confiança deixaria quem entra pelo túnel com acesso total: fail-open).
+    O dono não fica trancado: o status público traz "loopback_suspenso" e o 403 "pin_nao_configurado" desse
+    estado leva o codigo "loopback_suspenso" com a saída (fechar o túnel, `python server.py --definir-pin` ou
+    PROCLAMARE_CONFIAR_LOOPBACK=1).
+    """
+    return bool(_modo_loopback() == "auto" and _tuneis_estado["fortes"])
+
+
+def _confiar_loopback(ignorar_tunel: bool = False) -> bool:
+    """O loopback vale como "PC da loja"? (veja _modo_loopback e a vigia de túneis)"""
+    modo = _modo_loopback()
+    if modo == "auto":
+        return ignorar_tunel or not _tunel_suspende_loopback()
+    return modo == "1"
 
 
 # Cabeçalhos que só um proxy/túnel acrescenta (o navegador nunca manda). Qualquer um deles faz a
 # requisição deixar de ser "local": um proxy reverso no PC (ex.: Apache mod_proxy) pode reescrever o
 # Host para loopback sem acrescentar Via, e todo aparelho da rede passaria por "o próprio PC".
-CABECALHOS_DE_PROXY = ("Via", "Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP")
+# v2.7.1 (P01): o waitress APAGAVA X-Forwarded-*/Forwarded antes do Flask (clear_untrusted_proxy_headers
+# padrão); agora o create_server os preserva (sem trusted_proxy, nenhum é interpretado) e a lista cobre
+# também Server/Proto/Port/By e os cabeçalhos de CDN/túnel.
+CABECALHOS_DE_PROXY = (
+    "Via", "Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Server", "X-Forwarded-Proto",
+    "X-Forwarded-Port", "X-Forwarded-By", "X-Real-IP", "CF-Connecting-IP", "True-Client-IP",
+    "Tailscale-User-Login",
+)
 
 
-def _local_por(remote_addr: str, host: str, tem_via: bool) -> bool:
+# --- Vigia de túneis (P06) ----------------------------------------------------------------------
+# Procura, SÓ POR LEITURA, encaminhadores que apontam para a porta do Proclamare. "fortes" = apontam
+# para esta porta (no modo "auto" o loopback deixa de valer como PC da loja); "fracos" = há um processo
+# de túnel, mas nada diz que é para esta porta (só aviso no painel local). Nunca se loga nem se
+# guarda a linha de comando de nenhum processo.
+_TUNEL_PREFIXOS = ("cloudflared", "ngrok", "frpc", "frps", "chisel", "bore", "devtunnel", "zrok")   # casa por PREFIXO do nome
+_TUNEL_PROCESSOS = frozenset({"socat", "ncat", "lt", "localtunnel"})                                  # casa pelo nome exato
+_TUNEL_PROCESSOS_SSH = frozenset({"ssh", "plink"})
+# ssh/plink que ENCAMINHA porta: -R/-L/-D sozinhos, juntos com outras letras (-fNR, -NL, -R8502:host:80) ou como
+# opção (-oRemoteForward=..., -oLocalForward=..., -oDynamicForward=...). "-o" comum (-oStrictHostKeyChecking) não conta.
+_RE_SSH_ENCAMINHA = re.compile(r"^-(?!o)[A-Za-z]*[RLD]")
+_RE_SSH_OPCAO_ENCAMINHA = re.compile(r"^(?:-o)?(?:Remote|Local|Dynamic)Forward", re.I)
+TUNEL_VERIFICAR_S = 60.0
+_tuneis_estado: dict[str, Any] = {"fortes": [], "fracos": [], "em": 0.0}
+
+
+def _portproxy_para(porta: int) -> list[str]:
+    """Entradas do `netsh interface portproxy` (registro, só leitura) cujo destino é a nossa porta."""
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+    except ImportError:
+        return []
+    achados: list[str] = []
+    for familia in ("v4tov4", "v4tov6", "v6tov4", "v6tov6"):
+        chave = "SYSTEM\\CurrentControlSet\\Services\\PortProxy\\" + familia + "\\tcp"
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, chave) as k:
+                i = 0
+                while True:
+                    try:
+                        _nome, valor, _tipo = winreg.EnumValue(k, i)
+                    except OSError:
+                        break
+                    i += 1
+                    if isinstance(valor, str) and valor.rsplit("/", 1)[-1].strip() == str(porta):
+                        achados.append("portproxy")
+        except OSError:
+            continue
+    return achados
+
+
+def _processos_de_tunel(porta: int) -> tuple[list[str], list[str]]:
+    """(fortes, fracos) entre os processos em execução (psutil; sem psutil = nada)."""
+    try:
+        import psutil
+    except ImportError:
+        return [], []
+    fortes: list[str] = []
+    fracos: list[str] = []
+    cita = re.compile(r"(?<!\d)" + str(porta) + r"(?!\d)")   # 8502 sim; 18502 e 85021 não
+    try:
+        processos = list(psutil.process_iter(["name"]))   # só o NOME: a linha de comando é cara e só vale para os suspeitos
+    except Exception:  # noqa: BLE001
+        return [], []
+    for proc in processos:
+        try:
+            nome = (proc.info.get("name") or "").lower()
+        except Exception:  # noqa: BLE001
+            continue
+        base = nome[:-4] if nome.endswith(".exe") else nome
+        canonico = next((p for p in _TUNEL_PREFIXOS if base.startswith(p)), None) or (
+            base if base in _TUNEL_PROCESSOS or base in _TUNEL_PROCESSOS_SSH else None)
+        if canonico is None:
+            continue
+        base = canonico
+        try:
+            argumentos = [a for a in (proc.cmdline() or []) if isinstance(a, str)]
+        except Exception:  # noqa: BLE001 - AccessDenied / processo que sumiu: não dá para ver a porta -> só aviso
+            fracos.append(base)
+            continue
+        cita_porta = any(cita.search(a) for a in argumentos)
+        if base in _TUNEL_PROCESSOS_SSH:
+            encaminha = any(_RE_SSH_ENCAMINHA.match(a) or _RE_SSH_OPCAO_ENCAMINHA.match(a) for a in argumentos)
+            if encaminha and cita_porta:
+                fortes.append(base)
+            elif encaminha:
+                fracos.append(base)
+        elif cita_porta:
+            fortes.append(base)
+        else:
+            fracos.append(base)
+    return sorted(set(fortes)), sorted(set(fracos))
+
+
+def detectar_tuneis(porta: int) -> dict[str, Any]:
+    """{"fortes": [...], "fracos": [...]} com nomes genéricos (portproxy, cloudflared...), sem detalhes."""
+    pf, pw = _processos_de_tunel(porta)
+    fortes = sorted(set(_portproxy_para(porta) + pf))
+    return {"fortes": fortes, "fracos": sorted(set(pw) - set(fortes))}
+
+
+def _atualizar_tuneis() -> None:
+    """Uma rodada da vigia: atualiza o estado e loga UMA vez cada mudança (nunca por rodada)."""
+    achado = detectar_tuneis(PORT)
+    anterior = list(_tuneis_estado["fortes"])
+    _tuneis_estado.update(fortes=achado["fortes"], fracos=achado["fracos"], em=time.time())
+    if achado["fortes"] == anterior:
+        return
+    if achado["fortes"] and _modo_loopback() == "auto":
+        log.warning("Encaminhamento de rede para a porta do Proclamare detectado (%s): o acesso pelo "
+                    "loopback deixou de valer como o PC da loja; todos precisam de PIN. (1) Feche o "
+                    "encaminhamento (volta sozinho em até 1 min). (2) Para definir um PIN: desligue o Proclamare, "
+                    "rode .venv\\Scripts\\python.exe server.py --definir-pin e ligue de novo. (3) "
+                    "PROCLAMARE_CONFIAR_LOOPBACK=1 só se o encaminhamento for seu: quem entrar por ele terá "
+                    "acesso total sem PIN.", ", ".join(achado["fortes"]))
+    elif achado["fortes"]:
+        log.warning("Encaminhamento de rede para a porta do Proclamare detectado (%s).",
+                    ", ".join(achado["fortes"]))
+    else:
+        log.info("Nenhum encaminhamento de rede para a porta do Proclamare foi encontrado agora.")
+
+
+def _laco_vigia_tuneis() -> None:
+    while not _desligando.wait(TUNEL_VERIFICAR_S):
+        try:
+            _atualizar_tuneis()
+        except Exception:  # noqa: BLE001 - a vigia nunca pode cair
+            log.debug("Falha na vigia de túneis.", exc_info=True)
+
+
+def _iniciar_vigia_tuneis() -> None:
+    """Primeira checagem síncrona (antes de atender) + thread de fundo."""
+    with contextlib.suppress(Exception):
+        _atualizar_tuneis()
+    threading.Thread(target=_laco_vigia_tuneis, name="vigia-tunel", daemon=True).start()
+
+
+def _local_por(remote_addr: str, host: str, tem_via: bool, ignorar_tunel: bool = False) -> bool:
     """
     A regra "é o próprio computador" sobre os três dados que a definem (usada pelo Flask e pelo
     filtro de corpo do waitress, que ainda não tem um `request`): endereço de origem em
     loopback E cabeçalho Host de loopback E sem cabeçalho de proxy (`tem_via`: qualquer um de
     CABECALHOS_DE_PROXY, não só o Via).
     """
-    if not _confiar_loopback() or tem_via:
+    if not _confiar_loopback(ignorar_tunel) or tem_via:
         return False
     try:
         if not ipaddress.ip_address(remote_addr or "").is_loopback:
@@ -900,6 +1324,79 @@ def _requisicao_local() -> bool:
     """
     return _local_por(request.remote_addr or "", request.host,
                       any(h in request.headers for h in CABECALHOS_DE_PROXY))
+
+
+# --- Trilha de auditoria (P05) ---------------------------------------------------------------------
+_RE_FORA_DO_TOKEN = re.compile(r"[^A-Za-z0-9_.:\-]")
+AUDITORIA_AGREGADO_JANELA_S = 60.0
+_agregado_lock = threading.Lock()
+_agregado: dict[tuple[str, str, str], int] = {}   # (acao, ip, origem) -> eventos já contados na janela
+
+
+def _token_auditoria(valor: Any) -> str:
+    """Valor seguro para uma linha chave=valor: sem espaço, aspas nem quebra de linha (anti log forging)."""
+    return _RE_FORA_DO_TOKEN.sub("_", str(valor))[:40] or "-"
+
+
+def _origem_da_requisicao() -> str:
+    return "local" if _requisicao_local() else "remoto"
+
+
+def _quem() -> tuple[str, str]:
+    """(ip, origem) da requisição atual; ("-", "-") fora de uma requisição (threads de fundo)."""
+    if not has_request_context():
+        return "-", "-"
+    return _token_auditoria(request.remote_addr or "?"), _origem_da_requisicao()
+
+
+def auditar(acao: str, **campos: Any) -> None:
+    """
+    Uma linha chave=valor na trilha de auditoria: acao, ip, origem (local|remoto) e os `campos` (só
+    números e tokens curtos como resultado=ok: NUNCA texto, nome, título, link, id nem segredo). Os
+    valores passam por _token_auditoria. Campos com None são omitidos.
+    """
+    ip, origem = _quem()
+    partes = [f"acao={_token_auditoria(acao)}", f"ip={ip}", f"origem={origem}"]
+    partes += [f"{_token_auditoria(k)}={_token_auditoria(v)}" for k, v in campos.items() if v is not None]
+    auditoria.info("%s", " ".join(partes))
+
+
+def auditar_agregado(acao: str) -> None:
+    """
+    Para o que acontece o tempo todo (fila, comandos de música, play/volume do Spotify): a PRIMEIRA ação de
+    cada (acao, ip, origem) numa janela de 60 s vai na hora e o resto vira UMA linha de resumo
+    (quantidade=N) quando a janela fecha. Assim quem tem o PIN aparece no registro sem inundar o arquivo.
+    """
+    ip, origem = _quem()
+    chave = (acao, ip, origem)
+    with _agregado_lock:
+        if chave in _agregado:
+            _agregado[chave] += 1
+            return
+        _agregado[chave] = 0
+    auditar(acao, quantidade=1, janela_s=int(AUDITORIA_AGREGADO_JANELA_S))
+    timer = threading.Timer(AUDITORIA_AGREGADO_JANELA_S, _fechar_agregado, args=(chave,))
+    timer.daemon = True
+    timer.start()
+
+
+def _fechar_agregado(chave: tuple[str, str, str]) -> None:
+    with _agregado_lock:
+        restante = _agregado.pop(chave, 0)
+    if restante:
+        acao, ip, origem = chave
+        auditoria.info("acao=%s ip=%s origem=%s quantidade=%d janela_s=%d resumo=1", acao, ip, origem,
+                       restante, int(AUDITORIA_AGREGADO_JANELA_S))
+
+
+# Rotas que só entram na trilha de forma AGREGADA (quando respondem com sucesso e a requisição é de quem
+# tem acesso): acao -> rota. Anúncio, envio de músicas, PIN, revogação etc. têm linha própria, por chamada.
+AUDITORIA_ROTAS_AGREGADAS = {
+    "/api/youtube/queue": "fila_musica", "/api/youtube/command": "comando_musica",
+    "/api/spotify/play": "spotify_comando", "/api/spotify/pause": "spotify_comando",
+    "/api/spotify/next": "spotify_comando", "/api/spotify/previous": "spotify_comando",
+    "/api/spotify/volume": "spotify_comando", "/api/spotify/activate": "spotify_comando",
+}
 
 
 @app.before_request
@@ -943,6 +1440,9 @@ def _aplicar_cabecalhos(resp: Response) -> Response:
     """Cabeçalhos de segurança em toda resposta; cache correto por tipo de rota."""
     for chave, valor in CABECALHOS_SEGURANCA.items():
         resp.headers[chave] = valor
+    acao_agregada = AUDITORIA_ROTAS_AGREGADAS.get(request.path)
+    if acao_agregada is not None and request.method == "POST" and resp.status_code < 400:
+        auditar_agregado(acao_agregada)
     if request.path.startswith("/api/"):
         # Áudio das músicas: cache só do navegador, sempre revalidando (ETag/Range). Capa: a lista
         # pede uma por linha, então o navegador a guarda por 1 h (o ETag muda se o arquivo mudar).
@@ -997,16 +1497,8 @@ def _preservar_config_corrompido() -> None:
                 return  # está íntegro
         except ValueError:
             pass
-        destino = CONFIG_PATH.with_name(f"config.json.corrompido-{time.strftime('%Y%m%d-%H%M%S')}")
-        n = 1
-        while destino.exists():  # nunca sobrescreve uma cópia anterior
-            destino = destino.with_name(f"{destino.name.split('.corrompido-')[0]}.corrompido-"
-                                        f"{time.strftime('%Y%m%d-%H%M%S')}-{n}")
-            n += 1
-        destino.write_bytes(dados)
-        with contextlib.suppress(OSError):
-            os.chmod(destino, 0o600)
-        _restringir_acl_windows(destino)
+        # P46: cria vazio, aplica a ACL e só então escreve; mantém só as 3 cópias mais novas
+        destino = programacao.salvar_copia_protegida(CONFIG_PATH, dados, _restringir_acl_windows)
         _corrompidos_copiados.add(assinatura)
         log.error("config.json corrompido: cópia guardada em %s.", destino.name)
     except OSError as exc:
@@ -1144,24 +1636,39 @@ API_PUBLICAS = frozenset({
     "/api/auth/pin", "/api/auth/revogar",
 })
 
-# Limite de tentativas de login (em memória, com limpeza)
+# Limite de tentativas de login (em memória, com limpeza; o que importa para a escalada também vai ao disco)
+# v2.7.1 (P07, rodada 4): três camadas, nenhuma delas derruba as sessões abertas nem o PC da loja.
+#   1. POR IP (a defesa principal): 5 PINs errados -> bloqueio de 5 min, que DOBRA a cada bloqueio seguido (10 min,
+#      20 min ... até 24 h) e só desce um nível a cada 24 h sem bloqueio. O nível de cada IP é gravado no config.json
+#      (seguranca.niveis, no máximo 200 IPs): reiniciar o servidor não devolve ao atacante os bloqueios curtos.
+#   2. POR FAIXA /24 (IPv4; /64 no IPv6): 20 erros em 10 min somando os IPs da faixa -> bloqueio FIXO de 10 min, SEM
+#      escalada (uma faixa é a Wi-Fi inteira: escalar deixaria um atacante derrubar o login da equipe por horas).
+#      IPs que já entraram com o PIN certo nos últimos 90 dias (seguranca.ips) FICAM FORA da faixa: não contam para
+#      ela nem são barrados por ela; seguem só o limite por IP (camada 1).
+#   3. TETO GERAL DIÁRIO: 300 erros em 24 h no total -> o login pela rede TRAVA até o dono liberar no PC da loja
+#      (POST /api/auth/liberar) ou trocar o PIN / revogar as sessões. É o único caso sem fim por tempo, e vale
+#      também depois de reiniciar (a contagem é refeita a partir de seguranca.falhas).
+# "Liberar" zera os bloqueios e o trava, mas NÃO o nível de escalada por IP, a menos que peça {"zerar_escalada": true};
+# trocar o PIN ou revogar zera tudo, inclusive os níveis. Logins CERTOS também têm limite: 10/min por IP.
 LOGIN_IP_MAX_ERROS = 5
-LOGIN_IP_BLOQUEIO_S = 300.0
-LOGIN_GLOBAL_MAX_ERROS = 20
-LOGIN_GLOBAL_JANELA_S = 600.0  # janela de contagem e 1º bloqueio; dobra a cada bloqueio seguido
-LOGIN_GLOBAL_BLOQUEIO_MAX_S = 24 * 3600.0
+LOGIN_IP_BLOQUEIO_S = 300.0     # 1º bloqueio de um IP (e janela de contagem dos erros dele)
+LOGIN_REDE_MAX_ERROS = 20
+LOGIN_REDE_JANELA_S = 600.0
+LOGIN_REDE_BLOQUEIO_S = 600.0   # bloqueio da FAIXA: fixo, nunca escala
+LOGIN_BLOQUEIO_MAX_S = 24 * 3600.0
+LOGIN_DECAI_S = 24 * 3600.0     # desce um nível de escalada a cada período sem bloqueio
+LOGIN_DIA_MAX_ERROS = 300
+LOGIN_OK_MAX_POR_MIN = 10
+LOGIN_LOCAL_MAX = 30  # tentativas de login por 5 min vindas do "PC da loja" (que nem precisa de PIN)
 LOGIN_IP_MAX_CHAVES = 1024
 FALHAS_JANELA_S = 24 * 3600.0
 _login_lock = threading.Lock()
-_login_ips: dict[str, dict[str, Any]] = {}  # ip -> {"t": deque[monotonic], "bloq": monotonic}
-_login_global: deque = deque()
-_login_global_bloq = 0.0  # monotonic até quando o login remoto está bloqueado para todos
-_login_global_nivel = 0  # nível de escalada do bloqueio global (define a duração)
-_login_global_fim = 0.0  # monotonic do fim do último bloqueio global (base do decaimento)
-LOGIN_GLOBAL_DECAI_S = 24 * 3600.0  # desce um nível a cada período sem bloqueio global
+# chave ("ip:<ip>" | "rede:<prefixo>") -> {"t": deque[monotonic], "bloq": monotonic, "nivel": int, "fim": monotonic}
+_login_ips: dict[str, dict[str, Any]] = {}
+_login_dia: deque = deque()          # monotonic de cada PIN errado nas últimas 24 h (teto geral diário)
+_login_travado = False               # True: teto diário estourou; só o dono libera no PC
 _login_falhas: deque = deque(maxlen=5000)  # time.time() de cada PIN errado (remoto), p/ o painel
 _versao_vista: int | None = None
-
 
 def _b64u(dados: bytes) -> str:
     return base64.urlsafe_b64encode(dados).decode("ascii").rstrip("=")
@@ -1294,8 +1801,22 @@ def _exigir_sessao() -> tuple[Response, int] | None:
     return _resp_sem_sessao(cfg)
 
 
+MSG_LOOPBACK_SUSPENSO = (
+    "O Proclamare detectou um encaminhamento de rede (túnel) para este computador e bloqueou o acesso sem PIN. "
+    "(1) Feche o encaminhamento: o acesso volta sozinho em até 1 minuto. "
+    "(2) Para definir um PIN: desligue o Proclamare (ícone ou Menu Iniciar, \"Desligar Proclamare\"), rode "
+    ".venv\\Scripts\\python.exe server.py --definir-pin na pasta do programa e ligue de novo. "
+    "(3) Só se você tem certeza de que o encaminhamento é seu: inicie com PROCLAMARE_CONFIAR_LOOPBACK=1 - "
+    "ATENÇÃO: quem entrar pelo encaminhamento terá acesso total sem PIN.")
+
+
 def _resp_sem_sessao(cfg: dict) -> tuple[Response, int]:
     if not pin_configurado(cfg):
+        if _tunel_suspende_loopback() and _local_por(
+                request.remote_addr or "", request.host,
+                any(h in request.headers for h in CABECALHOS_DE_PROXY), ignorar_tunel=True):
+            return jsonify({"ok": False, "auth": "pin_nao_configurado", "codigo": "loopback_suspenso",
+                            "error": MSG_LOOPBACK_SUSPENSO}), 403
         return jsonify({
             "ok": False, "auth": "pin_nao_configurado",
             "error": "Acesso pela rede desativado. Defina um PIN no computador da loja.",
@@ -1407,16 +1928,34 @@ def aplicar_pin(pin: str | None) -> bool:
 # --- Limite de tentativas ---------------------------------------------------------
 def _login_resetar_global() -> None:
     """
-    Zera TODOS os bloqueios e contadores de login (global, escalada e por IP) em
+    Zera TUDO do login (bloqueios, contadores, níveis de escalada - também no disco - e o trava diário) em
     troca/remoção do PIN, revogação local ou mudança de acesso_versao por fora.
     """
-    global _login_global_bloq, _login_global_nivel, _login_global_fim
+    global _login_travado
     with _login_lock:
         _login_ips.clear()
-        _login_global.clear()
-        _login_global_bloq = 0.0
-        _login_global_nivel = 0
-        _login_global_fim = 0.0
+        _login_dia.clear()
+        _login_travado = False
+    _seg_marcar_liberado(zerar_niveis=True)
+
+
+def _login_liberar(zerar_escalada: bool = False) -> None:
+    """
+    "Liberar login pela rede" (só o PC da loja): tira todos os bloqueios ativos e o trava diário. MANTÉM o nível de
+    escalada de cada IP (o próximo bloqueio de quem insiste continua longo), salvo `zerar_escalada` (aí zera também
+    os níveis, no disco inclusive). Nunca mexe nas sessões.
+    """
+    global _login_travado
+    with _login_lock:
+        for reg in _login_ips.values():
+            reg["t"].clear()
+            reg["bloq"] = 0.0
+            if zerar_escalada:
+                reg["nivel"] = 0
+                reg["fim"] = 0.0
+        _login_dia.clear()
+        _login_travado = False
+    _seg_marcar_liberado(zerar_niveis=zerar_escalada)
 
 
 def _sincronizar_versao(cfg: dict) -> None:
@@ -1428,19 +1967,36 @@ def _sincronizar_versao(cfg: dict) -> None:
     _versao_vista = v
 
 
+def _chave_rede(ip: str) -> str | None:
+    """Faixa do IP para o limite por rede: /24 no IPv4, /64 no IPv6 (None se não for um IP). IPv4 mapeado em IPv6 (::ffff:a.b.c.d) conta como o IPv4."""
+    try:
+        endereco = ipaddress.ip_address(ip.split("%", 1)[0])
+    except ValueError:
+        return None
+    endereco = getattr(endereco, "ipv4_mapped", None) or endereco
+    prefixo = 24 if endereco.version == 4 else 64
+    return "rede:" + str(ipaddress.ip_network(f"{endereco}/{prefixo}", strict=False))
+
+
+def _login_registro(chave: str) -> dict[str, Any]:
+    return _login_ips.setdefault(chave, {"t": deque(), "bloq": 0.0, "nivel": 0, "fim": 0.0})
+
+
 def _login_limpar(agora: float) -> None:
     """(com _login_lock) Descarta registros vencidos; limita o tamanho do dicionário."""
-    while _login_global and agora - _login_global[0] > LOGIN_GLOBAL_JANELA_S:
-        _login_global.popleft()
-    for ip in list(_login_ips):
-        reg = _login_ips[ip]
+    while _login_dia and agora - _login_dia[0] > FALHAS_JANELA_S:
+        _login_dia.popleft()
+    for chave in list(_login_ips):
+        reg = _login_ips[chave]
+        janela = LOGIN_IP_BLOQUEIO_S if chave.startswith("ip:") else LOGIN_REDE_JANELA_S
         t = reg["t"]
-        while t and agora - t[0] > LOGIN_IP_BLOQUEIO_S:
+        while t and agora - t[0] > janela:
             t.popleft()
-        if not t and agora >= reg["bloq"]:
-            del _login_ips[ip]
+        esquecido = reg["nivel"] == 0 or (reg["fim"] and agora - reg["fim"] > LOGIN_DECAI_S * reg["nivel"])
+        if not t and agora >= reg["bloq"] and esquecido:
+            del _login_ips[chave]
     while len(_login_ips) >= LOGIN_IP_MAX_CHAVES:  # só sob ataque de muitos IPs
-        del _login_ips[min(_login_ips, key=lambda k: _login_ips[k]["bloq"])]
+        del _login_ips[min(_login_ips, key=lambda k: (_login_ips[k]["bloq"], _login_ips[k]["nivel"]))]
     while _login_falhas and time.time() - _login_falhas[0] > FALHAS_JANELA_S:
         _login_falhas.popleft()
 
@@ -1449,79 +2005,140 @@ def _segundos(restante: float) -> int:
     return max(1, int(restante + 0.999))
 
 
-def _login_bloquear_global(agora: float) -> int:
-    """(com _login_lock) Inicia o bloqueio global com duração escalonada; devolve os segundos."""
-    global _login_global_bloq, _login_global_nivel, _login_global_fim
-    if _login_global_nivel > 0 and _login_global_fim:  # decaimento: -1 nível por 24 h sem bloqueio
-        decaido = int((agora - _login_global_fim) // LOGIN_GLOBAL_DECAI_S)
-        _login_global_nivel = max(0, _login_global_nivel - max(0, decaido))
-    duracao = min(LOGIN_GLOBAL_JANELA_S * (2 ** _login_global_nivel), LOGIN_GLOBAL_BLOQUEIO_MAX_S)
-    _login_global_nivel += 1
-    _login_global_bloq = agora + duracao
-    _login_global_fim = _login_global_bloq
-    _login_global.clear()
-    log.warning("Muitos PINs errados vindos da rede: login remoto bloqueado para "
-                "todos por %d min (bloqueio global nº %d).", int(duracao // 60), _login_global_nivel)
+def _login_bloquear(reg: dict[str, Any], agora: float, escalar: bool = True) -> int:
+    """
+    (com _login_lock) Bloqueia o IP com duração escalonada (5 min, 10, 20 ... 24 h) ou, com `escalar` falso (a
+    FAIXA), por um tempo fixo de LOGIN_REDE_BLOQUEIO_S sem mexer em nível nenhum. Devolve os segundos.
+    """
+    if not escalar:
+        reg["bloq"] = agora + LOGIN_REDE_BLOQUEIO_S
+        reg["t"].clear()
+        return int(LOGIN_REDE_BLOQUEIO_S)
+    if reg["nivel"] > 0 and reg["fim"]:   # decaimento: -1 nível por 24 h sem bloqueio
+        reg["nivel"] = max(0, reg["nivel"] - max(0, int((agora - reg["fim"]) // LOGIN_DECAI_S)))
+    duracao = min(LOGIN_IP_BLOQUEIO_S * (2 ** reg["nivel"]), LOGIN_BLOQUEIO_MAX_S)
+    reg["nivel"] += 1
+    reg["bloq"] = agora + duracao
+    reg["fim"] = reg["bloq"]
+    reg["t"].clear()   # a contagem recomeça depois do bloqueio
     return int(duracao)
 
 
-def _login_reservar(ip: str) -> tuple[bool, int]:
+def _login_reservar(ip: str, conhecido: bool = False) -> tuple[bool, int, str | None]:
     """
-    Registra uma tentativa ANTES de verificar o PIN (uma rajada paralela não passa
-    do limite). Devolve (permitida, segundos_bloqueado). Tentativa já bloqueada
-    não é contada nem logada (sem inundar o log).
+    Registra uma tentativa ANTES de verificar o PIN (uma rajada paralela não passa do limite). Devolve
+    (permitida, segundos_bloqueado, motivo) com motivo "ip" | "rede" | "travado" | None. Tentativa já bloqueada não
+    é contada nem logada (sem inundar o log). Travado pelo teto diário: (False, 24 h, "travado") até o dono liberar.
+    `conhecido` = o IP já entrou com o PIN certo nos últimos 90 dias: fica FORA da contagem e do bloqueio da faixa.
     """
     agora = time.monotonic()
+    rede = None if conhecido else _chave_rede(ip)
     with _login_lock:
         _login_limpar(agora)
-        if agora < _login_global_bloq:
-            return False, _segundos(_login_global_bloq - agora)
-        if len(_login_global) >= LOGIN_GLOBAL_MAX_ERROS:
-            # Limite global já esgotado (inclui tentativas ainda em verificação):
-            # nega ANTES do PBKDF2, sem depender de _login_falhou.
-            return False, _login_bloquear_global(agora)
-        reg = _login_ips.setdefault(ip, {"t": deque(), "bloq": 0.0})
-        if agora < reg["bloq"]:
-            return False, _segundos(reg["bloq"] - agora)
-        if len(reg["t"]) >= LOGIN_IP_MAX_ERROS:  # tentativas pendentes já esgotaram o limite
-            return False, _segundos(LOGIN_IP_BLOQUEIO_S)
-        reg["t"].append(agora)
-        _login_global.append(agora)
-        return True, 0
+        if _login_travado:
+            return False, int(LOGIN_BLOQUEIO_MAX_S), "travado"
+        reg_ip = _login_registro("ip:" + ip)
+        reg_rede = _login_registro(rede) if rede else None
+        if agora < reg_ip["bloq"]:
+            return False, _segundos(reg_ip["bloq"] - agora), "ip"
+        if reg_rede is not None and agora < reg_rede["bloq"]:
+            return False, _segundos(reg_rede["bloq"] - agora), "rede"
+        if len(reg_ip["t"]) >= LOGIN_IP_MAX_ERROS:   # tentativas pendentes já esgotaram o limite do IP
+            return False, _segundos(LOGIN_IP_BLOQUEIO_S), "ip"
+        reg_ip["t"].append(agora)
+        if reg_rede is not None:
+            reg_rede["t"].append(agora)
+        return True, 0, None
 
 
-def _login_falhou(ip: str) -> tuple[int, int]:
+def _login_esta_travado() -> bool:
+    with _login_lock:
+        return _login_travado
+
+
+def _login_falhou(ip: str, conhecido: bool = False) -> tuple[int, int, str | None]:
     """
-    PIN errado. Devolve (segundos_de_bloqueio, tentativas_restantes). Se ESTA
-    tentativa dispara o bloqueio (por IP ou global), os segundos vêm > 0 e o
-    cliente recebe 429 já agora. Loga uma vez por bloqueio, nunca por requisição.
+    PIN errado. Devolve (segundos_de_bloqueio, tentativas_restantes, motivo). Se ESTA tentativa dispara o bloqueio
+    (do IP, da faixa ou o trava diário), os segundos vêm > 0 e o cliente recebe 429 já agora. Loga uma vez por
+    bloqueio, nunca por requisição (e SEM o IP: o IP fica só na auditoria).
     """
+    global _login_travado
     agora = time.monotonic()
     bloqueado = 0
+    motivo: str | None = None
     with _login_lock:
         _login_falhas.append(time.time())
-        reg = _login_ips.setdefault(ip, {"t": deque(), "bloq": 0.0})
+        _login_dia.append(agora)
+        reg = _login_registro("ip:" + ip)
         restantes = max(0, LOGIN_IP_MAX_ERROS - len(reg["t"]))
         if len(reg["t"]) >= LOGIN_IP_MAX_ERROS and agora >= reg["bloq"]:
-            reg["bloq"] = agora + LOGIN_IP_BLOQUEIO_S
-            reg["t"].clear()  # a contagem recomeça depois do bloqueio
-            bloqueado = int(LOGIN_IP_BLOQUEIO_S)
-            log.warning("Login remoto bloqueado por %d min: muitos PINs errados (IP %s).",
-                        int(LOGIN_IP_BLOQUEIO_S // 60), ip)
-        if len(_login_global) >= LOGIN_GLOBAL_MAX_ERROS and agora >= _login_global_bloq:
-            bloqueado = max(bloqueado, _login_bloquear_global(agora))
-    return bloqueado, restantes
+            bloqueado = _login_bloquear(reg, agora)
+            motivo = "ip"
+            log.warning("Login remoto bloqueado por %d min: muitos PINs errados de um aparelho.", bloqueado // 60)
+        chave_rede = None if conhecido else _chave_rede(ip)
+        if chave_rede:
+            rede = _login_registro(chave_rede)
+            if len(rede["t"]) >= LOGIN_REDE_MAX_ERROS and agora >= rede["bloq"]:
+                dur = _login_bloquear(rede, agora, escalar=False)
+                if not bloqueado:
+                    bloqueado, motivo = dur, "rede"
+                log.warning("Login remoto bloqueado por %d min: muitos PINs errados vindos da mesma rede.", dur // 60)
+        if len(_login_dia) >= LOGIN_DIA_MAX_ERROS and not _login_travado:
+            _login_travado = True
+            bloqueado, motivo = int(LOGIN_BLOQUEIO_MAX_S), "travado"
+            log.warning("%d PINs errados em 24 h: o login pela rede está TRAVADO até o dono liberar no PC da loja.",
+                        LOGIN_DIA_MAX_ERROS)
+    return bloqueado, restantes, motivo
 
 
-def _login_sucesso(ip: str) -> None:
+def _login_sucesso(ip: str, conhecido: bool = False) -> None:
     """
-    Acerto remoto: zera o contador DAQUELE IP e devolve a tentativa reservada ao
-    contador global. NÃO zera a escalada global (só ação local ou decaimento).
+    Acerto remoto: zera o contador DAQUELE IP e devolve a tentativa reservada ao contador da faixa. NÃO zera a
+    escalada nem o teto diário (só ação local ou decaimento).
     """
+    chave_rede = None if conhecido else _chave_rede(ip)
     with _login_lock:
-        _login_ips.pop(ip, None)
-        if _login_global:
-            _login_global.pop()
+        reg = _login_ips.get("ip:" + ip)
+        if reg is not None:
+            reg["t"].clear()
+        rede = _login_ips.get(chave_rede) if chave_rede else None
+        if rede is not None and rede["t"]:
+            rede["t"].pop()
+
+
+def _login_niveis_para_disco() -> dict[str, dict[str, Any]]:
+    """Níveis de escalada por IP (só IPs com nível > 0), com o fim do bloqueio em epoch; no máximo SEG_NIVEIS_MAX."""
+    agora_mono, agora = time.monotonic(), time.time()
+    with _login_lock:
+        itens = [(c[3:], r["nivel"], r["fim"]) for c, r in _login_ips.items()
+                 if c.startswith("ip:") and r["nivel"] > 0 and r["fim"]]
+    itens.sort(key=lambda x: x[2], reverse=True)
+    return {ip: {"n": nivel, "fim": int(agora + (fim - agora_mono))} for ip, nivel, fim in itens[:SEG_NIVEIS_MAX]}
+
+
+def _login_restaurar_do_disco() -> None:
+    """
+    Na partida (e nos testes): refaz o contador diário a partir de seguranca.falhas das últimas 24 h (e a trava, se
+    houver 300 ou mais desde a última liberação) e os níveis de escalada por IP. Sem isto, reiniciar o servidor
+    devolveria 300 tentativas novas e os bloqueios curtos a quem já tinha escalado.
+    """
+    global _login_travado
+    seg = _seg_ler()
+    agora_mono, agora = time.monotonic(), time.time()
+    desde = max(agora - FALHAS_JANELA_S, seg.get("liberado_em", 0.0))
+    recentes = [t for t in seg["falhas"] if t > desde]
+    with _login_lock:
+        _login_dia.clear()
+        _login_dia.extend(agora_mono - (agora - t) for t in sorted(recentes))
+        _login_travado = len(recentes) >= LOGIN_DIA_MAX_ERROS
+        for ip, info in seg.get("niveis", {}).items():
+            reg = _login_registro("ip:" + ip)
+            reg["nivel"] = info["n"]
+            reg["fim"] = agora_mono + (info["fim"] - agora)
+            reg["bloq"] = reg["fim"] if info["fim"] > agora else 0.0
+    if _login_travado:
+        log.warning("O login pela rede continua TRAVADO (%d PINs errados em 24 h). Libere no PC da loja.",
+                    len(recentes))
 
 
 def _apagar_cookie(resp: Response) -> Response:
@@ -1529,12 +2146,256 @@ def _apagar_cookie(resp: Response) -> Response:
     return resp
 
 
-def _resp_429(segundos: int) -> tuple[Response, int]:
+def _resp_429(segundos: int, travado: bool = False, motivo: str | None = None,
+              suspenso: bool = False) -> tuple[Response, int]:
+    """
+    429 de login. `travado`: teto diário ("travado": true). `motivo` "rede": a FAIXA está bloqueada ("codigo":
+    "bloqueio_rede"). `suspenso`: o pedido veio do loopback mas o túnel suspendeu a confiança - repete o aviso do
+    túnel ("codigo": "loopback_suspenso"), porque é assim que o dono no PC da loja descobre o motivo.
+    """
     minutos = max(1, -(-segundos // 60))
-    return jsonify({
-        "ok": False, "bloqueado_por_s": segundos,
-        "error": f"Muitas tentativas. Tente novamente em {minutos} min.",
-    }), 429
+    corpo: dict[str, Any] = {"ok": False, "bloqueado_por_s": segundos}
+    if travado:
+        corpo["travado"] = True
+        corpo["error"] = ("Muitas tentativas erradas. O login pela rede foi travado: peça ao dono para liberar "
+                          "no PC da loja.")
+    elif motivo == "rede":
+        corpo["codigo"] = "bloqueio_rede"
+        corpo["error"] = f"Muitas tentativas vindas desta rede. Tente novamente em {minutos} min."
+    else:
+        corpo["error"] = f"Muitas tentativas. Tente novamente em {minutos} min."
+    if suspenso:
+        corpo["codigo"] = "loopback_suspenso"
+        corpo["error"] += " " + MSG_LOOPBACK_SUSPENSO
+    return jsonify(corpo), 429
+
+
+# --- Alertas de segurança persistidos (P12) ------------------------------------------------------------
+# config.json, chave "seguranca": {"falhas": [epoch...], "logins": [{"t","ip","novo"}], "ips": {ip: epoch},
+# "visto_ate": epoch}. Sobrevive a reinício (o contador antigo era só memória). Só o PC da loja lê (via
+# /api/auth/status). Retenção curta de propósito: falhas 24 h; IPs conhecidos 90 dias (no máx. 100);
+# últimos logins 20. Nunca há PIN, token nem texto aqui; o IP é dado pessoal, por isso o prazo.
+SEG_FALHAS_MAX = 500
+SEG_LOGINS_MAX = 20
+SEG_IPS_MAX = 100
+SEG_IPS_RETENCAO_S = 90 * 24 * 3600.0
+SEG_ALERTA_FALHAS = 5
+SEG_NIVEIS_MAX = 200         # IPs com nível de escalada guardado no disco
+SEG_FALHAS_FLUSH_S = 30.0    # PINs errados são gravados em lote: no máximo 1 gravação do config a cada 30 s
+SEG_NOVOS_MAX = 100          # logins de IP novo ainda não vistos (guardados até o "visto" do dono)
+SEG_IP_REGISTRO_S = 3600.0   # login certo de um IP já conhecido há menos que isto não regrava o config
+
+
+def _seg_ip(ip: Any) -> str:
+    try:
+        return str(ipaddress.ip_address(str(ip).split("%", 1)[0]))
+    except ValueError:
+        return "?"
+
+
+def _numero_epoch(v: Any) -> float | None:
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 or v > 4e9:
+        return None
+    return float(v)
+
+
+def _seg_sanear(bruto: Any, agora: float | None = None) -> dict[str, Any]:
+    """Documento "seguranca" válido a partir do que está no config (config editado à mão não derruba nada)."""
+    agora = time.time() if agora is None else agora
+    bruto = bruto if isinstance(bruto, dict) else {}
+    lista_f = bruto.get("falhas") if isinstance(bruto.get("falhas"), list) else []
+    falhas = sorted(t for t in (_numero_epoch(x) for x in lista_f[-SEG_FALHAS_MAX * 2:])
+                    if t is not None and agora - t <= FALHAS_JANELA_S)[-SEG_FALHAS_MAX:]
+    logins: list[dict[str, Any]] = []
+    for e in (bruto.get("logins") if isinstance(bruto.get("logins"), list) else [])[-SEG_LOGINS_MAX:]:
+        t = _numero_epoch(e.get("t")) if isinstance(e, dict) else None
+        if t is not None:
+            logins.append({"t": t, "ip": _seg_ip(e.get("ip")), "novo": e.get("novo") is True})
+    ips: dict[str, float] = {}
+    brutos_ips = bruto.get("ips") if isinstance(bruto.get("ips"), dict) else {}
+    for ip, t in sorted(brutos_ips.items(), key=lambda kv: _numero_epoch(kv[1]) or 0.0)[-SEG_IPS_MAX:]:
+        visto = _numero_epoch(t)
+        if visto is not None and agora - visto <= SEG_IPS_RETENCAO_S and _seg_ip(ip) != "?":
+            ips[_seg_ip(ip)] = visto
+    visto_ate = _numero_epoch(bruto.get("visto_ate")) or 0.0
+    # Logins de IP NOVO ainda não vistos ficam numa lista À PARTE, que a rotação dos "últimos logins" não toca:
+    # 20 logins comuns não podem apagar o alerta. Só o "visto" do dono a esvazia.
+    novos: list[dict[str, Any]] = []
+    for e in (bruto.get("novos") if isinstance(bruto.get("novos"), list) else [])[-SEG_NOVOS_MAX:]:
+        t = _numero_epoch(e.get("t")) if isinstance(e, dict) else None
+        if t is not None and t > visto_ate:
+            novos.append({"t": t, "ip": _seg_ip(e.get("ip"))})
+    niveis: dict[str, dict[str, Any]] = {}
+    brutos_n = bruto.get("niveis") if isinstance(bruto.get("niveis"), dict) else {}
+    for ip, info in list(brutos_n.items())[:SEG_NIVEIS_MAX]:
+        fim = _numero_epoch(info.get("fim")) if isinstance(info, dict) else None
+        n = info.get("n") if isinstance(info, dict) else None
+        if (fim is not None and isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= 20
+                and _seg_ip(ip) != "?" and agora - fim <= LOGIN_DECAI_S * n):
+            niveis[_seg_ip(ip)] = {"n": n, "fim": fim}
+    liberado_em = _numero_epoch(bruto.get("liberado_em")) or 0.0
+    return {"falhas": falhas, "logins": logins, "ips": ips, "visto_ate": visto_ate, "novos": novos,
+            "niveis": niveis, "liberado_em": liberado_em}
+
+
+def _seg_ler(cfg: dict | None = None) -> dict[str, Any]:
+    return _seg_sanear((load_config() if cfg is None else cfg).get("seguranca"))
+
+
+def _seg_mutar(fn: Callable[[dict[str, Any]], None]) -> None:
+    """Lê, altera e grava o documento sob o lock do config. Falha de disco só vira aviso no log."""
+    try:
+        with _config_lock:
+            cfg = load_config()
+            seg = _seg_sanear(cfg.get("seguranca"))
+            fn(seg)
+            cfg["seguranca"] = seg
+            _gravar_config_atomico(cfg)
+    except OSError as exc:
+        log.warning("Não foi possível gravar os alertas de segurança (%s).", type(exc).__name__)
+
+
+_seg_pend_lock = threading.Lock()
+_seg_falhas_pend: list[float] = []     # PINs errados ainda não gravados no config.json
+_seg_flush_ultimo = 0.0                # monotonic da última gravação em lote
+_seg_flush_timer: threading.Timer | None = None
+
+
+def _seg_registrar_falha() -> None:
+    """
+    Anota um PIN errado. Gravar o config.json (que tem os segredos) a cada erro de um ataque seria uma gravação
+    por tentativa: os erros ficam em memória e vão ao disco em LOTE, no máximo 1 gravação a cada
+    SEG_FALHAS_FLUSH_S (e no desligamento: _seg_flush_falhas). A contagem do painel inclui os pendentes.
+    """
+    global _seg_flush_timer
+    agora = time.time()
+    with _seg_pend_lock:
+        _seg_falhas_pend.append(agora)
+        vencido = time.monotonic() - _seg_flush_ultimo >= SEG_FALHAS_FLUSH_S
+        if not vencido and _seg_flush_timer is None:
+            _seg_flush_timer = threading.Timer(SEG_FALHAS_FLUSH_S, _seg_flush_falhas)
+            _seg_flush_timer.daemon = True
+            _seg_flush_timer.start()
+    if vencido:
+        _seg_flush_falhas()
+
+
+def _seg_flush_falhas() -> None:
+    """Grava no config.json os PINs errados pendentes (uma gravação só). Idempotente; chamado também ao desligar."""
+    global _seg_flush_timer, _seg_flush_ultimo
+    with _seg_pend_lock:
+        itens = list(_seg_falhas_pend)
+        _seg_falhas_pend.clear()
+        _seg_flush_ultimo = time.monotonic()
+        if _seg_flush_timer is not None:
+            _seg_flush_timer.cancel()
+            _seg_flush_timer = None
+    if itens:
+        _seg_mutar(lambda seg: seg.update(falhas=(seg["falhas"] + itens)[-SEG_FALHAS_MAX:]))
+
+
+def _seg_reset_pendentes() -> None:
+    """(testes) Descarta os PINs errados pendentes e o temporizador."""
+    global _seg_flush_timer, _seg_flush_ultimo
+    with _seg_pend_lock:
+        _seg_falhas_pend.clear()
+        _seg_flush_ultimo = 0.0
+        if _seg_flush_timer is not None:
+            _seg_flush_timer.cancel()
+            _seg_flush_timer = None
+
+
+def _seg_marcar_liberado(zerar_niveis: bool) -> None:
+    """
+    O dono liberou o login (ou trocou o PIN / revogou): os PINs errados de ANTES não podem religar o trava quando o
+    servidor reiniciar (seguranca.liberado_em) e, com `zerar_niveis`, os níveis de escalada guardados saem do disco.
+    """
+    with _seg_pend_lock:
+        _seg_falhas_pend.clear()
+    seg = _seg_ler()
+    if not (seg["falhas"] or (zerar_niveis and seg["niveis"])):
+        return   # nada a esquecer: não regrava o config à toa
+    agora = time.time()
+
+    def _aplicar(doc: dict[str, Any]) -> None:
+        doc["liberado_em"] = agora
+        if zerar_niveis:
+            doc["niveis"] = {}
+
+    _seg_mutar(_aplicar)
+
+
+def _seg_persistir_niveis() -> None:
+    """Grava os níveis de escalada por IP (poucos bytes, no máximo SEG_NIVEIS_MAX) depois de um bloqueio."""
+    niveis = _login_niveis_para_disco()
+    _seg_mutar(lambda doc: doc.update(niveis=niveis))
+
+
+def _seg_registrar_login(ip: str) -> bool:
+    """
+    Registra um login remoto bem-sucedido; True se o IP nunca tinha sido visto (login novo). Um IP já conhecido
+    que entrou de novo há menos de 1 h não muda nada e NÃO regrava o config.json (o arquivo tem os segredos do
+    Spotify: cada gravação a menos é uma janela a menos).
+    """
+    agora = time.time()
+    ip = _seg_ip(ip)
+    ultimo = _seg_ler().get("ips", {}).get(ip)
+    if ultimo is not None and 0 <= agora - ultimo < SEG_IP_REGISTRO_S:
+        return False
+    resultado = {"novo": False}
+
+    def _aplicar(seg: dict[str, Any]) -> None:
+        resultado["novo"] = ip not in seg["ips"]
+        seg["ips"][ip] = agora
+        seg["logins"].append({"t": agora, "ip": ip, "novo": resultado["novo"]})
+        seg["logins"] = seg["logins"][-SEG_LOGINS_MAX:]
+        if resultado["novo"]:
+            seg["novos"].append({"t": agora, "ip": ip})
+            seg["novos"] = seg["novos"][-SEG_NOVOS_MAX:]
+        if len(seg["ips"]) > SEG_IPS_MAX:
+            for velho in sorted(seg["ips"], key=lambda k: seg["ips"][k])[:len(seg["ips"]) - SEG_IPS_MAX]:
+                del seg["ips"][velho]
+
+    _seg_mutar(_aplicar)
+    return resultado["novo"]
+
+
+def _iso_local(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch).astimezone().isoformat(timespec="seconds")
+
+
+def _seg_resumo(cfg: dict, bloqueio_global_s: int, travado: bool = False, bloqueados: int = 0) -> dict[str, Any]:
+    """
+    O que o painel LOCAL mostra como aviso (campo "seguranca" do /api/auth/status). "alerta" liga quando há
+    5+ PINs errados desde a última vez que o dono marcou como visto, um bloqueio global ativo, um login
+    de IP novo ainda não visto, ou um encaminhamento de rede para a porta.
+    """
+    agora = time.time()
+    seg = _seg_ler(cfg)
+    with _seg_pend_lock:
+        seg["falhas"] = sorted(seg["falhas"] + list(_seg_falhas_pend))   # (os ainda não gravados também contam)
+    visto = seg["visto_ate"]
+    falhas_novas = sum(1 for t in seg["falhas"] if t > visto)
+    novos = [e for e in seg["novos"] if e["t"] > visto]
+    tuneis = {"fortes": list(_tuneis_estado["fortes"]), "fracos": list(_tuneis_estado["fracos"]),
+              "confianca_loopback": _confiar_loopback(), "modo": _modo_loopback()}
+    pendentes = _revisao_contar()
+    return {
+        "alerta": (falhas_novas >= SEG_ALERTA_FALHAS or travado or bloqueados > 0 or bool(novos)
+                   or bool(tuneis["fortes"])),
+        "login_travado": travado,
+        "bloqueios_ativos": bloqueados,
+        "pendentes": pendentes,
+        "falhas_24h": sum(1 for t in seg["falhas"] if agora - t <= FALHAS_JANELA_S),
+        "falhas_novas": falhas_novas,
+        "bloqueio_global_s": bloqueio_global_s,
+        "logins_novos": [{"em": _iso_local(e["t"]), "ip": e["ip"]} for e in novos[-10:]],
+        "ultimos_logins": [{"em": _iso_local(e["t"]), "ip": e["ip"], "novo": e["novo"]}
+                           for e in reversed(seg["logins"][-10:])],
+        "visto_em": _iso_local(visto) if visto else None,
+        "tuneis": tuneis,
+        "pendentes_remotos": pendentes["total"],
+    }
 
 
 @app.get("/api/auth/status")
@@ -1548,13 +2409,26 @@ def auth_status() -> Response:
         "autenticado": local or _token_valido_sessao(request.cookies.get(COOKIE_SESSAO), cfg),
         # v2.5: o botão "Desligar o Proclamare" só existe no PC da loja (a rota é somente local).
         "pode_desligar": local,
+        # v2.7.1: True quando o endereço E o Host são de loopback mas o painel NÃO é tratado como o PC da loja
+        # porque a vigia achou um encaminhamento de rede para a porta (com PIN configurado). Só o booleano:
+        # nenhum nome de processo sai numa rota pública.
+        "loopback_suspenso": bool(
+            not local and _tunel_suspende_loopback()
+            and _local_por(request.remote_addr or "", request.host,
+                           any(h in request.headers for h in CABECALHOS_DE_PROXY), ignorar_tunel=True)),
     }
     if local:  # só o PC da loja vê sinais de ataque
         agora = time.monotonic()
         with _login_lock:
             _login_limpar(agora)
-            resp["falhas_recentes"] = len(_login_falhas)
-            resp["bloqueio_global_s"] = _segundos(_login_global_bloq - agora) if agora < _login_global_bloq else 0
+            travado = _login_travado
+            bloqueados = sum(1 for r in _login_ips.values() if agora < r["bloq"])
+        bloqueio = int(LOGIN_BLOQUEIO_MAX_S) if travado else 0
+        seg = _seg_resumo(cfg, bloqueio, travado, bloqueados)
+        # falhas_recentes/bloqueio_global_s: os campos da v2.2 (agora persistidos, 24 h)
+        resp["falhas_recentes"] = seg["falhas_24h"]
+        resp["bloqueio_global_s"] = bloqueio
+        resp["seguranca"] = seg
     return jsonify(resp)
 
 
@@ -1570,26 +2444,48 @@ def auth_login() -> Any:
     ip = request.remote_addr or "?"
     local = _requisicao_local()
     restantes = LOGIN_IP_MAX_ERROS
-    if not local:  # o computador da loja não precisa de PIN: sem limite de tentativas
-        permitida, bloqueado_s = _login_reservar(ip)
+    # IP que já entrou com o PIN certo nos últimos 90 dias fica FORA do bloqueio por faixa (só o limite por IP vale)
+    conhecido = _seg_ip(ip) in _seg_ler(cfg)["ips"]
+    suspenso = (not local and _tunel_suspende_loopback() and _local_por(
+        ip, request.host, any(h in request.headers for h in CABECALHOS_DE_PROXY), ignorar_tunel=True))
+    if local:
+        # O PC da loja não precisa de PIN, então quase nunca chega aqui; um limite folgado só trava quem
+        # se passa por ele (túnel/encaminhador que o detector não viu) tentando PINs sem parar.
+        if excedeu_limite("login-local", LOGIN_LOCAL_MAX, 300.0):
+            return _resp_429(300)
+    else:
+        permitida, bloqueado_s, motivo = _login_reservar(ip, conhecido)
         if not permitida:
-            return _resp_429(bloqueado_s)
+            return _resp_429(bloqueado_s, motivo == "travado", motivo, suspenso)
     it, salt, esperado = _ler_hash_pin(cfg["acesso_pin_hash"])  # type: ignore[misc]
     # Mesmo custo de PBKDF2 em acerto e erro; comparação em tempo constante.
     certo = hmac.compare_digest(_hash_pin(pin, salt, it), esperado)
     if not certo:
         if not local:
-            bloqueado_s, restantes = _login_falhou(ip)
+            bloqueado_s, restantes, motivo = _login_falhou(ip, conhecido)
+            _seg_registrar_falha()
+            auditar("login", resultado="pin_errado", bloqueado_s=bloqueado_s or None, motivo=motivo)
             if bloqueado_s:
-                return _resp_429(bloqueado_s)
-        log.warning("Login com PIN incorreto (IP %s).", ip)
+                if motivo == "ip":
+                    _seg_persistir_niveis()   # o nível de escalada sobrevive a reinício
+                return _resp_429(bloqueado_s, motivo == "travado", motivo, suspenso)
+        else:
+            auditar("login", resultado="pin_errado")
+        log.warning("Login com PIN incorreto (origem %s).", "local" if local else "remoto")   # o IP fica só na auditoria
         return jsonify({"ok": False, "error": "PIN incorreto.", "tentativas_restantes": restantes}), 401
+    novo = False
     if not local:
-        _login_sucesso(ip)
-    log.info("Login com PIN bem-sucedido (IP %s).", ip)
+        _login_sucesso(ip, conhecido)
+        if excedeu_limite("login-ok:" + ip, LOGIN_OK_MAX_POR_MIN, 60.0):   # logins CERTOS em rajada também têm teto
+            auditar("login", resultado="limite")
+            return _resp_429(60, suspenso=suspenso)
+        novo = _seg_registrar_login(ip)
+    auditar("login", resultado="ok", ip_novo=int(novo) if not local else None)
+    log.info("Login com PIN bem-sucedido (%s)%s.", "local" if local else "remoto",
+             " - aparelho NOVO" if novo else "")   # o IP fica só na auditoria
     resp = jsonify({"ok": True})
-    novo, vida = _emitir_token(cfg)
-    _definir_cookie_sessao(resp, novo, vida)
+    novo_token, vida = _emitir_token(cfg)
+    _definir_cookie_sessao(resp, novo_token, vida)
     return resp
 
 
@@ -1598,35 +2494,109 @@ def auth_logout() -> Response:
     return _apagar_cookie(jsonify({"ok": True}))
 
 
+# Opções da "revisão do que os aparelhos remotos deixaram" (v2.7.1, P04), aceitas por /api/auth/pin e
+# /api/auth/revogar. Padrão: só desativar os horários remotos (não destrói nada).
+_OPCOES_REVISAO_PADRAO = {"desativar_remotos": True, "remover_remotos": False,
+                          "restaurar_mensagens": False, "limpar_fila": False}
+
+
+def _opcoes_de_revisao(dados: dict, extras: frozenset[str] = frozenset()) -> dict[str, bool]:
+    """Valida as opções do corpo (chave desconhecida ou valor que não é bool = 400). Tudo antes de gravar."""
+    desconhecidas = set(dados) - set(_OPCOES_REVISAO_PADRAO) - extras
+    if desconhecidas:
+        raise ErroApi("Campo desconhecido.")
+    opcoes: dict[str, bool] = {}
+    for nome, padrao in _OPCOES_REVISAO_PADRAO.items():
+        valor = dados.get(nome, padrao)
+        if not isinstance(valor, bool):
+            raise ErroApi(f"Campo '{nome}' inválido.")
+        opcoes[nome] = valor
+    return opcoes
+
+
+def _revisar_apos_acesso(opcoes: dict[str, bool]) -> dict[str, Any]:
+    """Aplica a revisão depois de trocar o PIN / revogar. Uma falha aqui nunca desfaz a revogação."""
+    try:
+        return _aplicar_revisao_remotos(opcoes)
+    except Exception:  # noqa: BLE001
+        log.exception("Falha ao revisar o que os aparelhos remotos deixaram.")
+        return {"falhou": True}
+
+
 @app.post("/api/auth/pin")
 def auth_pin() -> Response:
-    """Define/troca (str) ou remove (null) o PIN. Somente no computador da loja."""
+    """
+    Define/troca (str) ou remove (null) o PIN. Somente no computador da loja. v2.7.1: aceita as opções de
+    revisão (desativar_remotos, remover_remotos, restaurar_mensagens, limpar_fila) para desfazer o que
+    aparelhos remotos deixaram (horários, mensagens, listas, atalhos), e responde com o que foi feito.
+    """
     if not _requisicao_local():
         raise ErroApi("Defina o PIN no computador da loja.", 403)
     dados = corpo_json()
     if "pin" not in dados:
         raise ErroApi("Campo 'pin' ausente.")
+    opcoes = _opcoes_de_revisao(dados, frozenset({"pin"}))
     pin = dados["pin"]
-    configurado = aplicar_pin(None if pin is None else validar_pin_novo(pin))
+    novo_pin = None if pin is None else validar_pin_novo(pin)
+    configurado = aplicar_pin(novo_pin)
     log.info("PIN de acesso pela rede %s.", "definido/trocado" if pin is not None else "removido")
-    # Horários criados por aparelhos remotos continuam valendo depois da troca do PIN: o painel avisa.
+    revisao = _revisar_apos_acesso(opcoes)
+    auditar("pin", resultado="definido" if pin is not None else "removido",
+            desativados=revisao.get("horarios_desativados"), removidos=revisao.get("itens_removidos"))
     return jsonify({"ok": True, "pin_configurado": configurado,
-                    "programacao_remota": _prog_contar_remotos()})
+                    "programacao_remota": _prog_contar_remotos(), "revisao": revisao})
 
 
 @app.post("/api/auth/revogar")
 def auth_revogar() -> Response:
-    """Derruba todas as sessões (acesso_versao + 1) sem trocar o PIN. Somente local."""
+    """
+    Derruba todas as sessões (acesso_versao + 1) sem trocar o PIN. Somente local. v2.7.1: as mesmas opções
+    de revisão de /api/auth/pin (padrão: desativar os horários criados/alterados por aparelhos remotos).
+    """
     if not _requisicao_local():
         raise ErroApi("Revogue as sessões no computador da loja.", 403)
-    corpo_json()
+    opcoes = _opcoes_de_revisao(corpo_json())
     with _config_lock:
         cfg = load_config()
         cfg["acesso_versao"] = _versao_acesso(cfg) + 1
         _gravar_config_atomico(cfg)
     _login_resetar_global()
     log.info("Todas as sessões de acesso pela rede foram revogadas.")
-    return jsonify({"ok": True, "programacao_remota": _prog_contar_remotos()})
+    revisao = _revisar_apos_acesso(opcoes)
+    auditar("revogar", desativados=revisao.get("horarios_desativados"), removidos=revisao.get("itens_removidos"))
+    return jsonify({"ok": True, "programacao_remota": _prog_contar_remotos(), "revisao": revisao})
+
+
+@app.post("/api/auth/liberar")
+def auth_liberar() -> Response:
+    """
+    "Liberar login pela rede" (v2.7.1, P07). Somente local. Zera os bloqueios de login (por IP e global) SEM
+    derrubar as sessões nem trocar o PIN: quem foi barrado por um ataque espalhado volta a poder entrar.
+    """
+    if not _requisicao_local():
+        raise ErroApi("Libere o login no computador da loja.", 403)
+    corpo = corpo_json()
+    exigir_chaves(corpo, ("zerar_escalada",))
+    zerar = corpo.get("zerar_escalada", False)
+    if not isinstance(zerar, bool):
+        raise ErroApi("Campo 'zerar_escalada' inválido.")
+    _login_liberar(zerar)   # zera bloqueios e o trava diário; o nível de escalada só com zerar_escalada
+    auditar("login_liberar", zerar_escalada=int(zerar))
+    log.info("Bloqueios de login pela rede liberados pelo PC da loja.")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/auth/alertas/visto")
+def auth_alertas_visto() -> Response:
+    """Marca os alertas de segurança como vistos (o aviso do painel some até haver novidade). Só local."""
+    if not _requisicao_local():
+        raise ErroApi("Disponível só no PC do Proclamare.", 403)
+    if corpo_json():
+        raise ErroApi("Campo desconhecido.")
+    agora = time.time()
+    _seg_mutar(lambda seg: seg.update(visto_ate=agora, novos=[]))
+    auditar("alertas_visto")
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------
@@ -2033,7 +3003,7 @@ RE_DEVICE_ID = re.compile(r"[A-Za-z0-9]{1,128}")
 # Client ID e Client Secret do Spotify são sempre 32 caracteres hexadecimais.
 RE_CREDENCIAL_SPOTIFY = re.compile(r"[0-9a-fA-F]{32}")
 MSG_CREDENCIAL_SPOTIFY = "Cole só o código (32 letras e números)."
-_ASPAS_E_INVISIVEIS = "\"'`“”‘’«»​‌‍﻿ "
+_ASPAS_E_INVISIVEIS = "\"'`\u201c\u201d\u2018\u2019\u00ab\u00bb\u200b\u200c\u200d\ufeff\u00a0"
 RE_URI_TRACK = re.compile(r"spotify:track:[A-Za-z0-9]{1,64}")
 RE_URI_CONTEXTO = re.compile(r"spotify:(?:playlist|album|artist):[A-Za-z0-9]{1,64}")
 # v2.7: atalhos guardados (listas.json): só playlist ou álbum, com o id de 22 caracteres base62 do Spotify
@@ -2248,7 +3218,12 @@ def _spotify_refresh_token(cfg: dict) -> str | None:
     }
     if data.get("refresh_token"):
         mudancas["spotify_refresh_token"] = data["refresh_token"]
-    update_config(**mudancas)
+    with _config_lock:
+        atual = load_config()
+        if atual.get("spotify_refresh_token") != refresh:
+            return None   # desconectado (ou reconectado) enquanto renovava: o resultado velho não ressuscita nada
+        atual.update(mudancas)
+        _gravar_config_atomico(atual)
     return data["access_token"]
 
 
@@ -2835,6 +3810,7 @@ def spotify_config_set() -> Response:
     if not _requisicao_local():
         raise ErroApi("Configure o Spotify no computador da loja.", 403)
     data = corpo_json()
+    exigir_chaves(data, ("client_id", "client_secret"))
     changes: dict[str, str] = {}
     # Valida os DOIS antes de gravar qualquer um (tudo ou nada). Vazio = manter o atual.
     if "client_id" in data:
@@ -2848,6 +3824,37 @@ def spotify_config_set() -> Response:
     if changes:
         update_config(**changes)
         _token_falha_ate = 0.0  # credenciais novas: permite tentar renovar já
+    auditar("spotify_config", campos=len(changes))   # só QUANTOS campos, nunca os valores
+    return jsonify({"ok": True})
+
+
+@app.post("/api/spotify/desconectar")
+def spotify_desconectar() -> Response:
+    """
+    v2.7.1 (P11). SÓ LOCAL. Esquece a autorização do Spotify neste PC: apaga o refresh token, o access token
+    e o dispositivo escolhido. {"apagar_credenciais": true} apaga também o Client ID e o Client Secret
+    (padrão false: o dono só reconecta). O acesso do app continua listado em spotify.com/account/apps até
+    ser removido lá (o painel orienta).
+    """
+    global _token_falha_ate
+    if not _requisicao_local():
+        raise ErroApi("Desconecte o Spotify no computador da loja.", 403)
+    corpo = corpo_json()
+    if set(corpo) - {"apagar_credenciais"}:
+        raise ErroApi("Campo desconhecido.")
+    apagar = corpo.get("apagar_credenciais", False)
+    if not isinstance(apagar, bool):
+        raise ErroApi("Campo 'apagar_credenciais' inválido.")
+    chaves = ["spotify_refresh_token", "spotify_access_token", "spotify_expires_at", "spotify_auth_erro",
+              "spotify_device_id", "spotify_device_nome", "spotify_device_tipo", "spotify_volume_pendente"]
+    if apagar:
+        chaves += ["spotify_client_id", "spotify_client_secret"]
+    with _token_lock:   # espera uma renovação em andamento terminar (ela só grava se o refresh ainda for o dela)
+        _remover_chaves_config(*chaves)
+    _token_falha_ate = 0.0
+    spotify_invalidar_cache()
+    auditar("spotify_desconectar", credenciais_apagadas=int(apagar))
+    log.info("Spotify desconectado pelo PC da loja%s.", " (credenciais apagadas)" if apagar else "")
     return jsonify({"ok": True})
 
 
@@ -2950,7 +3957,9 @@ def spotify_activate() -> Response:
     transferência falhe (app fechado, sem Premium...); nesse caso "warning" diz por quê.
     """
     _limitar_comandos_spotify()
-    device_id = validar_str(corpo_json().get("device_id"), "device_id", 128, min_len=1)
+    corpo = corpo_json()
+    exigir_chaves(corpo, ("device_id",))
+    device_id = validar_str(corpo.get("device_id"), "device_id", 128, min_len=1)
     if not RE_DEVICE_ID.fullmatch(device_id):
         raise ErroApi("Campo 'device_id' inválido.")
 
@@ -3055,6 +4064,7 @@ def _resposta_comando(status: int, reason: str | None) -> Response:
 def spotify_play() -> Response | tuple[Response, int]:
     _limitar_comandos_spotify()
     body = corpo_json()
+    exigir_chaves(body, ("uri", "context_uri"))
     uri = body.get("uri") or None
     context_uri = body.get("context_uri") or None
     payload: dict[str, Any] = {}
@@ -3109,7 +4119,9 @@ def spotify_previous() -> Response:
 @app.post("/api/spotify/volume")
 def spotify_volume() -> Response:
     _limitar_comandos_spotify()
-    value = validar_int(corpo_json().get("value"), "value", 0, 100)
+    corpo = corpo_json()
+    exigir_chaves(corpo, ("value",))
+    value = validar_int(corpo.get("value"), "value", 0, 100)
     status, reason = spotify_comando(
         "PUT",
         "/me/player/volume",
@@ -3638,7 +4650,7 @@ def _limpar_titulo(valor: Any) -> str | None:
     """Título seguro: str, sem caracteres de controle, até 200 caracteres."""
     if not isinstance(valor, str):
         return None
-    limpo = "".join(c for c in valor if c.isprintable()).strip()[:200]
+    limpo = programacao.limpar_exibicao(valor).strip()[:200]
     return limpo or None
 
 
@@ -3851,16 +4863,26 @@ def _adicionar_arquivos(
         return novos, len(achadas) - len(entram), _yt_fila_versao, primeiro
 
 
+_FILA_CHAVES_POR_OP = {
+    "add": frozenset({"op", "url", "music_id"}),
+    "add_many": frozenset({"op", "music_ids", "posicao", "embaralhar", "substituir", "tirar_primeiro"}),
+    "remove": frozenset({"op", "item_id"}),
+    "clear": frozenset({"op"}),
+    "move": frozenset({"op", "item_id", "to"}),
+    "play_now": frozenset({"op", "item_id"}),
+    "pop": frozenset({"op"}),
+}
+
+
 @app.post("/api/youtube/queue")
 def youtube_queue() -> Response:
     """Operações da fila: add (url|music_id), add_many, remove, clear, move, play_now, pop."""
     global _yt_fila_prox_id, _yt_fila_versao
     body = corpo_json()
     op = body.get("op")
-    if not isinstance(op, str) or op not in {
-        "add", "add_many", "remove", "clear", "move", "play_now", "pop"
-    }:
+    if not isinstance(op, str) or op not in _FILA_CHAVES_POR_OP:
         raise ErroApi("Operação inválida.")
+    exigir_chaves(body, _FILA_CHAVES_POR_OP[op])
 
     if op == "add_many":
         # "Tocar pasta" / "Adicionar pasta à fila" (v2.4): vários arquivos de uma vez.
@@ -4000,6 +5022,7 @@ def youtube_queue() -> Response:
 @app.post("/api/youtube/command")
 def youtube_command() -> Response:
     body = corpo_json()
+    exigir_chaves(body, ("action", "params"))
     action = body.get("action")
     # "duck"/"restore" são internos do servidor: o cliente nunca pode enviá-los.
     if not isinstance(action, str) or action not in YOUTUBE_ACOES_CLIENTE:
@@ -4082,15 +5105,25 @@ def _id_opcional(valor: Any, nome: str, regex: re.Pattern[str]) -> str | None:
     return valor
 
 
+_YT_STATE_CHAVES = frozenset({
+    "now_playing", "is_playing", "volume", "video_id", "list_id", "playlist_ids", "playlist_index",
+    "source", "music_id", "yt_pronto", "posicao_s", "duracao_s",
+})
+
+
 @app.post("/api/youtube/state")
 def youtube_state_push() -> Response:
     # Heartbeat legítimo: ~1 a cada 3 s (+ mudanças de estado). Teto folgado anti-abuso.
     if excedeu_limite("ytstate:" + (request.remote_addr or "?"), 60, 10.0):
         raise ErroApi("Muitas atualizações seguidas.", 429)
     body = corpo_json()
+    exigir_chaves(body, _YT_STATE_CHAVES)
     novo: dict[str, Any] = {}
     if "now_playing" in body:
-        novo["now_playing"] = validar_str(body["now_playing"], "now_playing", 300, strip=False)
+        # v2.7.1 (P15): o título vai a TODOS os painéis; controle, formato (bidi), substituto e uso
+        # privado saem (em vez de recusar: títulos legítimos do YouTube não podem dar 400).
+        bruto = validar_str(body["now_playing"], "now_playing", 300, strip=False)
+        novo["now_playing"] = programacao.limpar_exibicao(bruto)
     if "is_playing" in body:
         if not isinstance(body["is_playing"], bool):
             raise ErroApi("Campo 'is_playing' inválido.")
@@ -4305,10 +5338,28 @@ def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
     return ("offline_fallback" if aviso else "offline"), aviso
 
 
+ANUNCIO_REMOTO_MAX_POR_MIN = 10   # /api/announce por IP REMOTO (o PC da loja não tem limite)
+
+
+def _texto_do_anuncio(valor: Any) -> str:
+    """
+    O texto digitado: a MESMA higienização das Mensagens e da Programação (programacao.validar_texto):
+    strip, 1..500 caracteres, sem controle/formato (bidi, invisíveis)/substituto/uso privado. v2.7.1 (P15).
+    """
+    texto, motivo = programacao.validar_texto(valor, ANUNCIO_TEXTO_MAX, multilinha=True)
+    if motivo == "tipo":
+        raise ErroApi("Campo 'text' inválido.")
+    if motivo == "tamanho":
+        raise ErroApi("Campo 'text' com tamanho inválido.")
+    if motivo == "caractere":
+        raise ErroApi("Campo 'text' tem um caractere que não é permitido.")
+    return texto  # type: ignore[return-value]
+
+
 @app.post("/api/announce")
 def announce() -> Response | tuple[Response, int]:
     data = corpo_json()
-    texto = validar_str(data.get("text"), "text", ANUNCIO_TEXTO_MAX, min_len=1)
+    texto = _texto_do_anuncio(data.get("text"))
     modo = data.get("engine", "auto")
     if not isinstance(modo, str) or modo not in MOTORES:
         raise ErroApi("Campo 'engine' inválido.")
@@ -4316,10 +5367,17 @@ def announce() -> Response | tuple[Response, int]:
     if not isinstance(chave_voz, str) or chave_voz not in VOZES_ONLINE:
         raise ErroApi("Campo 'voice' inválido.")
     velocidade = validar_int(data.get("speed", 0), "speed", -50, 50, limitar=True)
+    # v2.7.1 (P05): um aparelho com PIN não emenda anúncios sem limite (o PC da loja é livre).
+    if not _requisicao_local() and excedeu_limite(
+            "anuncio:" + (request.remote_addr or "?"), ANUNCIO_REMOTO_MAX_POR_MIN, 60.0):
+        auditar("anuncio", caracteres=len(texto), resultado="limite")
+        raise ErroApi("Muitos anúncios seguidos. Aguarde um instante.", 429)
 
     # Não enfileira: se já há um anúncio tocando, responde 409 imediatamente.
     if not _anuncio_lock.acquire(blocking=False):
+        auditar("anuncio", caracteres=len(texto), resultado="ocupado")
         return _resp_erro(_msg_ocupado("Já existe um anúncio tocando. Aguarde terminar."), 409)
+    resultado_audit = "erro"
     _avisos_musica_iniciar()   # v2.4.2: duck/restore do Spotify anotam aqui o que deu errado
     try:
         # v2.3: com "saida_anuncio" configurada o anúncio vai para a saída escolhida.
@@ -4329,6 +5387,7 @@ def announce() -> Response | tuple[Response, int]:
             raise ErroSom("O áudio do Proclamare travou. Reinicie o Proclamare.", 503, "motor_contaminado")
         internet_ok = tem_internet()
         if modo == "online" and not internet_ok:
+            resultado_audit = "sem_internet"
             return _resp_erro("Sem internet — não é possível usar o motor online.", 503)
         usar_online = internet_ok and modo != "offline"
         log.info("Anúncio: %d caracteres, motor=%s, online=%s", len(texto), modo, usar_online)
@@ -4350,6 +5409,7 @@ def announce() -> Response | tuple[Response, int]:
             log.exception("Falha ao reproduzir o anúncio.")
             return _resp_erro("Não foi possível reproduzir o anúncio.", 500)
         limpar_audios_antigos()  # raramente faz algo (a cada ~1 h)
+        resultado_audit = "ok"
         resposta: dict[str, Any] = {"ok": True, "engine_used": engine_usado}
         if aviso:
             resposta["warning"] = aviso
@@ -4364,6 +5424,7 @@ def announce() -> Response | tuple[Response, int]:
     finally:
         _avisos_musica_coletar()   # descarta o que sobrou se o anúncio falhou
         _anuncio_lock.release()
+        auditar("anuncio", caracteres=len(texto), resultado=resultado_audit)   # só o tamanho, nunca o texto
 
 
 # ---------------------------------------------------------------------------
@@ -4491,7 +5552,6 @@ def som_descobrir() -> tuple[Response, int]:
 # O áudio roda SEMPRE na thread de áudio (executar_no_audio). A saída é resolvida e
 # ABERTA antes de abaixar a música; o finally de musica_abaixada() restaura sempre.
 # ---------------------------------------------------------------------------
-auditoria = logging.getLogger("proclamare.som.auditoria")  # quem mudou o quê (sem segredo, sem ref)
 TESTAR_MAX_POR_MIN = 3             # por IP
 TESTAR_GLOBAL_MAX = 10             # na loja toda...
 TESTAR_GLOBAL_JANELA_S = 600.0     # ...a cada 10 minutos
@@ -4870,6 +5930,9 @@ def som_preferencias() -> tuple[Response, int] | Response:
             "se_indisponivel" in corpo or "ativo" in (corpo.get("monitor") or {})):
         # fallback e monitor decidem se uma falha aparece: mudança remota fica visível no tile
         SOM.definir_alerta("saida_alterada_remoto", f"Preferências de saída alteradas por aparelho remoto (IP {ip}).")
+    if not _requisicao_local():   # P04: fica pendente para o dono rever (config.json["som_alterado_por"])
+        with contextlib.suppress(OSError):
+            update_config(som_alterado_por={"em": int(time.time())})
     auditoria.info("acao=preferencias ip=%s origem=%s campos=%s", ip,
                    "local" if _requisicao_local() else "remoto", ",".join(sorted(corpo)))
     return jsonify({"ok": True, "preferencias": som_modelo.visao_preferencias(som)})
@@ -5104,6 +6167,9 @@ def musicas_enviar() -> Response | tuple[Response, int]:
                 log.exception("Falha ao salvar um arquivo enviado.")
                 recusados.append(_recusado(arquivo.filename, "Não foi possível salvar o arquivo."))
         log.info("Envio de músicas: %d aceita(s), %d recusada(s).", len(enviados), len(recusados))
+        auditar("musicas_enviar", aceitas=len(enviados), recusadas=len(recusados))
+        if not _requisicao_local():   # P04: o dono revê o que aparelhos remotos mandaram para a pasta
+            _registrar_musicas_remotas([e["id"] for e in enviados if isinstance(e.get("id"), str)])
         if enviados:
             return jsonify({"ok": True, "enviados": enviados, "recusados": recusados})
         status = parada.status if parada is not None else 422
@@ -5250,6 +6316,16 @@ def _mensagens_do_config(cfg: dict) -> tuple[list[dict[str, str]], bool]:
     return lista, False
 
 
+def _mensagens_meta(cfg: dict) -> dict[str, dict[str, Any]]:
+    """Carimbo de origem (criado_por/alterado_por/alterado_em) de cada mensagem gravada, por id (P04)."""
+    meta: dict[str, dict[str, Any]] = {}
+    bruto = cfg.get("mensagens")
+    for m in (bruto[:MENSAGENS_MAX] if isinstance(bruto, list) else []):
+        if isinstance(m, dict) and isinstance(m.get("id"), str):
+            meta[m["id"]] = _meta_de_origem(m)
+    return meta
+
+
 def _resposta_mensagens(cfg: dict) -> Response:
     """Formato único do GET e dos POSTs: {ok, versao, de_fabrica, mensagens}."""
     lista, de_fabrica = _mensagens_do_config(cfg)
@@ -5352,9 +6428,13 @@ def mensagens_salvar() -> Response:
     with _config_lock:
         cfg = load_config()
         _exigir_versao_mensagens(cfg, versao)
-        existentes = {m["id"] for m in _mensagens_do_config(cfg)[0]}
+        atuais = {m["id"]: m for m in _mensagens_do_config(cfg)[0]}
+        meta = _mensagens_meta(cfg)
+        existentes = set(atuais)
         usados = {m["id"] for m in itens if "id" in m}
-        final: list[dict[str, str]] = []
+        origem = _origem_da_requisicao()
+        agora = int(time.time())
+        final: list[dict[str, Any]] = []
         for i, m in enumerate(itens):
             ident = m.get("id")
             if ident is None:   # mensagem nova: o servidor gera o id (estável a partir de agora)
@@ -5363,10 +6443,19 @@ def mensagens_salvar() -> Response:
             elif ident not in existentes:
                 raise ErroMensagem(f"Mensagem {i + 1}: esta mensagem não existe mais. Recarregue a lista.",
                                    campo="id", indice=i)
-            final.append({"id": ident, "titulo": m["titulo"], "texto": m["texto"]})
+            antiga = atuais.get(ident)
+            if antiga is not None and antiga["titulo"] == m["titulo"] and antiga["texto"] == m["texto"]:
+                carimbo = meta.get(ident) or {"criado_por": "local", "alterado_por": "local", "alterado_em": 0}
+            elif antiga is not None:   # mudou o conteúdo: o criador fica, o último a mexer é esta requisição
+                carimbo = {"criado_por": (meta.get(ident) or {}).get("criado_por", "local"),
+                           "alterado_por": origem, "alterado_em": agora}
+            else:
+                carimbo = {"criado_por": origem, "alterado_por": origem, "alterado_em": agora}
+            final.append({"id": ident, "titulo": m["titulo"], "texto": m["texto"], **carimbo})
         cfg["mensagens"] = final
         cfg["mensagens_versao"] = _versao_mensagens(cfg) + 1
         _gravar_config_atomico(cfg)
+    _contar_removidos_remoto("mensagens", len(existentes - {m["id"] for m in final}))
     _auditar_mensagens("mensagens", len(final))
     return _resposta_mensagens(cfg)
 
@@ -5379,10 +6468,12 @@ def mensagens_restaurar() -> Response:
     with _config_lock:
         cfg = load_config()
         _exigir_versao_mensagens(cfg, versao)
+        removidas = len(_mensagens_do_config(cfg)[0]) if "mensagens" in cfg else 0
         if "mensagens" in cfg:
             cfg.pop("mensagens")
             cfg["mensagens_versao"] = _versao_mensagens(cfg) + 1
             _gravar_config_atomico(cfg)
+    _contar_removidos_remoto("mensagens", removidas)
     _auditar_mensagens("mensagens_restaurar", len(MENSAGENS_DE_FABRICA))
     return _resposta_mensagens(cfg)
 
@@ -5436,7 +6527,7 @@ def _titulo_guardado(valor: Any) -> str:
     """Título curto guardado junto do id (texto simples, sem controle, até 60 caracteres)."""
     if not isinstance(valor, str):
         return ""
-    return "".join(c for c in valor if c.isprintable())[:LISTA_TITULO_GUARDADO_MAX].strip()
+    return programacao.limpar_exibicao(valor)[:LISTA_TITULO_GUARDADO_MAX].strip()
 
 
 def _inteiro(valor: Any, minimo: int, maximo: int, padrao: int) -> int:
@@ -5515,6 +6606,26 @@ def _sanear_item_lista(e: Any) -> dict[str, Any] | None:
     return None
 
 
+def _meta_de_origem(bruto: dict) -> dict[str, Any]:
+    """
+    Carimbo de origem lido do disco (P04): criado_por (imutável), alterado_por (quem mexeu por último no
+    CONTEÚDO) e alterado_em (epoch). Registro antigo, sem carimbo, vale "local" (não há como saber).
+    """
+    criado = bruto.get("criado_por") if bruto.get("criado_por") in programacao.ORIGENS_ITEM else "local"
+    alterado = bruto.get("alterado_por") if bruto.get("alterado_por") in programacao.ORIGENS_ITEM else criado
+    return {"criado_por": criado, "alterado_por": alterado,
+            "alterado_em": _inteiro(bruto.get("alterado_em"), 0, 2**40, 0)}
+
+
+def _carimbar(registro: dict, *, novo: bool) -> None:
+    """Grava no registro quem (local|remoto) o criou/alterou agora. É o SERVIDOR que decide; o cliente não manda."""
+    origem = _origem_da_requisicao()
+    if novo:
+        registro["criado_por"] = origem
+    registro["alterado_por"] = origem
+    registro["alterado_em"] = int(time.time())
+
+
 def _sanear_atalho_spotify(a: Any) -> dict[str, Any] | None:
     if not isinstance(a, dict):
         return None
@@ -5524,7 +6635,7 @@ def _sanear_atalho_spotify(a: Any) -> dict[str, Any] | None:
     if not isinstance(ident, str) or not RE_LISTA_ID.fullmatch(ident) or nome is None or m is None:
         return None
     return {"id": ident, "nome": nome, "uri": _uri_spotify(m.group(1), m.group(2)), "versao": _inteiro(a.get("versao"), 1, 2**31, 1),
-            "atualizada_em": _inteiro(a.get("atualizada_em"), 0, 2**40, 0)}
+            "atualizada_em": _inteiro(a.get("atualizada_em"), 0, 2**40, 0), **_meta_de_origem(a)}
 
 
 def _sanear_listas(bruto: Any) -> dict:
@@ -5567,6 +6678,7 @@ def _sanear_listas(bruto: Any) -> dict:
         doc["listas"].append({
             "id": ident, "nome": nome, "versao": _inteiro(lista.get("versao"), 1, 2**31, 1),
             "atualizada_em": _inteiro(lista.get("atualizada_em"), 0, 2**40, 0), "musicas": faixas,
+            **_meta_de_origem(lista),
         })
     atalhos = bruto.get("spotify")
     ids_vistos, nomes_vistos = set(), set()
@@ -5947,10 +7059,16 @@ def listas_detalhe(lista_id: str) -> Response:
     return jsonify({"ok": True, "limites": _limites_listas(), "lista": detalhe})
 
 
+def _sem_titulos(faixas: list[dict[str, Any]]) -> list[tuple]:
+    """Os itens da lista sem o título guardado (o título é enfeite: reenviar a mesma lista não é mudar o conteúdo)."""
+    return [(f["id"],) if f["tipo"] == "musica" else (_chave_youtube(f),) for f in faixas]
+
+
 def _criar_lista(doc: dict, nome: str, faixas: list[dict[str, Any]]) -> dict:
     """Acrescenta a lista nova ao `doc` (cópia sob o lock do armazém) e devolve o registro. Sem gravar."""
     ident = programacao.novo_id({lista["id"] for lista in doc["listas"]})
     nova = {"id": ident, "nome": nome, "versao": 1, "atualizada_em": int(time.time()), "musicas": faixas}
+    _carimbar(nova, novo=True)
     doc["listas"].append(nova)
     doc["versao"] += 1
     return nova
@@ -6113,13 +7231,23 @@ def listas_salvar(lista_id: str) -> Response:
             raise ErroLista(MSG_LISTA_VERSAO_MUDOU, 409, codigo="versao_mudou")
         if nome is not None and _nome_em_uso(doc, nome, exceto=lista_id):
             raise ErroLista("Já existe uma lista com esse nome.", 409, codigo="nome_repetido", campo="nome")
+        antes = (lista["nome"], copy.deepcopy(lista["musicas"]))
+        novas_faixas = None
         if entradas is not None:
-            lista["musicas"] = _faixas_da_lista(entradas, _titulos_anteriores(lista),
-                                                "itens" if "itens" in corpo else "musicas")
+            novas_faixas = _faixas_da_lista(entradas, _titulos_anteriores(lista),
+                                            "itens" if "itens" in corpo else "musicas")
+        mudou_conteudo = (nome is not None and nome != antes[0]) or (
+            novas_faixas is not None and _sem_titulos(novas_faixas) != _sem_titulos(antes[1]))
+        if mudou_conteudo:
+            _prog_checar_alvo_remoto("lista", lista_id)   # remoto mexendo no que um horário toca conta no teto diário
+        if novas_faixas is not None:
+            lista["musicas"] = novas_faixas
         if nome is not None:
             lista["nome"] = nome
         lista["versao"] += 1
         lista["atualizada_em"] = int(time.time())
+        if mudou_conteudo:   # salvar igual NÃO marca: quem só reenviou a mesma lista não "assume" nem "suja" o item
+            _carimbar(lista, novo=False)
         doc["versao"] += 1
         _listas_arquivo.gravar(doc)
     _auditar_listas("lista_salvar", len(lista["musicas"]))
@@ -6145,6 +7273,7 @@ def listas_apagar(lista_id: str) -> Response:
         doc["listas"].remove(lista)
         doc["versao"] += 1
         _listas_arquivo.gravar(doc)
+    _contar_removidos_remoto("listas", 1)
     _auditar_listas("lista_apagar", len(lista["musicas"]))
     return jsonify({"ok": True, "versao": doc["versao"]})
 
@@ -6351,6 +7480,7 @@ def spotify_atalhos_criar() -> tuple[Response, int]:
             raise ErroLista("Já existe um atalho com esse nome.", 409, codigo="nome_repetido", campo="nome")
         ident = programacao.novo_id({a["id"] for a in doc["spotify"]})
         novo = {"id": ident, "nome": nome, "uri": uri, "versao": 1, "atualizada_em": int(time.time())}
+        _carimbar(novo, novo=True)
         doc["spotify"].append(novo)
         doc["spotify_versao"] += 1
         _listas_arquivo.gravar(doc)
@@ -6380,12 +7510,17 @@ def spotify_atalhos_salvar(atalho_id: str) -> Response:
             raise ErroLista(MSG_ATALHO_VERSAO_MUDOU, 409, codigo="versao_mudou")
         if nome is not None and _nome_de_atalho_em_uso(doc, nome, exceto=atalho_id):
             raise ErroLista("Já existe um atalho com esse nome.", 409, codigo="nome_repetido", campo="nome")
+        mudou_conteudo = (nome is not None and nome != atalho["nome"]) or (uri is not None and uri != atalho["uri"])
+        if mudou_conteudo:
+            _prog_checar_alvo_remoto("spotify", atalho_id)
         if nome is not None:
             atalho["nome"] = nome
         if uri is not None:
             atalho["uri"] = uri
         atalho["versao"] += 1
         atalho["atualizada_em"] = int(time.time())
+        if mudou_conteudo:
+            _carimbar(atalho, novo=False)
         doc["spotify_versao"] += 1
         _listas_arquivo.gravar(doc)
     _auditar_listas("spotify_atalho_salvar", 1)
@@ -6411,6 +7546,7 @@ def spotify_atalhos_apagar(atalho_id: str) -> Response:
         doc["spotify"].remove(atalho)
         doc["spotify_versao"] += 1
         _listas_arquivo.gravar(doc)
+    _contar_removidos_remoto("atalhos", 1)
     _auditar_listas("spotify_atalho_apagar", 1)
     return jsonify({"ok": True, "versao": doc["spotify_versao"]})
 
@@ -6498,7 +7634,7 @@ def _nome_do_contexto_spotify(tipo: str, ident: str) -> str | None:
                                        rotulo_log="nome do contexto")
         bruto = dados.get("name") if status == 200 else None
         if isinstance(bruto, str):
-            limpo = "".join(c for c in bruto if c.isprintable()).strip()[:LISTA_NOME_MAX].strip()
+            limpo = programacao.limpar_exibicao(bruto).strip()[:LISTA_NOME_MAX].strip()
             nome = programacao.texto_limpo(limpo, LISTA_NOME_MAX, multilinha=False)
     except Exception:  # noqa: BLE001 - o nome é opcional
         log.debug("Nome da playlist do Spotify indisponível.")
@@ -7102,64 +8238,599 @@ def _prog_checar_alvo(tipo: str, alvo: str, ja_existia: bool, indice: int) -> No
 _NOMES_DIAS = ("domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado")
 
 
+PROG_FALA_MAX_S = 80.0                   # estimativa de fala por anúncio: len/7 s, no máximo isto (= teto do laço de 80 s)
+PROG_FALA_CARACTERES_POR_S = 7.0
+PROG_EVENTOS_DIA_MAX = 72                # horários ATIVOS no mesmo dia da semana (interrupções da música): 1 a cada 10 min por 12 h
+PROG_REMOTO_LISTAS_DIA_MAX = 10          # listas/playlists do Spotify ATIVAS criadas/alteradas por aparelhos remotos por dia
+
+
+def _prog_dias_do_item(item: dict) -> list[int]:
+    return list(item.get("dias") or [programacao.dia_da_semana(date.fromisoformat(item["data"]))])
+
+
+def _prog_por_dia(itens: list[dict], valor: Callable[[dict], float]) -> list[float]:
+    """Soma `valor(item)` dos itens ATIVOS por dia da semana (0 = domingo). Data única conta no dia da semana dela."""
+    por_dia = [0.0] * 7
+    for item in itens:
+        if not item.get("ativo"):
+            continue
+        v = valor(item)
+        if v <= 0:
+            continue
+        for dia in _prog_dias_do_item(item):
+            por_dia[dia] += v
+    return por_dia
+
+
+def _prog_segundos_audio(item: dict) -> float:
+    """Áudio agendado: a duração (sem duração conhecida conta o teto de 10 min; música que sumiu não toca = 0)."""
+    if item["tipo"] != "audio":
+        return 0.0
+    m = ACERVO.obter(item["alvo"])
+    if m is None:
+        return 0.0
+    return float(m.duracao_s) if m.duracao_s is not None else PROG_AUDIO_TETO_S
+
+
+def _prog_segundos_fala(item: dict) -> float:
+    """Anúncio agendado: estimativa conservadora de fala (len/7 s, no máximo 80 s)."""
+    if item["tipo"] != "anuncio":
+        return 0.0
+    return min(PROG_FALA_MAX_S, len(item["alvo"]) / PROG_FALA_CARACTERES_POR_S)
+
+
 def _prog_audio_por_dia(itens: list[dict]) -> list[float]:
     """
     Segundos de ÁUDIO agendado ATIVO por dia da semana (0 = domingo). Item de data única conta no dia da
     semana dessa data; áudio sem duração conhecida conta o teto de 10 min; música que sumiu não toca (0).
     """
-    por_dia = [0.0] * 7
-    for item in itens:
-        if item["tipo"] != "audio" or not item.get("ativo"):
-            continue
-        m = ACERVO.obter(item["alvo"])
-        if m is None:
-            continue
-        duracao = float(m.duracao_s) if m.duracao_s is not None else PROG_AUDIO_TETO_S
-        dias = item.get("dias") or [programacao.dia_da_semana(date.fromisoformat(item["data"]))]
-        for dia in dias:
-            por_dia[dia] += duracao
-    return por_dia
+    return _prog_por_dia(itens, _prog_segundos_audio)
+
+
+def _prog_som_por_dia(itens: list[dict]) -> list[float]:
+    """v2.7.1 (P14): áudio + estimativa de fala dos anúncios, por dia da semana. É o que o teto de 60 min limita."""
+    return _prog_por_dia(itens, lambda i: _prog_segundos_audio(i) + _prog_segundos_fala(i))
+
+
+def _prog_conteudo(item: dict, com_ativo: bool) -> dict:
+    """O que o item É (sem os carimbos do servidor e, se `com_ativo` for falso, sem ligado/desligado)."""
+    return {k: v for k, v in item.items() if k not in programacao.CHAVES_SO_SERVIDOR and (com_ativo or k != "ativo")}
+
+
+def _prog_mexeu(item: dict, antigo: dict | None, origem: str) -> bool:
+    """
+    A requisição `origem` mexeu neste item? Item novo ou de conteúdo diferente: sim. Ligar/desligar: para um
+    aparelho REMOTO conta (reativar um horário que o dono desligou é mexer); para o PC da loja não (o dono
+    desligar um horário não apaga a marca de que ele veio de um celular).
+    """
+    if antigo is None:
+        return True
+    return _prog_conteudo(antigo, origem == "remoto") != _prog_conteudo(item, origem == "remoto")
+
+
+def _prog_origem_prevista(item: dict, antigo: dict | None, origem: str) -> str:
+    if _prog_mexeu(item, antigo, origem):
+        return origem
+    return antigo.get("origem") if antigo and antigo.get("origem") in programacao.ORIGENS_ITEM else "local"
 
 
 def _prog_checar_limite_diario(novos: list[dict], atuais: list[dict]) -> None:
     """
-    Teto de áudio agendado por dia (PROG_AUDIO_DIA_MAX_S): um aparelho com o PIN não pode deixar o
-    PC da loja tocando horas de áudio por dia, todo dia. Só recusa o que PIORA um dia que passou do
-    limite (uma programação já grande não impede de desativar ou apagar horários).
+    Tetos por dia da semana (um aparelho com o PIN não pode deixar o PC da loja tocando horas por dia, todo
+    dia, nem interrompendo a música o dia inteiro). Só recusa o que PIORA um dia que passou do limite (uma
+    programação já grande não impede de desativar ou apagar horários):
+      * som (áudio + estimativa de fala dos anúncios) <= PROG_AUDIO_DIA_MAX_S (60 min);
+      * horários ativos <= PROG_EVENTOS_DIA_MAX (72) - cada um interrompe a música uma vez;
+      * listas/playlists do Spotify ativas criadas/alteradas por aparelho REMOTO <= PROG_REMOTO_LISTAS_DIA_MAX (10).
     """
-    depois, antes = _prog_audio_por_dia(novos), _prog_audio_por_dia(atuais)
+    por_id = {i["id"]: i for i in atuais}
+    origem = _origem_da_requisicao()
+    previstos = [{**i, "origem": _prog_origem_prevista(i, por_id.get(i.get("id") or ""), origem)} for i in novos]
+
+    depois, antes = _prog_som_por_dia(novos), _prog_som_por_dia(atuais)
     for dia in range(7):
         if depois[dia] > PROG_AUDIO_DIA_MAX_S and depois[dia] > antes[dia]:
             raise ErroProg(
-                f"Os áudios agendados somam mais de {int(PROG_AUDIO_DIA_MAX_S // 60)} minutos por dia "
-                f"({_NOMES_DIAS[dia]}). Desative ou remova algum horário de áudio.",
+                f"Os áudios e anúncios agendados somam mais de {int(PROG_AUDIO_DIA_MAX_S // 60)} minutos por dia "
+                f"({_NOMES_DIAS[dia]}). Desative ou remova algum horário.",
+                codigo="limite_diario", campo="alvo")
+    depois, antes = _prog_por_dia(novos, lambda i: 1.0), _prog_por_dia(atuais, lambda i: 1.0)
+    for dia in range(7):
+        if depois[dia] > PROG_EVENTOS_DIA_MAX and depois[dia] > antes[dia]:
+            raise ErroProg(
+                f"Há mais de {PROG_EVENTOS_DIA_MAX} horários no mesmo dia ({_NOMES_DIAS[dia]}). "
+                "Desative ou remova algum.", codigo="limite_diario", campo="itens")
+
+    alvos_remotos = _alvos_remotos()
+
+    def remoto_lista(i: dict) -> float:
+        if i["tipo"] not in ("lista", "spotify"):
+            return 0.0
+        return 1.0 if i.get("origem") == "remoto" or (i["tipo"], i["alvo"]) in alvos_remotos else 0.0
+
+    depois, antes = _prog_por_dia(previstos, remoto_lista), _prog_por_dia(atuais, remoto_lista)
+    for dia in range(7):
+        if depois[dia] > PROG_REMOTO_LISTAS_DIA_MAX and depois[dia] > antes[dia]:
+            raise ErroProg(
+                f"Por aparelhos de fora do PC da loja só cabem {PROG_REMOTO_LISTAS_DIA_MAX} listas ou "
+                f"playlists agendadas por dia ({_NOMES_DIAS[dia]}). Peça ao dono para agendar no PC.",
                 codigo="limite_diario", campo="alvo")
 
 
-def _prog_sem_origem(item: dict) -> dict:
-    return {k: v for k, v in item.items() if k != "origem"}
+def _alvos_remotos() -> set[tuple[str, str]]:
+    """(tipo, id) das listas/playlists do Spotify cujo último autor foi um aparelho remoto."""
+    doc = listas_ler()
+    return ({("lista", x["id"]) for x in doc["listas"] if x.get("alterado_por") == "remoto"}
+            | {("spotify", x["id"]) for x in doc["spotify"] if x.get("alterado_por") == "remoto"})
+
+
+def _prog_checar_alvo_remoto(tipo: str, alvo_id: str) -> None:
+    """
+    Um aparelho REMOTO está mudando o conteúdo de uma lista/playlist: se horários ativos a tocam, ela passa a
+    contar no teto de PROG_REMOTO_LISTAS_DIA_MAX por dia (senão bastaria editar o que o dono agendou). Só
+    recusa o que PIORA um dia que passou do limite. O PC da loja não tem esse teto.
+    """
+    if _origem_da_requisicao() != "remoto":
+        return
+    itens = _prog_arquivo.ler()["itens"]
+    ja = _alvos_remotos()
+
+    def conta(extra: bool) -> list[float]:
+        def valor(i: dict) -> float:
+            if i["tipo"] not in ("lista", "spotify"):
+                return 0.0
+            chave = (i["tipo"], i["alvo"])
+            return 1.0 if i.get("origem") == "remoto" or chave in ja or (extra and chave == (tipo, alvo_id)) else 0.0
+        return _prog_por_dia(itens, valor)
+
+    depois, antes = conta(True), conta(False)
+    for dia in range(7):
+        if depois[dia] > PROG_REMOTO_LISTAS_DIA_MAX and depois[dia] > antes[dia]:
+            raise ErroLista(
+                f"Esta lista/playlist está agendada e, por aparelhos de fora do PC da loja, só cabem "
+                f"{PROG_REMOTO_LISTAS_DIA_MAX} listas ou playlists agendadas por dia ({_NOMES_DIAS[dia]}). "
+                "Peça ao dono para alterar no PC.", 400, codigo="limite_diario")
 
 
 def _prog_marcar_origem(final: list[dict], atuais: list[dict]) -> None:
     """
-    "origem" ("local" | "remoto") = de onde veio a última criação/alteração do item. É o SERVIDOR que
-    decide (o cliente não pode mandar o campo): item novo ou alterado leva a origem desta requisição;
-    item que não mudou conserva a que já tinha.
+    Carimbos do SERVIDOR em cada item (o cliente não pode mandar nenhum): "origem" ("local" | "remoto") =
+    quem alterou o CONTEÚDO por último (ligar/desligar pelo PC não conta; veja _prog_mexeu); "criado_por" =
+    quem criou (imutável); "alterado_em" = epoch da última alteração de conteúdo.
     """
-    origem = "local" if _requisicao_local() else "remoto"
+    origem = _origem_da_requisicao()
+    agora = int(time.time())
     antigos = {i["id"]: i for i in atuais}
     for item in final:
         antigo = antigos.get(item["id"])
-        if antigo is not None and _prog_sem_origem(antigo) == _prog_sem_origem(item):
-            if antigo.get("origem") in programacao.ORIGENS_ITEM:
-                item["origem"] = antigo["origem"]
-        else:
-            item["origem"] = origem
+        mexeu = _prog_mexeu(item, antigo, origem)
+        item["origem"] = _prog_origem_prevista(item, antigo, origem)
+        item["criado_por"] = (antigo.get("criado_por") or antigo.get("origem") or "local") if antigo else origem
+        item["alterado_em"] = agora if mexeu else (antigo.get("alterado_em") or 0)
+
+
+def _prog_pendentes() -> list[tuple[dict, str]]:
+    """
+    Horários que um aparelho remoto deixou (ou que tocam algo que ele deixou), para o dono revisar: (item,
+    motivo) com motivo "item" (o próprio horário foi criado/alterado por remoto) ou "alvo" (a lista ou a
+    playlist do Spotify que ele toca foi alterada por remoto). Inclui os desativados.
+    """
+    doc = listas_ler()
+    listas = {x["id"]: x for x in doc["listas"]}
+    atalhos = {x["id"]: x for x in doc["spotify"]}
+    achados: list[tuple[dict, str]] = []
+    for item in _prog_arquivo.ler()["itens"]:
+        if item.get("origem") == "remoto":
+            achados.append((item, "item"))
+        elif item["tipo"] == "lista" and listas.get(item["alvo"], {}).get("alterado_por") == "remoto":
+            achados.append((item, "alvo"))
+        elif item["tipo"] == "spotify" and atalhos.get(item["alvo"], {}).get("alterado_por") == "remoto":
+            achados.append((item, "alvo"))
+    return achados
 
 
 def _prog_contar_remotos() -> int:
-    """Quantos horários foram criados/alterados por aparelhos remotos (para o aviso ao trocar o PIN)."""
-    return sum(1 for i in _prog_arquivo.ler()["itens"] if i.get("origem") == "remoto")
+    """Quantos horários vieram de aparelhos remotos (ou tocam algo alterado por eles): o aviso ao trocar o PIN."""
+    return len(_prog_pendentes())
+
+
+# --- Revisão do que aparelhos remotos deixaram (v2.7.1, P04) -------------------------------------
+# Pendente = o ÚLTIMO autor do conteúdo foi um aparelho remoto. Duas classes, que o painel mostra separadas:
+#   criados_pela_rede  - o item NASCEU num aparelho remoto (criado_por == "remoto");
+#   mudados_pela_rede  - o item é do dono (criado_por == "local"), mas um remoto mexeu no conteúdo depois
+#                        (ou o horário do dono toca uma lista/playlist que um remoto alterou).
+# `remover_remotos` apaga SÓ os criados pela rede: o que é do dono nunca é apagado por esta rotina (um remoto
+# pode ter editado a lista do dono; apagá-la perderia trabalho legítimo). Esses ficam pendentes para o dono
+# decidir (e, se forem horários, desativados por `desativar_remotos`).
+# Corrida conhecida: uma requisição REMOTA que já estava em andamento quando o PIN foi trocado ou as sessões
+# foram revogadas pode terminar de gravar DEPOIS da revisão (janela de milissegundos entre validar a sessão e
+# gravar). O que ela deixar aparece como pendente na próxima consulta de /api/seguranca/remotos; por isso o
+# painel local avisa o dono de pendências também depois de revogar, e a revisão pode ser repetida.
+MUSICAS_ORIGEM_MAX = 2000
+
+
+REMOVIDOS_TIPOS = ("horarios", "listas", "atalhos", "mensagens")
+
+
+def _contar_removidos_remoto(tipo: str, n: int) -> None:
+    """
+    Um aparelho REMOTO apagou `n` itens de `tipo`: o dono não consegue "ver" o que sumiu, então só o NÚMERO fica
+    anotado (config.json "removidos_remotos", por tipo) para o painel avisar. Nunca nome, texto nem id. O PC da
+    loja apagando não conta. Zera quando o dono aprova ("removidos" ou "todos").
+    """
+    if n <= 0 or tipo not in REMOVIDOS_TIPOS or not has_request_context() or _origem_da_requisicao() != "remoto":
+        return
+    try:
+        with _config_lock:
+            cfg = load_config()
+            cont = cfg.get("removidos_remotos") if isinstance(cfg.get("removidos_remotos"), dict) else {}
+            cont[tipo] = min(10**6, int(cont.get(tipo, 0) if isinstance(cont.get(tipo, 0), int) else 0) + n)
+            cfg["removidos_remotos"] = cont
+            _gravar_config_atomico(cfg)
+    except OSError as exc:
+        log.warning("Não foi possível anotar o que um aparelho remoto apagou (%s).", type(exc).__name__)
+
+
+def _removidos_remotos(cfg: dict) -> dict[str, int]:
+    bruto = cfg.get("removidos_remotos") if isinstance(cfg.get("removidos_remotos"), dict) else {}
+    return {t: v for t in REMOVIDOS_TIPOS if isinstance(v := bruto.get(t), int) and not isinstance(v, bool) and v > 0}
+
+
+def _som_saidas_remotas(cfg: dict) -> list[str]:
+    """sids das saídas de som APROVADAS por um aparelho remoto (som.saidas[sid].aprovada_por == "remoto")."""
+    som = cfg.get("som") if isinstance(cfg.get("som"), dict) else {}
+    saidas = som.get("saidas") if isinstance(som.get("saidas"), dict) else {}
+    return [sid for sid, e in saidas.items() if isinstance(e, dict) and e.get("aprovada") is True
+            and e.get("aprovada_por") == "remoto"]
+
+
+def _apagavel(registro: dict) -> bool:
+    """
+    `remover_remotos` só apaga o que NASCEU num aparelho remoto E continua com o último autor remoto: se o dono
+    editou depois (alterado_por "local"), ele assumiu o item - a edição do dono aprova implicitamente - e nada o apaga.
+    """
+    return registro.get("criado_por") == "remoto" and registro.get("alterado_por") == "remoto"
+
+
+def _remotas(registros: list[dict]) -> list[dict]:
+    return [r for r in registros if r.get("alterado_por") == "remoto"]
+
+
+def _mensagens_remotas(cfg: dict) -> list[dict]:
+    """Mensagens prontas (gravadas) cujo último autor foi um aparelho remoto, com o carimbo."""
+    meta = _mensagens_meta(cfg)
+    return [{**m, **meta.get(m["id"], {})} for m in _mensagens_do_config(cfg)[0]
+            if meta.get(m["id"], {}).get("alterado_por") == "remoto"]
+
+
+def _musicas_remotas(cfg: dict) -> dict[str, int]:
+    """Músicas ENVIADAS por aparelho remoto que ainda estão na pasta: {music_id: epoch do envio}."""
+    bruto = cfg.get("musicas_origem")
+    achadas: dict[str, int] = {}
+    for mid, em in (bruto.items() if isinstance(bruto, dict) else []):
+        if isinstance(mid, str) and musicas.RE_ID.fullmatch(mid) and _numero_epoch(em) is not None:
+            if not ACERVO.pronto or ACERVO.obter(mid) is not None:
+                achadas[mid] = int(em)
+    return achadas
+
+
+def _som_pendente(cfg: dict) -> int:
+    """Epoch da última mudança de preferências de som feita por aparelho remoto (0 = nenhuma pendente)."""
+    em = _numero_epoch((cfg.get("som_alterado_por") or {}).get("em")) if isinstance(cfg.get("som_alterado_por"), dict) else None
+    return int(em or 0)
+
+
+def _horario_criado_pela_rede(item: dict, motivo: str) -> bool:
+    return motivo == "item" and (item.get("criado_por") or item.get("origem")) == "remoto"
+
+
+def _revisao_contar() -> dict[str, int]:
+    """Contagens do que espera revisão, com a divisão criados_pela_rede x mudados_pela_rede."""
+    doc = listas_ler()
+    cfg = load_config()
+    criados = mudados = 0
+    horarios = _prog_pendentes()
+    for item, motivo in horarios:
+        if _horario_criado_pela_rede(item, motivo):
+            criados += 1
+        else:
+            mudados += 1
+    listas, atalhos, mensagens = _remotas(doc["listas"]), _remotas(doc["spotify"]), _mensagens_remotas(cfg)
+    for reg in listas + atalhos + mensagens:
+        if reg.get("criado_por") == "remoto":
+            criados += 1
+        else:
+            mudados += 1
+    apagaveis = sum(1 for r in listas + atalhos + mensagens if _apagavel(r))
+    musicas_n = len(_musicas_remotas(cfg))
+    criados += musicas_n
+    som_n = (1 if _som_pendente(cfg) else 0) + len(_som_saidas_remotas(cfg))   # preferências + saídas aprovadas por remoto
+    mudados += som_n
+    total = len(horarios) + len(listas) + len(atalhos) + len(mensagens) + musicas_n + som_n
+    return {"horarios": len(horarios), "listas": len(listas), "atalhos": len(atalhos),
+            "mensagens": len(mensagens), "musicas": musicas_n, "som": som_n,
+            "criados_pela_rede": criados, "mudados_pela_rede": mudados, "total": total,
+            # quantos itens o remover_remotos realmente APAGA (listas + atalhos + mensagens criados pela rede);
+            # os horários criados pela rede e as músicas NÃO entram: horário só é desativado, música nunca é apagada
+            "apagaveis_pela_rede": apagaveis,
+            # só números (por tipo no inventário): o que um remoto APAGOU. Informativo, fora do "total".
+            "removidos_pela_rede": sum(_removidos_remotos(cfg).values())}
+
+
+def _revisao_inventario() -> dict[str, Any]:
+    """O que os aparelhos remotos criaram/alteraram: ids, nomes/títulos curtos e carimbos (nunca o texto das mensagens)."""
+    doc = listas_ler()
+    cfg = load_config()
+    agora = PROGRAMACAO.agora()
+    horarios = []
+    for item, motivo in _prog_pendentes():
+        publico = _prog_item_publico(item, agora)
+        horarios.append({
+            "id": item["id"], "rotulo": publico["rotulo"], "tipo": item["tipo"], "hora": item["hora"],
+            "dias": item.get("dias"), "data": item.get("data"), "ativo": item["ativo"], "motivo": motivo,
+            # nome da lista/playlist que o horário toca: o MESMO campo (e higienização) do GET /api/programacao
+            "alvo_nome": publico["alvo_nome"] if item["tipo"] in ("lista", "spotify") else None,
+            "criado_por": item.get("criado_por") or item.get("origem") or "local",
+            "alterado_por": item.get("origem") or "local", "alterado_em": item.get("alterado_em") or 0})
+
+    def carimbos(r: dict) -> dict[str, Any]:
+        return {"criado_por": r["criado_por"], "alterado_por": r["alterado_por"], "alterado_em": r["alterado_em"]}
+
+    musicas_lista = []
+    for mid, em in sorted(_musicas_remotas(cfg).items(), key=lambda kv: -kv[1]):
+        m = ACERVO.obter(mid)
+        musicas_lista.append({"id": mid, "titulo": m.titulo if m is not None else None, "enviada_em": em,
+                              "criado_por": "remoto"})
+    return {
+        "pendentes": _revisao_contar(),
+        "horarios": horarios,
+        "listas": [{"id": x["id"], "nome": x["nome"], "total": len(x["musicas"]), **carimbos(x)}
+                   for x in _remotas(doc["listas"])],
+        "atalhos": [{"id": x["id"], "nome": x["nome"], **carimbos(x)} for x in _remotas(doc["spotify"])],
+        "mensagens": [{"id": m["id"], "titulo": m["titulo"], **carimbos(m)} for m in _mensagens_remotas(cfg)],
+        "musicas": musicas_lista,
+        "som": {"pendente": bool(_som_pendente(cfg) or _som_saidas_remotas(cfg)),
+                "alterado_em": _som_pendente(cfg), "saidas": len(_som_saidas_remotas(cfg))},
+        "removidos": _removidos_remotos(cfg),
+    }
+
+
+def _aplicar_revisao_remotos(opcoes: dict[str, bool]) -> dict[str, Any]:
+    """
+    Desfaz (conforme as opções) o que aparelhos remotos deixaram. Chamado logo DEPOIS de trocar o PIN ou
+    revogar as sessões (veja a "corrida conhecida" acima).
+      desativar_remotos   horários pendentes (criados OU mudados pela rede; veja _prog_pendentes) ficam inativos;
+                          os que já estavam na fila de execução saem dela; se um deles está tocando agora, é
+                          interrompido;
+      remover_remotos     apaga mensagens, listas e atalhos do Spotify CRIADOS por aparelho remoto
+                          (criado_por == "remoto"); o que é do dono e foi só alterado por remoto NÃO é apagado.
+                          Mensagens: se não sobrar nenhuma, volta à lista de fábrica. Músicas enviadas por
+                          remoto nunca são apagadas aqui (só listadas);
+      restaurar_mensagens volta TODAS as mensagens à lista de fábrica;
+      limpar_fila         esvazia a fila do Tocador (YouTube e arquivos).
+    Devolve as contagens do que foi feito (nunca nomes nem textos).
+    """
+    global _yt_fila_versao
+    res: dict[str, Any] = {
+        "horarios_desativados": 0, "horarios_cancelados": 0, "parou_item": False, "fila_limpa": False,
+        "mensagens_removidas": 0, "listas_removidas": 0, "atalhos_removidos": 0, "mensagens_restauradas": False,
+        "itens_removidos": 0,
+    }
+    if opcoes.get("desativar_remotos"):
+        ids = {item["id"] for item, _ in _prog_pendentes()}
+        if ids:
+            with _prog_arquivo.lock:
+                doc = copy.deepcopy(_prog_arquivo.ler())
+                for item in doc["itens"]:
+                    if item["id"] in ids and item.get("ativo"):
+                        item["ativo"] = False
+                        res["horarios_desativados"] += 1
+                if res["horarios_desativados"]:
+                    doc["versao"] += 1
+                    _prog_arquivo.gravar(doc)
+            res["horarios_cancelados"] = PROGRAMACAO.cancelar_fila(lambda it: it.get("id") in ids)
+            tocando = PROGRAMACAO.tocando
+            if tocando is not None and tocando.get("id") in ids:
+                res["parou_item"] = PROGRAMACAO.parar_execucao() != "nada"
+    if opcoes.get("limpar_fila"):
+        with _yt_fila_lock:
+            _yt_fila.clear()
+            _yt_fila_versao += 1
+        res["fila_limpa"] = True
+    if opcoes.get("remover_remotos"):
+        with _listas_arquivo.lock:
+            doc = copy.deepcopy(listas_ler())
+            antes_l, antes_a = len(doc["listas"]), len(doc["spotify"])
+            doc["listas"] = [x for x in doc["listas"] if not _apagavel(x)]
+            doc["spotify"] = [x for x in doc["spotify"] if not _apagavel(x)]
+            res["listas_removidas"] = antes_l - len(doc["listas"])
+            res["atalhos_removidos"] = antes_a - len(doc["spotify"])
+            if res["listas_removidas"]:
+                doc["versao"] += 1
+            if res["atalhos_removidos"]:
+                doc["spotify_versao"] += 1
+                doc["versao"] += 1
+            if res["listas_removidas"] or res["atalhos_removidos"]:
+                _listas_arquivo.gravar(doc)
+        if not opcoes.get("restaurar_mensagens"):
+            with _config_lock:
+                cfg = load_config()
+                meta = _mensagens_meta(cfg)
+                criadas = {mid for mid, m in meta.items() if _apagavel(m)}
+                if criadas and isinstance(cfg.get("mensagens"), list):
+                    restantes = [m for m in cfg["mensagens"] if isinstance(m, dict) and m.get("id") not in criadas]
+                    res["mensagens_removidas"] = len(cfg["mensagens"]) - len(restantes)
+                    if restantes:
+                        cfg["mensagens"] = restantes
+                    else:
+                        cfg.pop("mensagens", None)
+                    cfg["mensagens_versao"] = _versao_mensagens(cfg) + 1
+                    _gravar_config_atomico(cfg)
+    if opcoes.get("restaurar_mensagens"):
+        with _config_lock:
+            cfg = load_config()
+            if "mensagens" in cfg:
+                cfg.pop("mensagens")
+                cfg["mensagens_versao"] = _versao_mensagens(cfg) + 1
+                _gravar_config_atomico(cfg)
+        res["mensagens_restauradas"] = True
+    res["itens_removidos"] = res["mensagens_removidas"] + res["listas_removidas"] + res["atalhos_removidos"]
+    return res
+
+
+def _aprovar_registros(chave: str, ident: str | None) -> int:
+    """Aprova listas (chave "listas") ou atalhos ("spotify") com último autor remoto. Devolve quantos."""
+    with _listas_arquivo.lock:
+        doc = copy.deepcopy(listas_ler())
+        mudou = 0
+        for x in doc[chave]:
+            if x.get("alterado_por") == "remoto" and (ident is None or x["id"] == ident):
+                x["alterado_por"] = "local"
+                mudou += 1
+        if mudou:
+            doc["versao"] += 1
+            _listas_arquivo.gravar(doc)
+    return mudou
+
+
+def _revisao_aprovar(tipo: str | None, ident: str | None) -> int:
+    """
+    O dono assume o item (ou tudo, com tipo None): o último autor passa a ser "local". Devolve quantos.
+    Aprovar um HORÁRIO também aprova a lista/playlist que ele toca, se um remoto a alterou (é isso que o
+    painel mostra como motivo "alvo"): sem isso o horário voltaria a aparecer como pendente.
+    """
+    n = 0
+    if tipo in (None, "horario"):
+        alvos: list[tuple[str, str]] = []
+        with _prog_arquivo.lock:
+            doc = copy.deepcopy(_prog_arquivo.ler())
+            mudou = 0
+            for item in doc["itens"]:
+                if ident is not None and item["id"] != ident:
+                    continue
+                if item.get("origem") == "remoto":
+                    item["origem"] = "local"
+                    mudou += 1
+                if tipo == "horario" and item["tipo"] in ("lista", "spotify"):
+                    alvos.append((item["tipo"], item["alvo"]))
+            if mudou:
+                doc["versao"] += 1
+                _prog_arquivo.gravar(doc)
+            n += mudou
+        for tipo_alvo, alvo_id in alvos:
+            n += _aprovar_registros("listas" if tipo_alvo == "lista" else "spotify", alvo_id)
+    if tipo in (None, "lista"):
+        n += _aprovar_registros("listas", ident)
+    if tipo in (None, "atalho"):
+        n += _aprovar_registros("spotify", ident)
+    if tipo in (None, "mensagem"):
+        with _config_lock:
+            cfg = load_config()
+            mudou = 0
+            for m in (cfg.get("mensagens") if isinstance(cfg.get("mensagens"), list) else []):
+                if (isinstance(m, dict) and m.get("alterado_por") == "remoto"
+                        and (ident is None or m.get("id") == ident)):
+                    m["alterado_por"] = "local"
+                    mudou += 1
+            if mudou:
+                _gravar_config_atomico(cfg)
+            n += mudou
+    if tipo in (None, "musica"):
+        with _config_lock:
+            cfg = load_config()
+            origem = cfg.get("musicas_origem") if isinstance(cfg.get("musicas_origem"), dict) else {}
+            sair = [m for m in origem if ident is None or m == ident]
+            if sair:
+                for m in sair:
+                    origem.pop(m, None)
+                if origem:
+                    cfg["musicas_origem"] = origem
+                else:
+                    cfg.pop("musicas_origem", None)
+                _gravar_config_atomico(cfg)
+            n += len([m for m in sair if musicas.RE_ID.fullmatch(m)])
+    if tipo in (None, "som") and (ident in (None, "preferencias")):
+        with _config_lock:
+            cfg = load_config()
+            if "som_alterado_por" in cfg:
+                cfg.pop("som_alterado_por")
+                _gravar_config_atomico(cfg)
+                n += 1
+        sids = _som_saidas_remotas(load_config())
+        if sids:   # saídas aprovadas por remoto: o dono assume (aprovada_por passa a "local")
+            def _assumir(som: dict) -> None:
+                for sid in sids:
+                    if sid in som.get("saidas", {}):
+                        som["saidas"][sid]["aprovada_por"] = "local"
+
+            with contextlib.suppress(Exception):
+                SOM.atualizar_config(_assumir)
+                n += len(sids)
+    if tipo in (None, "removidos"):
+        with _config_lock:
+            cfg = load_config()
+            if "removidos_remotos" in cfg:
+                n += sum(_removidos_remotos(cfg).values()) or 1
+                cfg.pop("removidos_remotos")
+                _gravar_config_atomico(cfg)
+    return n
+
+
+def _registrar_musicas_remotas(ids: list[str]) -> None:
+    """Anota (no config.json) que estas músicas foram ENVIADAS por aparelho remoto. Fica só o id e o epoch."""
+    if not ids:
+        return
+    agora = int(time.time())
+    try:
+        with _config_lock:
+            cfg = load_config()
+            origem = cfg.get("musicas_origem") if isinstance(cfg.get("musicas_origem"), dict) else {}
+            for mid in ids:
+                origem[mid] = agora
+            if len(origem) > MUSICAS_ORIGEM_MAX:
+                for velho in sorted(origem, key=lambda k: origem[k])[:len(origem) - MUSICAS_ORIGEM_MAX]:
+                    del origem[velho]
+            cfg["musicas_origem"] = origem
+            _gravar_config_atomico(cfg)
+    except OSError as exc:
+        log.warning("Não foi possível anotar a origem das músicas enviadas (%s).", type(exc).__name__)
+
+
+@app.get("/api/seguranca/remotos")
+def seguranca_remotos() -> Response:
+    """Só local. O que aparelhos remotos criaram/alteraram e o dono ainda não assumiu (horários, listas, atalhos, mensagens, músicas, som)."""
+    if not _requisicao_local():
+        raise ErroApi(MSG_SOMENTE_LOCAL, 403)
+    return jsonify({"ok": True, **_revisao_inventario()})
+
+
+@app.post("/api/seguranca/remotos/aprovar")
+def seguranca_remotos_aprovar() -> Response:
+    """
+    Só local. {"tipo": "horario"|"lista"|"atalho"|"mensagem"|"musica"|"som", "id": "..."} assume UM item (som:
+    id "preferencias"); {"todos": true} assume tudo. O item continua existindo; só deixa de contar como "deixado
+    por aparelho remoto". Aprovar um horário aprova também a lista/playlist que ele toca.
+    """
+    if not _requisicao_local():
+        raise ErroApi(MSG_SOMENTE_LOCAL, 403)
+    corpo = corpo_json()
+    if set(corpo) - {"tipo", "id", "todos"}:
+        raise ErroApi("Campo desconhecido.")
+    if corpo.get("todos") is True and set(corpo) == {"todos"}:
+        n = _revisao_aprovar(None, None)
+    else:
+        tipo, ident = corpo.get("tipo"), corpo.get("id")
+        if tipo not in ("horario", "lista", "atalho", "mensagem", "musica", "som", "removidos") or "todos" in corpo:
+            raise ErroApi("Campo 'tipo' inválido.")
+        regex = {"mensagem": RE_MENSAGEM_ID, "musica": musicas.RE_ID, "som": re.compile("preferencias"),
+                 "removidos": re.compile("todos")}.get(tipo, RE_LISTA_ID)
+        if not isinstance(ident, str) or not regex.fullmatch(ident):
+            raise ErroApi("Campo 'id' inválido.")
+        n = _revisao_aprovar(tipo, ident)
+        if n == 0:
+            raise ErroApi("Esse item não está na lista de itens a revisar.", 404)
+    auditar("remotos_aprovar", total=n)
+    return jsonify({"ok": True, "aprovados": n, "pendentes": _revisao_contar()})
 
 
 def _auditar_programacao(acao: str, total: int) -> None:
@@ -7205,6 +8876,10 @@ def programacao_salvar() -> Response:
         doc["itens"] = final
         doc["versao"] += 1
         _prog_arquivo.gravar(doc)
+    _contar_removidos_remoto("horarios", len(existentes - {i["id"] for i in final}))
+    # v2.7.1 (P13): o que já venceu e espera na fila mas foi apagado/desativado agora não toca.
+    ativos = {i["id"] for i in final if i.get("ativo")}
+    PROGRAMACAO.cancelar_fila(lambda it: it.get("id") not in ativos)
     _auditar_programacao("programacao_salvar", len(final))
     return _prog_resposta()
 
@@ -7340,6 +9015,7 @@ def sistema_desligar() -> tuple[Response, int]:
             raise ErroApi(_msg_ocupado("Espere o anúncio terminar.", ". Toque em Parar ou espere terminar."), 409)
         _desligamento_agendado = True
     log.info("Desligado pelo painel (PC local).")
+    auditar("desligar", resultado="aceito")
     # A aba "Tocador da loja" pode estar em OUTRA aba ou aparelho: manda uma pausa agora, para ela
     # chegar no long-poll antes de a porta fechar (a thread do desligamento ainda espera 0,5 s).
     with contextlib.suppress(Exception):
@@ -7358,15 +9034,69 @@ def sistema_desligar() -> tuple[Response, int]:
 # Inicialização
 # ---------------------------------------------------------------------------
 LOG_FORMATO = "%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s"
+AUDITORIA_FORMATO = "%(asctime)s %(message)s"
 LOG_MAX_BYTES = 5 * 1024 * 1024
 LOG_BACKUPS = 3
+AUDITORIA_RETENCAO_DIAS = 90   # um arquivo por dia, 90 dias (os IPs da equipe são dado pessoal: prazo definido)
+
+
+class _FormatadorIso(logging.Formatter):
+    """Data/hora ISO 8601 com o fuso (2026-10-20T14:03:09-03:00): a hora sem fuso confunde a análise."""
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        return datetime.fromtimestamp(record.created).astimezone().isoformat(timespec="seconds")
+
+
+def _caminho_auditoria(caminho_log: str) -> Path | None:
+    """PROCLAMARE_AUDIT_FILE, senão `auditoria.log` ao lado do log comum; sem log em arquivo, None."""
+    bruto = _env("AUDIT_FILE", "").strip()
+    if bruto:
+        return Path(bruto)
+    return Path(caminho_log).with_name("auditoria.log") if caminho_log else None
+
+
+class _AuditoriaRotativa(logging.handlers.TimedRotatingFileHandler):
+    """
+    Rotação diária que REAPLICA a ACL restrita: cada arquivo novo (a cada meia-noite, ou o primeiro de um dia
+    sem log) nasce herdando a ACL da pasta; aqui ele passa a ser só do usuário, SYSTEM e Administradores.
+    """
+
+    def _open(self) -> Any:
+        fluxo = super()._open()
+        _restringir_acl_windows(Path(self.baseFilename))
+        return fluxo
+
+
+def _configurar_auditoria(caminho: Path) -> str | None:
+    """
+    Liga o arquivo PRÓPRIO da trilha de auditoria (P22): rotação por dia (90 dias), data com fuso, nenhuma
+    linha do waitress/comtypes no meio e nada dela no log comum. Devolve o nome do erro se não abriu.
+    """
+    try:
+        caminho.parent.mkdir(parents=True, exist_ok=True)
+        if not caminho.exists():
+            caminho.touch()
+            _restringir_acl_windows(caminho)    # só o usuário, SYSTEM e Administradores
+        handler = _AuditoriaRotativa(
+            caminho, when="midnight", backupCount=AUDITORIA_RETENCAO_DIAS, encoding="utf-8", delay=True)
+    except (OSError, ValueError) as exc:
+        return type(exc).__name__
+    handler.setFormatter(_FormatadorIso(AUDITORIA_FORMATO))
+    for antigo in list(auditoria.handlers):
+        auditoria.removeHandler(antigo)
+        antigo.close()
+    auditoria.addHandler(handler)
+    auditoria.setLevel(logging.INFO)     # a trilha não some se o log comum estiver em WARNING
+    auditoria.propagate = False
+    return None
 
 
 def _configurar_log() -> None:
     """
     Log no arquivo PROCLAMARE_LOG_FILE (rotativo) quando definido; senão no console.
-    O handler vai no logger RAIZ, então cobre também waitress/werkzeug. Com pythonw
-    sys.stderr é None: sem arquivo, usamos NullHandler (nada quebra).
+    O handler vai no logger RAIZ, então cobre também werkzeug. Com pythonw sys.stderr é None: sem
+    arquivo, usamos NullHandler (nada quebra). A auditoria tem arquivo próprio (veja _configurar_auditoria)
+    e o waitress só registra avisos (cada stream interrompido gerava uma linha INFO).
     """
     handlers: list[logging.Handler] = []
     erro_arquivo: str | None = None
@@ -7386,13 +9116,20 @@ def _configurar_log() -> None:
     if not handlers:
         handlers.append(logging.StreamHandler() if sys.stderr is not None else logging.NullHandler())
     for h in handlers:
-        h.setFormatter(logging.Formatter(LOG_FORMATO))
+        h.setFormatter(_FormatadorIso(LOG_FORMATO))
     nivel = logging.getLevelName(_env("LOG_LEVEL", "INFO").upper())
     logging.basicConfig(
         level=nivel if isinstance(nivel, int) else logging.INFO, handlers=handlers, force=True
     )
+    logging.getLogger("waitress").setLevel(max(logging.WARNING, logging.getLogger().level))
     if erro_arquivo:
         log.warning("Não foi possível abrir PROCLAMARE_LOG_FILE (%s); usando o console.", erro_arquivo)
+    caminho_audit = _caminho_auditoria(caminho) if not erro_arquivo else None
+    if caminho_audit is not None:
+        erro_audit = _configurar_auditoria(caminho_audit)
+        if erro_audit:
+            auditoria.propagate = True
+            log.warning("Não foi possível abrir o arquivo de auditoria (%s); ela fica no log comum.", erro_audit)
 
 
 def _criado_em_filetime() -> int | None:
@@ -7417,6 +9154,21 @@ def _criado_em_filetime() -> int | None:
         return (criacao.dwHighDateTime << 32) | criacao.dwLowDateTime
     except Exception:  # noqa: BLE001
         return None
+
+
+def limpar_residuos_de_dados() -> None:
+    """
+    Na partida (P46): apaga temporários de gravação atômica abandonados há mais de 1 h (guardam a
+    configuração inteira, segredos incluídos) e poda as cópias "*.corrompido-*" para as 3 mais novas.
+    """
+    pasta = CONFIG_PATH.parent
+    with contextlib.suppress(Exception):
+        n = programacao.limpar_temporarios_orfaos(
+            pasta, (".config.", ".listas.", ".programacao.", ".seguranca."))
+        podadas = sum(programacao.podar_copias(pasta / nome) for nome in ("config.json", LISTAS_ARQUIVO, PROGRAMACAO_ARQUIVO))
+        if n or podadas:
+            log.info("Limpeza na partida: %d temporário(s) órfão(s) e %d cópia(s) corrompida(s) antiga(s) apagados.",
+                     n, podadas)
 
 
 def _caminho_pid_file() -> Path | None:
@@ -7528,12 +9280,83 @@ def _sondar_porta_livre(host: str, porta: int) -> None:
         s.bind(endereco)
 
 
+# --- Servidor de produção (waitress) ---------------------------------------------------------
+CANAL_TIMEOUT_S = 60            # P03: conexão ociosa por mais que isto é fechada (long-poll = 25 s e é "em andamento")
+CONEXOES_MAX = 400              # connection_limit: abaixo do FD_SETSIZE (512) do select no Windows
+CONEXOES_REMOTAS_MAX = 300      # soma das conexões de aparelhos remotos: o resto é reservado ao loopback
+CONEXOES_POR_IP_MAX = 64        # conexões simultâneas de UM aparelho remoto (um navegador usa ~6 por aba; vários
+                                # celulares atrás do mesmo NAT/roteador da loja dividem um IP)
+
+
+def criar_servidor_waitress(sock: socket.socket, *, por_ip: int = CONEXOES_POR_IP_MAX,
+                            remotas_max: int = CONEXOES_REMOTAS_MAX,
+                            ip_isento: Callable[[str], bool] = waitress_limites.ip_e_loopback) -> Any:
+    """
+    Cria o waitress com TODAS as defesas de transporte do Proclamare (a mesma função serve ao main() e
+    aos testes de integração, que sobem o servidor de verdade):
+      * threads altas: cada long-poll do YouTube e cada anúncio segura uma thread;
+      * clear_untrusted_proxy_headers=False (P01): sem isto o waitress APAGAVA X-Forwarded-For/Host/Proto/
+        Forwarded antes do Flask e a regra "cabeçalho de proxy tira o status de local" não funcionava.
+        Sem `trusted_proxy`, nenhum deles é interpretado (remote_addr continua sendo o do socket);
+      * channel_timeout 60 s e connection_limit 400 (P03), mais teto de conexões por IP remoto com o
+        loopback isento (waitress_limites.instalar), SEMPRE instalado;
+      * teto do corpo: o waitress recebe o corpo INTEIRO (em disco, acima de 512 KB) antes de a rota
+        checar o PIN. Por isso o teto grande (envio de músicas) só vale, por rota, para quem é local ou
+        tem sessão (waitress_limites); todo o resto fica em 64 KB. PROCLAMARE_MUSICAS_ENVIO=0 desliga
+        o envio e volta tudo a 64 KB.
+    """
+    global MUSICAS_ENVIO_HABILITADO
+    from waitress import create_server   # (ImportError aqui é tratado por quem chama; o main() já checou)
+    waitress_limites.configurar_aviso(por_ip, remotas_max, CONEXOES_MAX)
+
+    srv = create_server(
+        app, sockets=[sock], threads=32, channel_timeout=CANAL_TIMEOUT_S, cleanup_interval=10,
+        connection_limit=CONEXOES_MAX, clear_untrusted_proxy_headers=False,
+        max_request_body_size=MAX_CORPO_ENVIO if MUSICAS_ENVIO_HABILITADO else TETO_CORPO_JSON,
+        ident="proclamare",
+    )
+    com_corpo = MUSICAS_ENVIO_HABILITADO
+    if not waitress_limites.instalar(
+            srv, teto_pequeno=TETO_CORPO_JSON if com_corpo else None,
+            permitir_grande=_corpo_grande_permitido if com_corpo else None,
+            por_ip=por_ip, remotas_max=remotas_max, ip_isento=ip_isento):
+        # sem o filtro por rota, o teto grande valeria para TODOS: melhor sem envio que inseguro
+        srv.adj.max_request_body_size = TETO_CORPO_JSON
+        MUSICAS_ENVIO_HABILITADO = False
+        log.error("Esta versão do waitress não aceita os filtros por rota/conexão: o envio de "
+                  "músicas pelo painel foi DESLIGADO (as músicas na pasta continuam valendo).")
+    return srv
+
+
+PORTAS_PROTEGIDAS = frozenset({8502, 8599})   # produção e o ambiente isolado de QA: testes nunca sobem nelas
+
+
+def _recusa_sob_isolamento(host: str, porta: int) -> str | None:
+    """
+    Sob o isolamento dos testes (tests.isolamento.isolar() define PROCLAMARE_TESTE_ISOLADO=1), o servidor NÃO
+    pode subir em porta de produção/QA nem em endereço de rede: importar `tests` e depois chamar main() jamais
+    deve abrir o painel da loja na rede. Devolve o motivo da recusa ou None.
+    """
+    if os.environ.get("PROCLAMARE_TESTE_ISOLADO") != "1":
+        return None
+    if porta in PORTAS_PROTEGIDAS:
+        return f"porta {porta} é de produção/QA"
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        return "endereço de rede"
+    return None
+
+
 def main() -> None:
     _configurar_log()
     if _PORTA_INVALIDA:
         log.warning("PROCLAMARE_PORT inválida; usando a porta padrão 8502.")
     host = _env("HOST", "0.0.0.0").strip() or "0.0.0.0"
+    motivo_recusa = _recusa_sob_isolamento(host, PORT)
+    if motivo_recusa:
+        log.error("Ambiente de testes isolado: o servidor se recusa a subir (%s).", motivo_recusa)
+        sys.exit(2)
     limpar_audios_antigos(forcar=True)
+    limpar_residuos_de_dados()
 
     _boas_vindas([
         f"Proclamare rodando — abra http://127.0.0.1:{PORT} neste computador",
@@ -7541,7 +9364,7 @@ def main() -> None:
     ])
 
     try:
-        from waitress import create_server
+        import waitress  # noqa: F401 - só confere que existe; criar_servidor_waitress() importa o que usa
     except ImportError:
         log.warning(
             "waitress não instalado (pip install waitress): usando o servidor de "
@@ -7557,26 +9380,8 @@ def main() -> None:
             srv.serve_forever()
     else:
         def criar() -> Any:
-            global MUSICAS_ENVIO_HABILITADO
             # Socket próprio e EXCLUSIVO (sem janela entre a checagem e o bind).
-            # threads altas: cada long-poll do YouTube e cada anúncio segura uma thread.
-            # Teto do corpo: o waitress recebe o corpo INTEIRO (em disco, acima de 512 KB) antes de
-            # a rota checar o PIN. Por isso o teto grande (envio de músicas) só vale, por rota,
-            # para quem é local ou tem sessão (waitress_limites); todo o resto fica em 64 KB.
-            # PROCLAMARE_MUSICAS_ENVIO=0 desliga o envio e volta tudo a 64 KB.
-            srv = create_server(
-                app, sockets=[_criar_socket_escuta(host, PORT)], threads=32, channel_timeout=300,
-                max_request_body_size=MAX_CORPO_ENVIO if MUSICAS_ENVIO_HABILITADO else TETO_CORPO_JSON,
-                ident="proclamare",
-            )
-            if MUSICAS_ENVIO_HABILITADO and not waitress_limites.instalar(
-                    srv, teto_pequeno=TETO_CORPO_JSON, permitir_grande=_corpo_grande_permitido):
-                # sem o filtro por rota, o teto grande valeria para TODOS: melhor sem envio que inseguro
-                srv.adj.max_request_body_size = TETO_CORPO_JSON
-                MUSICAS_ENVIO_HABILITADO = False
-                log.error("Esta versão do waitress não aceita o filtro de corpo por rota: o envio de "
-                          "músicas pelo painel foi DESLIGADO (as músicas na pasta continuam valendo).")
-            return srv
+            return criar_servidor_waitress(_criar_socket_escuta(host, PORT))
 
         def rodar(srv: Any) -> None:
             srv.run()
@@ -7595,6 +9400,8 @@ def main() -> None:
     if _volume_pendente() is not None:   # o servidor caiu/fechou com o volume da música baixo
         _iniciar_reaplicacao()
     atexit.register(SOM.parar)
+    _login_restaurar_do_disco()   # contador diário, trava e níveis de escalada voltam do disco (N5)
+    _iniciar_vigia_tuneis()   # v2.7.1 (P06): portproxy/túnel para esta porta? (só leitura)
     SOM.iniciar()  # primeira varredura LOCAL em segundo plano (só lê; não toca som)
     atexit.register(ACERVO.parar)
     ACERVO.iniciar()  # cria a pasta de músicas e varre em segundo plano (thread "musicas-varredura")
@@ -7623,6 +9430,7 @@ def _encerrar_servicos(servidor: Any) -> None:
     pool = _yt_titulos_pool
     passos: list[Callable[[], Any]] = [
         close if callable(close) else (lambda: None),
+        _seg_flush_falhas,   # os PINs errados em lote ainda não gravados vão ao disco
         lambda: PROGRAMACAO.parar(),   # v2.6: para o relógio, corta o que tocava e grava o "visto"
         SOM.parar,   # desregistra o callback do Windows (também registrado no atexit)
         ACERVO.parar,

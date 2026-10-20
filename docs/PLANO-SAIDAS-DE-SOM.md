@@ -268,7 +268,7 @@ VALIDAÇÃO: esquema estrito em TODOS os níveis. Chave desconhecida em qualquer
       "tipo": "local",                          // lista branca: local | bluetooth | spotify_connect | cast | dlna | sonos | rtp
       "subtipo": "linha",                       // placa_interna | linha | usb | usb_multicanal | hdmi | fone | bt_a2dp | grupo_cast ...
       "ref": {                                  // interno; nunca sai do servidor
-        "endpoint_id": "{0.0.0.00000000}.{5df311f7-...}",
+        "endpoint_id": "{0.0.0.00000000}.{11111111-...}",
         "nome_sistema": "Alto-falantes (Realtek(R) Audio)",
         "container_id": "{43fa1e8d-...}"
       },

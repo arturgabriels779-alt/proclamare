@@ -65,6 +65,15 @@
    ocupado, atrasado…), nunca pelo texto. Durante um áudio agendado, /api/announce responde 409 e o painel mostra a
    mensagem do servidor ("Programação tocando: <nome>").
 
+   Segurança (v2.7.1, só no PC da loja; remoto recebe 403 e a seção nem aparece): /api/auth/status traz "seguranca"
+   (tentativas de PIN, acessos, túneis, alerta) -> selo no botão de Configurações e a seção "Segurança";
+   /api/auth/alertas/visto, /api/auth/liberar, GET /api/seguranca/remotos e POST /api/seguranca/remotos/aprovar
+   ("Feito por aparelhos da rede"); /api/auth/pin e /revogar com opções de revisão (desativar_remotos,
+   remover_remotos, restaurar_mensagens, limpar_fila) escolhidas numa confirmação ANTES de chamar;
+   /api/spotify/desconectar; /api/announce com 429 (10/min por aparelho remoto) e texto sem caracteres invisíveis.
+   O "Sair" de um aparelho remoto apaga o histórico de anúncios e tudo o que o painel guardou no navegador
+   (fica só o tema).
+
    Regras de segurança deste arquivo (CSP do servidor):
    - nada de innerHTML/eval com dados de API ou do usuário (só textContent
      e createElement);
@@ -247,7 +256,7 @@
   // ---- Estado de acesso (PIN) — preenchido por boot() ----
   // authLocked = true enquanto a porta (PIN / acesso desativado) está fechada.
   let authLocked = false;
-  const auth = { supported: true, local: true, pinConfigured: false, authenticated: true, falhas: 0, bloqueioS: 0, podeDesligar: false };
+  const auth = { loopbackSuspenso: false, supported: true, local: true, pinConfigured: false, authenticated: true, falhas: 0, bloqueioS: 0, podeDesligar: false };
   const REMOTE_SPOTIFY_MSG = "As credenciais do Spotify são configuradas no computador da loja.";
   const isRemote = () => auth.supported && !auth.local;
 
@@ -296,7 +305,7 @@
       if (!o.auth) {
         const code = out.data.auth;
         if ((res.status === 401 && code === "pin_requerido") || (res.status === 403 && code === "pin_nao_configurado")) {
-          lockApp(code);
+          lockApp(code, out.data);
         }
       }
       return out;
@@ -731,6 +740,12 @@
   const gatePinBox = $("gate-pin-box");
   const gatePinInput = $("gate-pin-input");
   const gatePinMsg = $("gate-pin-msg");
+  const gateTunnel = $("gate-tunnel");
+  const segLiberarBox = $("seg-liberar-box");
+  const segZerar = $("seg-zerar");
+  const segRemovidos = $("seg-removidos");
+  const segRemovidosText = $("seg-removidos-text");
+  const btnSegRemovidos = $("btn-seg-removidos");
   const gatePinCount = $("gate-pin-count");
   const btnGateLogin = $("btn-gate-login");
   const gateOffTitle = $("gate-off-title");
@@ -759,13 +774,37 @@
   const btnPinDisableYes = $("btn-pin-disable-yes");
   const btnPinDisableNo = $("btn-pin-disable-no");
   const btnLogout = $("btn-logout");
-  const netAlertFails = $("net-alert-fails");
-  const netAlertBlock = $("net-alert-block");
   const netRevokeRow = $("net-revoke-row");
   const btnRevoke = $("btn-revoke");
   const revokeConfirm = $("revoke-confirm");
   const btnRevokeYes = $("btn-revoke-yes");
   const btnRevokeNo = $("btn-revoke-no");
+  const pinChangeConfirm = $("pin-change-confirm");
+  const btnPinChangeYes = $("btn-pin-change-yes");
+  const btnPinChangeNo = $("btn-pin-change-no");
+  // segurança (v2.7.1)
+  const settingsDot = $("settings-dot");
+  const segSection = $("seg-section");
+  const segTitle = $("seg-title");
+  const segState = $("seg-state");
+  const segAlerts = $("seg-alerts");
+  const segLoginsBlock = $("seg-logins-block");
+  const segLogins = $("seg-logins");
+  const segLoginsEmpty = $("seg-logins-empty");
+  const btnSegVisto = $("btn-seg-visto");
+  const btnSegLiberar = $("btn-seg-liberar");
+  const segError = $("seg-error");
+  const segRemotosHint = $("seg-remotos-hint");
+  const segRemotosEmpty = $("seg-remotos-empty");
+  const segRemotos = $("seg-remotos");
+  const btnSegAprovarTudo = $("btn-seg-aprovar-tudo");
+  // desconectar o Spotify (v2.7.1)
+  const btnSpDisc = $("btn-sp-disc");
+  const spDiscConfirm = $("sp-disc-confirm");
+  const spDiscCreds = $("sp-disc-creds");
+  const spDiscError = $("sp-disc-error");
+  const btnSpDiscYes = $("btn-sp-disc-yes");
+  const btnSpDiscNo = $("btn-sp-disc-no");
   const spotifyRemoteNote = $("spotify-remote-note");
   const spotifyFields = $("spotify-fields");
   const redirectHint = $("redirect-hint");
@@ -1636,7 +1675,8 @@
 
   async function doAnnounce(isTest) {
     if (announcing) return;
-    const text = isTest ? TEST_TEXT : messageText.value.trim();
+    // v2.7.1: o servidor recusa controle/invisíveis (inclui TAB). TAB vira espaço; o resto é removido antes de enviar.
+    const text = isTest ? TEST_TEXT : cleanMsgText(messageText.value, true);
     if (!text) {
       setStatus("Digite ou escolha uma mensagem antes de anunciar.", "warn");
       toast("Digite ou escolha uma mensagem antes de anunciar.", "warn", { silent: true });
@@ -1678,6 +1718,11 @@
         // v2.3: saída de anúncio em fallback (a configurada estava indisponível): o operador precisa saber onde saiu
         if (typeof data.aviso === "string" && data.aviso) toast(data.aviso, "warn", { duration: 9000 });
         if (!isTest) addHistory(text);
+      } else if (status === 429) {
+        // v2.7.1: aparelhos da rede podem anunciar até 10 vezes por minuto
+        const msg = "Muitos anúncios seguidos. Espere um minuto e tente de novo.";
+        setStatus(msg, "warn");
+        toast(msg, "warn", { silent: true });
       } else if (status === 409) {
         // v2.6: durante um áudio agendado a mensagem do servidor diz qual ("Programação tocando: <nome>")
         const msg = typeof data.error === "string" && data.error ? data.error : "Já existe um anúncio tocando. Aguarde terminar e tente de novo.";
@@ -5793,6 +5838,8 @@
     spotify_limite: ["o Spotify pediu uma pausa", "Foram muitos pedidos seguidos. No próximo horário deve funcionar."],
     spotify_indisponivel: ["o Spotify não respondeu", "Confira a internet do computador da loja. No próximo horário deve funcionar."],
     youtube_indisponivel: ["o player do YouTube não estava pronto", "Abra o Tocador da loja e confira a internet do computador."],
+    // v2.7.1: o horário foi apagado ou desativado depois de entrar na fila de espera
+    removido: ["o horário foi removido ou desativado antes de tocar", "Alguém apagou ou desativou este horário enquanto ele esperava a vez."],
   };
   const PROG_STATUS = {
     ok: ["Tocou", "badge--ok"],
@@ -7105,6 +7152,8 @@
       alvoMotivo: typeof it.alvo_motivo === "string" && /^[a-z_]{1,30}$/.test(it.alvo_motivo) ? it.alvo_motivo : null,
       proxima: typeof it.proxima === "string" && ISO_RE.test(it.proxima) ? it.proxima : null,
       remoto: it.origem === "remoto", // criado/alterado por um aparelho remoto (o servidor decide; nunca é enviado de volta)
+      criadoPor: it.criado_por === "remoto" ? "remoto" : "local", // v2.7.1 (só leitura; nunca vai no POST)
+      alteradoEm: isNum(it.alterado_em) && it.alterado_em > 0 ? it.alterado_em : null, // epoch em segundos
     };
   }
 
@@ -7394,7 +7443,7 @@
       else out.push(["Música não está na pasta", "badge--bad"]);
     }
     if (it.data && it.ativo && !it.proxima && prog.agora) out.push(["Já passou", ""]);
-    if (it.remoto) out.push(["Criado pelo celular", ""]);
+    if (it.remoto) out.push([it.criadoPor === "remoto" ? "Criado pelo celular" : "Alterado pelo celular", ""]);
     return out;
   }
 
@@ -8777,7 +8826,7 @@
     spotifyRemoteNote.hidden = !remote;
     btnSettingsSave.hidden = remote;
     btnSettingsCancel.textContent = remote ? "Fechar" : "Cancelar";
-    if (auth.supported && auth.local) refreshLocalAuthInfo(); // atualiza falhas recentes / bloqueio
+    if (auth.supported && auth.local) { refreshLocalAuthInfo(); segLoadRemotos(); } // atualiza alertas, bloqueio e pendentes da rede
     settingsClientId.readOnly = true;
     settingsClientSecret.readOnly = true;
     btnSettingsSave.setAttribute("aria-disabled", "true"); // só libera se a config carregar
@@ -8897,6 +8946,7 @@
   // O servidor guarda a sessão num cookie HttpOnly: aqui o PIN só passa pela
   // memória até o POST e o campo é limpo logo em seguida (nunca vai ao storage).
   const PIN_RE = /^[0-9]{6,8}$/;
+  const GATE_TUNNEL_MSG = "O Proclamare detectou um encaminhamento de rede (túnel) para este computador e bloqueou o acesso sem PIN. Feche o encaminhamento, ou defina um PIN pela linha de comando (python server.py --definir-pin), ou inicie com PROCLAMARE_CONFIAR_LOOPBACK=1.";
   const PIN_HINT_KEY = "proclamare_pin_hint"; // sessionStorage: aviso "defina um PIN" uma vez por sessão
   let gateMode = ""; // "" (painel liberado) | boot | pin | off
   let loginBusy = false;
@@ -8933,13 +8983,18 @@
     gatePinView.hidden = mode !== "pin";
     gateOffView.hidden = mode !== "off";
     gateDownView.hidden = mode !== "down";
+    gateTunnel.hidden = !(mode === "pin" && auth.loopbackSuspenso);
     if (mode === "pin") {
       endBlock(true);
       gatePinInput.value = "";
       setPinFeedback(o.notice || "", false);
       gatePinInput.focus();
     } else if (mode === "off") {
-      if (o.unreachable) {
+      if (o.tunnel) {
+        // v2.7.1: túnel detectado e sem PIN; o servidor explica a saída (fechar o túnel, --definir-pin, CONFIAR_LOOPBACK=1)
+        setText(gateOffTitle, "Acesso bloqueado por segurança");
+        setText(gateOffText, typeof o.message === "string" && o.message ? str(o.message, 400) : GATE_TUNNEL_MSG);
+      } else if (o.unreachable) {
         setText(gateOffTitle, "Sem conexão com o servidor");
         setText(gateOffText, "Confira se o computador da loja está ligado e se este aparelho está na mesma rede.");
       } else {
@@ -8953,13 +9008,14 @@
   }
 
   /** Chamado pelo helper de API quando o servidor recusa por falta de sessão/PIN. */
-  function lockApp(code) {
+  function lockApp(code, data) {
     if (authLocked) return;
     stopAll();
     auth.authenticated = false;
     if (code === "pin_nao_configurado") {
       auth.pinConfigured = false;
-      showGate("off");
+      const tunel = !!data && data.codigo === "loopback_suspenso";
+      showGate("off", tunel ? { tunnel: true, message: data.error } : undefined);
     } else {
       showGate("pin", { notice: "Sua sessão terminou. Digite o PIN de novo." });
     }
@@ -9067,13 +9123,13 @@
     }
   }
 
-  function startBlock(seconds) {
+  function startBlock(seconds, msg) {
     const end = Date.now() + clamp(Math.ceil(seconds), 1, 86400) * 1000;
     if (blockTimer) clearInterval(blockTimer);
     gatePinInput.value = "";
     gatePinInput.disabled = true;
     btnGateLogin.setAttribute("aria-disabled", "true");
-    setPinFeedback("Muitas tentativas. Aguarde para tentar de novo.", true);
+    setPinFeedback(msg || "Muitas tentativas. Aguarde para tentar de novo.", true);
     gatePinCount.hidden = false;
     const tick = () => {
       const left = Math.ceil((end - Date.now()) / 1000);
@@ -9114,7 +9170,8 @@
         return;
       }
       if (status === 429) {
-        startBlock(Number(data.bloqueado_por_s) || 60);
+        // v2.7.1: o servidor explica (bloqueio por IP, escalada, teto do dia, limite do PIN certo)
+        startBlock(Number(data.bloqueado_por_s) || 60, typeof data.error === "string" && data.error ? str(data.error, 160) : "");
       } else if (status === 403 && data.auth === "pin_nao_configurado") {
         auth.pinConfigured = false;
         showGate("off");
@@ -9175,12 +9232,6 @@
       if (!auth.pinConfigured) pinDisableConfirm.hidden = true;
       netRevokeRow.hidden = !auth.pinConfigured;
       if (!auth.pinConfigured) revokeConfirm.hidden = true;
-      const f = auth.falhas;
-      netAlertFails.hidden = !(f > 0);
-      if (f > 0) setText(netAlertFails, f + (f === 1 ? " tentativa de PIN errada" : " tentativas de PIN erradas") + " nas últimas 24 horas.");
-      const b = auth.bloqueioS;
-      netAlertBlock.hidden = !(b > 0);
-      if (b > 0) setText(netAlertBlock, "Login pela rede bloqueado por " + Math.max(1, Math.ceil(b / 60)) + " min por excesso de tentativas.");
     }
   }
 
@@ -9195,12 +9246,18 @@
     showPinError("");
     pinDisableConfirm.hidden = true;
     revokeConfirm.hidden = true;
+    pinChangeConfirm.hidden = true;
+    spDiscConfirm.hidden = true;
+    showSpDiscError("");
+    showSegError("");
   }
 
   /** Guarda os campos extras que o status traz só para o PC local. */
   function readLocalAuthInfo(d) {
     auth.falhas = Number.isInteger(d.falhas_recentes) && d.falhas_recentes > 0 ? d.falhas_recentes : 0;
     auth.bloqueioS = Number.isInteger(d.bloqueio_global_s) && d.bloqueio_global_s > 0 ? d.bloqueio_global_s : 0;
+    segParse(d.seguranca); // v2.7.1
+    renderSeg();
   }
 
   async function refreshLocalAuthInfo() {
@@ -9209,6 +9266,503 @@
       if (r.ok && r.data.local === true) { readLocalAuthInfo(r.data); renderNetSection(); }
     } catch (e) { /* mantém o que já se sabe */ }
   }
+
+  // ---- Segurança (v2.7.1): só no PC da loja ----
+  // GET /api/auth/status traz "seguranca"; o servidor recusa (403) tudo isto para aparelhos remotos.
+  const seg = {
+    ok: false, alerta: false, falhas24: 0, falhasNovas: 0, bloqueioS: 0,
+    logins: [], ultimos: [], fortes: [], fracos: [], confianca: true, modo: "auto", pendentes: 0,
+    travado: false, bloqueios: 0,
+    sig: "", remotos: null, remotosSig: null, remotosBusy: false, busy: false, tudoTimer: 0,
+  };
+
+  const segNomes = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === "string" && x).map((x) => str(x, 40)).slice(0, 8) : []);
+  const segInt = (v) => (Number.isInteger(v) && v > 0 ? v : 0);
+  const SEG_ID_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+
+  function segLoginsParse(v) {
+    const out = [];
+    for (const x of Array.isArray(v) ? v.slice(0, 20) : []) {
+      if (!x || typeof x.ip !== "string" || !x.ip) continue;
+      out.push({ em: typeof x.em === "string" ? x.em.slice(0, 40) : "", ip: str(x.ip, 64), novo: x.novo === true });
+    }
+    return out;
+  }
+
+  /** Lê o bloco "seguranca" do status (ausente em servidor antigo: a seção some). */
+  function segParse(d) {
+    if (!d || typeof d !== "object") { seg.ok = false; return; }
+    const t = d.tuneis && typeof d.tuneis === "object" ? d.tuneis : {};
+    seg.ok = true;
+    seg.alerta = d.alerta === true;
+    seg.falhas24 = segInt(d.falhas_24h);
+    seg.falhasNovas = segInt(d.falhas_novas);
+    seg.bloqueioS = segInt(d.bloqueio_global_s);
+    seg.logins = segLoginsParse(d.logins_novos);
+    seg.ultimos = segLoginsParse(d.ultimos_logins).slice(0, 10);
+    seg.fortes = segNomes(t.fortes);
+    seg.fracos = segNomes(t.fracos);
+    seg.confianca = t.confianca_loopback !== false;
+    seg.modo = t.modo === "0" || t.modo === "1" ? t.modo : "auto";
+    seg.pendentes = segInt(d.pendentes_remotos);
+    seg.travado = d.login_travado === true;
+    seg.bloqueios = segInt(d.bloqueios_ativos);
+  }
+
+  /** "hoje, 14:32" / "ontem, 09:10" / "03/10, 18:45" a partir de ISO ou de epoch em segundos. */
+  function segQuando(v) {
+    const d = typeof v === "string" ? new Date(v) : isNum(v) && v > 0 ? new Date(v * (v > 1e11 ? 1 : 1000)) : null;
+    if (!d || Number.isNaN(d.getTime())) return "";
+    const hh = pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+    const agora = new Date();
+    if (d.toDateString() === agora.toDateString()) return "hoje, " + hh;
+    const ontem = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() - 1);
+    if (d.toDateString() === ontem.toDateString()) return "ontem, " + hh;
+    return pad2(d.getDate()) + "/" + pad2(d.getMonth() + 1) + ", " + hh;
+  }
+
+  const listaNomes = (a) => a.join(", ");
+
+  function showSegError(text) {
+    segError.hidden = !text;
+    setText(segError, text || "");
+  }
+
+  /** Selo no botão de Configurações + a seção "Segurança" (só redesenha se algo mudou). */
+  function renderSeg() {
+    const show = auth.supported && auth.local && seg.ok;
+    segSection.hidden = !show;
+    const dot = show && seg.alerta;
+    settingsDot.hidden = !dot;
+    const rotulo = dot ? "Configurações — há um alerta de segurança" : "Configurações";
+    if (btnSettings.getAttribute("aria-label") !== rotulo) {
+      btnSettings.setAttribute("aria-label", rotulo);
+      btnSettings.title = rotulo;
+    }
+    if (!show) return;
+    const sig = JSON.stringify([seg.alerta, seg.falhas24, seg.falhasNovas, seg.bloqueioS, seg.logins, seg.ultimos, seg.fortes, seg.fracos, seg.confianca, seg.modo, seg.travado, seg.bloqueios]);
+    if (sig === seg.sig) return;
+    seg.sig = sig;
+
+    setText(segState, seg.alerta ? "Há algo para você conferir." : "Nenhum alerta. Tudo certo por aqui.");
+    segState.classList.toggle("is-alert", seg.alerta);
+
+    const notas = [];
+    if (seg.travado) {
+      notas.push(["seg__note--bad", "Login pela rede travado (muitas tentativas erradas) — só você libera aqui. Quem já está conectado não é afetado."]);
+    }
+    if (seg.bloqueios > 0) {
+      notas.push(["", (seg.bloqueios === 1 ? "1 aparelho/rede bloqueado" : seg.bloqueios + " aparelhos/redes bloqueados") + " agora por errar o PIN."]);
+    }
+    if (seg.falhas24 > 0) {
+      let t = plural(seg.falhas24, "tentativa de PIN errada", "tentativas de PIN erradas") + " nas últimas 24 horas";
+      if (seg.falhasNovas > 0 && seg.falhasNovas < seg.falhas24) t += " (" + seg.falhasNovas + " desde a última vez que você marcou como visto)";
+      notas.push([seg.falhasNovas >= 5 ? "" : "seg__note--soft", t + "."]);
+    }
+    if (seg.logins.length) {
+      const l = seg.logins[0];
+      notas.push(["", (seg.logins.length === 1 ? "Um aparelho novo entrou pela rede" : seg.logins.length + " aparelhos novos entraram pela rede") + " (" + l.ip + (segQuando(l.em) ? ", " + segQuando(l.em) : "") + "). Se não foi alguém da equipe, troque o PIN."]);
+    }
+    if (seg.fortes.length) {
+      // com a confiança no loopback suspensa o PC cai na tela de PIN (aviso lá); aqui só chega quem ainda é local
+      notas.push(["seg__note--bad", "Há um encaminhamento de rede para o painel (" + listaNomes(seg.fortes) + "). Quem usar esse caminho entra como se estivesse neste computador, sem PIN. Remova o encaminhamento."]);
+    }
+    if (seg.fracos.length) {
+      notas.push(["seg__note--soft", "Programa de acesso remoto em execução (" + listaNomes(seg.fracos) + "). Não há encaminhamento para o painel, mas vale ficar atento."]);
+    }
+    segAlerts.replaceChildren(...notas.map(([c, t]) => mk("p", "seg__note " + c, t)));
+
+    segLogins.replaceChildren(...seg.ultimos.map((l) => {
+      const li = mk("li", "seg__row");
+      const main = mk("div", "seg__row-main");
+      main.append(mk("span", "seg__row-title", l.ip), mk("span", "seg__row-meta", segQuando(l.em) || "hora desconhecida"));
+      li.append(main);
+      if (l.novo) li.append(mk("span", "badge badge--warn", "Aparelho novo"));
+      return li;
+    }));
+    segLoginsEmpty.hidden = seg.ultimos.length > 0;
+    btnSegVisto.hidden = !seg.alerta;
+    btnSegLiberar.hidden = !(seg.travado || seg.bloqueios > 0);
+    segLiberarBox.hidden = btnSegLiberar.hidden;
+    // se o botão que tinha o foco sumiu (ex.: "Marcar como visto"), o foco vai para o título da seção
+    if (document.activeElement === document.body && settingsDialog.open) segTitle.focus({ preventScroll: true });
+  }
+
+  async function segPost(url, body, okMsg) {
+    if (seg.busy) return false;
+    seg.busy = true;
+    showSegError("");
+    try {
+      const r = await postJSON(url, body || {}, { timeout: 10000 });
+      if (r.ok && r.data.ok !== false) { if (okMsg) toast(okMsg, "success"); return r; }
+      showSegError(typeof r.data.error === "string" && r.data.error ? r.data.error : "Não foi possível concluir. Tente de novo.");
+      return r;
+    } catch (err) {
+      if (err.name !== "AuthLockedError") showSegError("Não foi possível falar com o servidor. Tente de novo.");
+      return false;
+    } finally {
+      seg.busy = false;
+    }
+  }
+
+  btnSegVisto.addEventListener("click", async () => {
+    const r = await segPost("/api/auth/alertas/visto", {}, "Alertas marcados como vistos.");
+    if (r && r.ok) await refreshLocalAuthInfo();
+  });
+  btnSegLiberar.addEventListener("click", async () => {
+    const zerar = segZerar.checked === true;
+    const r = await segPost("/api/auth/liberar", zerar ? { zerar_escalada: true } : {}, zerar ? "Login pela rede liberado e histórico de bloqueios zerado." : "Login pela rede liberado.");
+    if (r && r.ok) { segZerar.checked = false; await refreshLocalAuthInfo(); }
+  });
+
+  // ---- "Feito por aparelhos da rede" (revisão) ----
+  const SEG_DIAS = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
+  const SEG_GRUPOS = [
+    ["horarios", "horario", "Horários"],
+    ["listas", "lista", "Listas de músicas"],
+    ["atalhos", "atalho", "Playlists do Spotify"],
+    ["mensagens", "mensagem", "Mensagens prontas"],
+    ["musicas", "musica", "Músicas enviadas"],
+  ];
+
+  function segDias(h) {
+    if (typeof h.data === "string" && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(h.data)) return brDate(h.data);
+    const dias = Array.isArray(h.dias) ? Array.from(new Set(h.dias.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))).sort() : [];
+    if (dias.length === 7) return "todos os dias";
+    return dias.map((d) => SEG_DIAS[d]).join(", ");
+  }
+
+  function segRemotosParse(d) {
+    const p = d.pendentes && typeof d.pendentes === "object" ? d.pendentes : {};
+    const out = { total: segInt(p.total), grupos: [] };
+    for (const [chave, tipo, titulo] of SEG_GRUPOS) {
+      const itens = [];
+      for (const x of Array.isArray(d[chave]) ? d[chave].slice(0, 300) : []) {
+        if (!x || typeof x.id !== "string" || !SEG_ID_RE.test(x.id)) continue;
+        const quando = segQuando(x.alterado_em);
+        const meta = [];
+        let nome;
+        const origem = x.criado_por === "remoto" ? "Criado pela rede" : "Mudado pela rede";
+        if (tipo === "horario") {
+          nome = str(x.rotulo, 120) || "Horário";
+          const t = PROG_TIPOS[x.tipo];
+          if (t) meta.push(t.label);
+          if (typeof x.hora === "string" && HORA_RE.test(x.hora)) meta.push(x.hora);
+          const dias = segDias(x);
+          if (dias) meta.push(dias);
+          if (x.ativo === false) meta.push("desativado");
+          const alvoNome = typeof x.alvo_nome === "string" && x.alvo_nome ? str(x.alvo_nome, 60) : "";
+          if (x.motivo === "alvo") {
+            const o = x.tipo === "spotify" ? "a playlist" : "a lista";
+            meta.push("toca " + o + (alvoNome ? " " + alvoNome + ", mudada" : " mudada") + " pela rede (aprovar aprova " + o + " também)");
+          } else {
+            meta.push(x.criado_por === "remoto" ? "Criado pela rede" : "Mudado pela rede");
+          }
+        } else if (tipo === "lista") {
+          nome = str(x.nome, 80) || "Lista";
+          meta.push(origem);
+          if (Number.isInteger(x.total)) meta.push(plural(x.total, "item", "itens"));
+        } else if (tipo === "atalho") {
+          nome = str(x.nome, 80) || "Playlist";
+          meta.push(origem);
+        } else if (tipo === "musica") {
+          nome = str(x.titulo, 120) || "Música";
+          meta.push("Enviada pela rede");
+        } else {
+          nome = str(x.titulo, 80) || "Mensagem";
+          meta.push(origem);
+        }
+        const q2 = tipo === "musica" ? segQuando(x.enviada_em) : quando;
+        if (q2) meta.push(q2);
+        itens.push({ id: x.id, nome, meta: meta.join(" · ") });
+      }
+      if (itens.length) out.grupos.push({ tipo, titulo, itens });
+    }
+    // preferências e saídas do "Som da loja" mudadas por aparelho (aprovar com id "preferencias" assume tudo)
+    if (d.som && typeof d.som === "object" && d.som.pendente === true) {
+      const q = segQuando(d.som.alterado_em);
+      const saidas = segInt(d.som.saidas);
+      const o = [];
+      if (isNum(d.som.alterado_em) && d.som.alterado_em > 0) o.push("preferências");
+      if (saidas) o.push(plural(saidas, "saída", "saídas"));
+      out.grupos.push({ tipo: "som", titulo: "Som da loja", itens: [{ id: "preferencias", nome: "Som da loja", meta: "Mudado pela rede: " + (o.length ? o.join(" e ") : "preferências") + (q ? " · " + q : "") }] });
+    }
+    // itens que aparelhos da rede APAGARAM (só aviso; "Ok, visto" limpa)
+    const rm = d.removidos && typeof d.removidos === "object" ? d.removidos : {};
+    const rmPartes = [];
+    if (segInt(rm.horarios)) rmPartes.push(plural(segInt(rm.horarios), "horário", "horários"));
+    if (segInt(rm.listas)) rmPartes.push(plural(segInt(rm.listas), "lista", "listas"));
+    if (segInt(rm.atalhos)) rmPartes.push(plural(segInt(rm.atalhos), "playlist do Spotify", "playlists do Spotify"));
+    if (segInt(rm.mensagens)) rmPartes.push(plural(segInt(rm.mensagens), "mensagem", "mensagens"));
+    out.removidos = rmPartes.join(", ");
+    return out;
+  }
+
+  /** Lê a lista de pendentes (só local). Chamada ao abrir as Configurações e depois de aprovar. */
+  async function segLoadRemotos() {
+    if (!(auth.supported && auth.local) || seg.remotosBusy || authLocked) return;
+    seg.remotosBusy = true;
+    try {
+      const r = await getJSON("/api/seguranca/remotos", { timeout: 8000 });
+      seg.remotos = r.ok && r.data.ok === true ? segRemotosParse(r.data) : null;
+    } catch (e) {
+      /* mantém o que já estava na tela */
+    } finally {
+      seg.remotosBusy = false;
+    }
+    renderSegRemotos();
+  }
+
+  function renderSegRemotos() {
+    const r = seg.remotos;
+    const sig = r ? JSON.stringify(r) : "";
+    if (sig === seg.remotosSig) return;
+    seg.remotosSig = sig;
+    const total = r ? r.grupos.reduce((n, g) => n + g.itens.length, 0) : 0;
+    segRemovidos.hidden = !(r && r.removidos);
+    setText(segRemovidosText, r && r.removidos ? "Aparelhos da rede apagaram: " + r.removidos + "." : "");
+    segRemotosEmpty.hidden = !r || total > 0;
+    segRemotosHint.hidden = !r || total === 0;
+    btnSegAprovarTudo.hidden = total === 0;
+    segDesarmarTudo();
+    if (!r) { segRemotos.replaceChildren(); return; }
+    segRemotos.replaceChildren(...r.grupos.map((g) => {
+      const box = mk("div", "seg__group");
+      box.append(mk("p", "seg__group-title", g.titulo));
+      const ul = mk("ul", "seg__list");
+      for (const it of g.itens) {
+        const li = mk("li", "seg__row");
+        const main = mk("div", "seg__row-main");
+        main.append(mk("span", "seg__row-title", it.nome));
+        if (it.meta) main.append(mk("span", "seg__row-meta", it.meta));
+        const b = mk("button", "btn btn--ghost", "Aprovar");
+        b.type = "button";
+        b.dataset.tipo = g.tipo;
+        b.dataset.id = it.id;
+        b.setAttribute("aria-label", "Aprovar: " + it.nome);
+        li.append(main, b);
+        ul.append(li);
+      }
+      box.append(ul);
+      return box;
+    }));
+  }
+
+  async function segAprovar(corpo, btn) {
+    if (seg.busy) return;
+    if (btn) btn.setAttribute("aria-disabled", "true");
+    const r = await segPost("/api/seguranca/remotos/aprovar", corpo);
+    if (r && r.ok) {
+      const n = r.data && Number.isInteger(r.data.aprovados) ? r.data.aprovados : 1;
+      toast(corpo.todos ? "Tudo aprovado." : n > 1 ? "Aprovado, junto com o que ele toca." : "Aprovado.", "success");
+    } else if (r && r.status === 404) {
+      showSegError("");
+      toast("Esse item já não estava pendente. Atualizei a lista.", "info");
+    }
+    await segLoadRemotos();
+    refreshLocalAuthInfo();
+    for (const t of ["prog", "lib-lists", "mensagens", "sp-atalhos", "yt-state", "lib", "som-estado"]) scheduler.kick(t);
+    if (btn) btn.removeAttribute("aria-disabled");
+    if (document.activeElement === document.body && settingsDialog.open) {
+      const next = segRemotos.querySelector("button[data-id]");
+      (next || segTitle).focus({ preventScroll: true });
+    }
+  }
+
+  btnSegRemovidos.addEventListener("click", () => {
+    if (btnSegRemovidos.getAttribute("aria-disabled") === "true") return;
+    segAprovar({ tipo: "removidos", id: "todos" }, btnSegRemovidos);
+  });
+
+  segRemotos.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-tipo][data-id]");
+    if (!b || !segRemotos.contains(b) || b.getAttribute("aria-disabled") === "true") return;
+    segAprovar({ tipo: b.dataset.tipo, id: b.dataset.id }, b);
+  });
+
+  // "Aprovar tudo" pede um segundo toque (4 s) para não ser acionado por engano
+  function segDesarmarTudo() {
+    if (seg.tudoTimer) { clearTimeout(seg.tudoTimer); seg.tudoTimer = 0; }
+    btnSegAprovarTudo.textContent = "Aprovar tudo";
+    btnSegAprovarTudo.classList.remove("is-confirm");
+  }
+  btnSegAprovarTudo.addEventListener("click", () => {
+    if (btnSegAprovarTudo.getAttribute("aria-disabled") === "true") return;
+    if (!btnSegAprovarTudo.classList.contains("is-confirm")) {
+      btnSegAprovarTudo.textContent = "Toque de novo para aprovar tudo";
+      btnSegAprovarTudo.classList.add("is-confirm");
+      seg.tudoTimer = setTimeout(segDesarmarTudo, 4000);
+      return;
+    }
+    segDesarmarTudo();
+    segAprovar({ todos: true }, btnSegAprovarTudo);
+  });
+
+  // ---- Opções de revisão antes de trocar/remover o PIN ou desconectar os aparelhos ----
+  const REV_OPCOES = [
+    ["desativar_remotos", true, "Desativar os horários que aparelhos da rede criaram ou mudaram"],
+    ["remover_remotos", false, "Apagar o que os aparelhos da rede criaram"],
+    ["restaurar_mensagens", false, "Voltar as mensagens prontas ao padrão de fábrica"],
+    ["limpar_fila", false, "Limpar a fila do Tocador"],
+  ];
+
+  function revBuild(host) {
+    const ui = { count: mk("p", "rev__count"), note: mk("p", "hint"), inputs: {}, texts: {}, token: 0 };
+    ui.note.hidden = true;
+    host.append(ui.count, ui.note);
+    for (const [chave, , rotulo] of REV_OPCOES) {
+      const label = mk("label", "switch");
+      const inp = document.createElement("input");
+      inp.type = "checkbox";
+      inp.className = "switch__input";
+      inp.setAttribute("role", "switch");
+      const track = mk("span", "switch__track");
+      track.setAttribute("aria-hidden", "true");
+      track.append(mk("span", "switch__thumb"));
+      const txt = mk("span", "switch__text", rotulo);
+      label.append(inp, track, txt);
+      host.append(label);
+      ui.inputs[chave] = inp;
+      ui.texts[chave] = txt;
+    }
+    return ui;
+  }
+  const revUi = {
+    revoke: revBuild($("revoke-rev")),
+    disable: revBuild($("pin-disable-rev")),
+    change: revBuild($("pin-change-rev")),
+  };
+
+  const revValores = (ui) => {
+    const o = {};
+    for (const [chave] of REV_OPCOES) o[chave] = ui.inputs[chave].checked === true;
+    return o;
+  };
+
+  /** Zera as caixas para o padrão e mostra quantos itens de aparelhos da rede existem hoje. */
+  async function revLoad(ui) {
+    for (const [chave, padrao, rotulo] of REV_OPCOES) {
+      ui.inputs[chave].checked = padrao;
+      setText(ui.texts[chave], rotulo);
+    }
+    setText(ui.count, "Conferindo o que aparelhos da rede deixaram…");
+    ui.note.hidden = true;
+    const meu = ++ui.token;
+    let texto = "Não consegui conferir o que aparelhos da rede deixaram.";
+    let cont = null;
+    let horCriados = 0;
+    try {
+      const r = await getJSON("/api/seguranca/remotos", { timeout: 8000 });
+      if (r.ok && r.data.ok === true && r.data.pendentes && typeof r.data.pendentes === "object") {
+        cont = r.data.pendentes;
+        horCriados = (Array.isArray(r.data.horarios) ? r.data.horarios : []).filter((x) => x && x.criado_por === "remoto").length;
+      }
+    } catch (e) { /* mantém o texto de falha */ }
+    if (meu !== ui.token) return;
+    if (cont) {
+      const h = segInt(cont.horarios), l = segInt(cont.listas), a = segInt(cont.atalhos), m = segInt(cont.mensagens);
+      const partes = [];
+      if (h) partes.push(plural(h, "horário", "horários"));
+      if (l) partes.push(plural(l, "lista", "listas"));
+      if (a) partes.push(plural(a, "playlist do Spotify", "playlists do Spotify"));
+      if (m) partes.push(plural(m, "mensagem pronta", "mensagens prontas"));
+      texto = partes.length ? "Aparelhos da rede deixaram: " + partes.join(", ") + "." : "Nenhum horário, lista, playlist ou mensagem de aparelhos da rede.";
+      if (h) setText(ui.texts.desativar_remotos, REV_OPCOES[0][2] + " (" + h + ")");
+      const criados = Number.isInteger(cont.apagaveis_pela_rede) ? segInt(cont.apagaveis_pela_rede)
+        : Number.isInteger(cont.criados_pela_rede) ? segInt(cont.criados_pela_rede) : l + a + m;
+      const mudados = segInt(cont.mudados_pela_rede);
+      const mus = segInt(cont.musicas);
+      const som = segInt(cont.som);
+      setText(ui.texts.remover_remotos, REV_OPCOES[1][2] + " (" + criados + ")");
+      const avisos = [];
+      if (horCriados) avisos.push(horCriados === 1 ? "1 horário criado pela rede será desativado, não apagado" : horCriados + " horários criados pela rede serão desativados, não apagados");
+      if (mudados) avisos.push(mudados === 1 ? "1 item seu foi mudado pela rede" : mudados + " itens seus foram mudados pela rede");
+      if (mus) avisos.push(plural(mus, "música enviada pela rede", "músicas enviadas pela rede"));
+      if (som) avisos.push("preferências do Som da loja mudadas pela rede");
+      if (avisos.length) {
+        setText(ui.note, avisos.join("; ") + (mudados || mus || som ? " — revise em Segurança. Itens seus, músicas e ajustes de som não são apagados." : "."));
+        ui.note.hidden = false;
+      }
+      if (mus) partes.push(plural(mus, "música enviada", "músicas enviadas"));
+      if (som) partes.push("ajustes do som");
+      texto = partes.length ? "Aparelhos da rede deixaram: " + partes.join(", ") + "." : texto;
+    }
+    setText(ui.count, texto);
+  }
+
+  /** Resumo curto do resultado da revisão. Devolve true se mostrou algo (o aviso antigo não precisa aparecer). */
+  function revisaoToast(rev) {
+    if (!rev || typeof rev !== "object") return false;
+    if (rev.falhou === true) {
+      toast("A mudança valeu, mas a revisão do que a rede deixou falhou. Confira em Segurança.", "warn", { duration: 9000 });
+      return true;
+    }
+    const n = (k) => segInt(rev[k]);
+    const p = [];
+    if (n("horarios_desativados")) p.push(plural(n("horarios_desativados"), "horário desativado", "horários desativados"));
+    if (n("horarios_cancelados")) p.push(plural(n("horarios_cancelados"), "cancelado da fila", "cancelados da fila"));
+    if (rev.parou_item === true) p.push("item que tocava foi parado");
+    if (n("listas_removidas")) p.push(plural(n("listas_removidas"), "lista apagada", "listas apagadas"));
+    if (n("atalhos_removidos")) p.push(plural(n("atalhos_removidos"), "playlist apagada", "playlists apagadas"));
+    if (n("mensagens_removidas")) p.push(plural(n("mensagens_removidas"), "mensagem apagada", "mensagens apagadas"));
+    if (rev.mensagens_restauradas === true || n("mensagens_restauradas")) p.push("mensagens de fábrica de volta");
+    if (rev.fila_limpa === true) p.push("fila do Tocador limpa");
+    toast("Revisão: " + (p.length ? p.join(", ") : "nada para mudar") + ".", p.length ? "success" : "info", { duration: 8000 });
+    return true;
+  }
+
+  /** Depois de uma revisão: relê o que a mudança pode ter afetado. */
+  function revisaoAtualiza() {
+    refreshLocalAuthInfo();
+    segLoadRemotos();
+    for (const t of ["prog", "lib-lists", "mensagens", "sp-atalhos", "yt-state"]) scheduler.kick(t);
+  }
+
+  // ---- Desconectar o Spotify (v2.7.1, só local) ----
+  function showSpDiscError(text) {
+    spDiscError.hidden = !text;
+    setText(spDiscError, text || "");
+  }
+  btnSpDisc.addEventListener("click", () => {
+    spDiscCreds.checked = false;
+    showSpDiscError("");
+    spDiscConfirm.hidden = false;
+    playEnter(spDiscConfirm);
+    btnSpDiscNo.focus();
+  });
+  btnSpDiscNo.addEventListener("click", () => {
+    spDiscConfirm.hidden = true;
+    btnSpDisc.focus();
+  });
+  btnSpDiscYes.addEventListener("click", async () => {
+    if (btnSpDiscYes.getAttribute("aria-disabled") === "true") return;
+    btnSpDiscYes.setAttribute("aria-disabled", "true");
+    showSpDiscError("");
+    try {
+      const apagar = spDiscCreds.checked === true;
+      const r = await postJSON("/api/spotify/desconectar", apagar ? { apagar_credenciais: true } : {}, { timeout: 10000 });
+      if (r.ok && r.data.ok !== false) {
+        spDiscConfirm.hidden = true;
+        toast(apagar ? "Spotify desconectado. Client ID e Secret apagados." : "Spotify desconectado.", "success");
+        if (apagar) {
+          settingsClientId.value = "";
+          settingsClientSecret.value = "";
+          settingsClientSecret.placeholder = "cole o Client Secret aqui";
+        }
+        refreshSpotifyStatus();
+        scheduler.kick("spotify-now");
+        btnSpDisc.focus();
+      } else if (r.status === 403) {
+        showSpDiscError("Só dá para desconectar pelo computador da loja.");
+      } else {
+        showSpDiscError(typeof r.data.error === "string" && r.data.error ? r.data.error : "Não foi possível desconectar o Spotify.");
+      }
+    } catch (err) {
+      if (err.name !== "AuthLockedError") showSpDiscError("Não foi possível falar com o servidor. Tente de novo.");
+    } finally {
+      btnSpDiscYes.removeAttribute("aria-disabled");
+    }
+  });
 
   for (const input of [pinNew, pinConfirm]) {
     input.addEventListener("input", () => {
@@ -9227,20 +9781,21 @@
   }
 
   /** Envia o novo PIN (string) ou null (desativar). Devolve true em sucesso. */
-  async function sendPin(pin, successMessage) {
+  async function sendPin(pin, successMessage, revisao) {
     if (netBusy) return false;
     netBusy = true;
     btnPinSave.classList.add("is-loading");
     btnPinSave.setAttribute("aria-disabled", "true");
     btnPinDisable.setAttribute("aria-disabled", "true");
     try {
-      const { ok, data } = await postJSON("/api/auth/pin", { pin });
+      const { ok, data } = await postJSON("/api/auth/pin", Object.assign({ pin }, revisao || {}));
       if (ok && data.ok) {
         auth.pinConfigured = data.pin_configurado === true;
         resetNetForm();
         renderNetSection();
         toast(successMessage, "success");
-        remoteProgNotice(data);
+        if (!revisaoToast(data.revisao)) remoteProgNotice(data);
+        revisaoAtualiza();
         return true;
       }
       showPinError(typeof data.error === "string" && data.error ? data.error : "Não foi possível salvar o PIN.");
@@ -9269,16 +9824,47 @@
       pinConfirm.focus();
       return;
     }
+    showPinError("");
+    if (!auth.pinConfigured) { // primeiro PIN: ninguém da rede tinha acesso, não há o que revisar
+      pinNew.value = ""; // limpa os campos assim que o envio começa
+      pinConfirm.value = "";
+      sendPin(pin, "PIN salvo. O acesso pela rede está liberado.");
+      return;
+    }
+    // trocar o PIN derruba os aparelhos: mostra a confirmação com as opções de revisão ANTES de chamar
+    revokeConfirm.hidden = true;
+    pinDisableConfirm.hidden = true;
+    pinChangeConfirm.hidden = false;
+    playEnter(pinChangeConfirm);
+    revLoad(revUi.change);
+    btnPinChangeNo.focus();
+  });
+  btnPinChangeNo.addEventListener("click", () => {
+    pinChangeConfirm.hidden = true;
+    pinNew.focus();
+  });
+  btnPinChangeYes.addEventListener("click", async () => {
+    if (netBusy) return;
+    const pin = pinNew.value;
+    if (!PIN_RE.test(pin) || pin !== pinConfirm.value) {
+      pinChangeConfirm.hidden = true;
+      showPinError(!PIN_RE.test(pin) ? "O PIN deve ter de 6 a 8 números." : "Os dois PINs não são iguais.");
+      pinNew.focus();
+      return;
+    }
+    const opcoes = revValores(revUi.change);
     pinNew.value = ""; // limpa os campos assim que o envio começa
     pinConfirm.value = "";
-    showPinError("");
-    sendPin(pin, "PIN salvo. Os outros aparelhos foram desconectados.");
+    const done = await sendPin(pin, "PIN salvo. Os outros aparelhos foram desconectados.", opcoes);
+    if (!done) pinChangeConfirm.hidden = true;
   });
 
   btnPinDisable.addEventListener("click", () => {
     pinDisableConfirm.hidden = false;
     revokeConfirm.hidden = true;
+    pinChangeConfirm.hidden = true;
     playEnter(pinDisableConfirm);
+    revLoad(revUi.disable);
     btnPinDisableNo.focus();
   });
   btnPinDisableNo.addEventListener("click", () => {
@@ -9286,14 +9872,16 @@
     btnPinDisable.focus();
   });
   btnPinDisableYes.addEventListener("click", async () => {
-    const done = await sendPin(null, "Acesso pela rede desativado.");
+    const done = await sendPin(null, "Acesso pela rede desativado.", revValores(revUi.disable));
     if (!done) pinDisableConfirm.hidden = true;
   });
 
   btnRevoke.addEventListener("click", () => {
     revokeConfirm.hidden = false;
     pinDisableConfirm.hidden = true;
+    pinChangeConfirm.hidden = true;
     playEnter(revokeConfirm);
+    revLoad(revUi.revoke);
     btnRevokeNo.focus();
   });
   btnRevokeNo.addEventListener("click", () => {
@@ -9304,11 +9892,12 @@
     if (btnRevokeYes.getAttribute("aria-disabled") === "true") return;
     btnRevokeYes.setAttribute("aria-disabled", "true");
     try {
-      const { ok, data } = await postJSON("/api/auth/revogar", {});
+      const { ok, data } = await postJSON("/api/auth/revogar", revValores(revUi.revoke));
       if (ok && data.ok) {
         revokeConfirm.hidden = true;
         toast("Todos os aparelhos foram desconectados.", "success");
-        remoteProgNotice(data);
+        if (!revisaoToast(data.revisao)) remoteProgNotice(data);
+        revisaoAtualiza();
         btnRevoke.focus();
       } else {
         showPinError(typeof data.error === "string" && data.error ? data.error : "Não foi possível desconectar os aparelhos.");
@@ -9322,11 +9911,33 @@
     }
   });
 
+  /**
+   * "Sair" de um aparelho remoto: apaga o histórico de anúncios (que pode ter nomes de clientes) e tudo o mais
+   * que o painel guardou neste navegador. Só o tema (claro/escuro) fica, por não ter dado nenhum da loja.
+   */
+  function wipeBrowserData() {
+    history = [];
+    renderHistory(false);
+    messageText.value = "";
+    try {
+      const keep = "proclamare_tema";
+      const apagar = [];
+      for (let i = 0; i < window.localStorage.length; i++) {
+        const k = window.localStorage.key(i);
+        if (k !== null && k !== keep) apagar.push(k);
+      }
+      for (const k of apagar) window.localStorage.removeItem(k);
+    } catch (e) { /* localStorage indisponível */ }
+    try { window.sessionStorage.clear(); } catch (e) { /* idem */ }
+  }
+
   btnLogout.addEventListener("click", async () => {
     if (btnLogout.getAttribute("aria-disabled") === "true") return;
     btnLogout.setAttribute("aria-disabled", "true");
     try {
-      await postJSON("/api/auth/logout", {}, { auth: true, timeout: 8000 });
+      const r = await postJSON("/api/auth/logout", {}, { auth: true, timeout: 8000 });
+      if (!r.ok || r.data.ok === false) throw new Error("logout recusado");
+      wipeBrowserData(); // v2.7.1 (P23): só depois de sair de verdade; se falhar, os dados ficam e o erro aparece
       boot();
     } catch (err) {
       toast("Não foi possível sair agora. Tente de novo.", "error");
@@ -9384,6 +9995,7 @@
       return;
     }
     auth.supported = !st.legacy;
+    auth.loopbackSuspenso = !st.legacy && st.loopback_suspenso === true; // v2.7.1: túnel detectado, o PC também pede PIN
     auth.local = st.legacy ? true : st.local === true;
     auth.pinConfigured = !st.legacy && st.pin_configurado === true;
     auth.authenticated = st.legacy ? true : st.autenticado === true;
@@ -9392,7 +10004,7 @@
     btnPower.hidden = !auth.podeDesligar;
     if (auth.local) readLocalAuthInfo(st);
     if (auth.local || auth.authenticated) enterApp();
-    else if (!auth.pinConfigured) showGate("off");
+    else if (!auth.pinConfigured) showGate("off", auth.loopbackSuspenso ? { tunnel: true } : undefined);
     else showGate("pin");
   }
 
@@ -10367,6 +10979,8 @@
 
     // Tarefas de polling (todas passam pelo agendador único)
     scheduler.add("status", pollStatus, 15000, { immediate: true });
+    // Segurança (v2.7.1): selo de alerta no botão de Configurações, só no PC da loja; pausa com a aba oculta
+    scheduler.add("seg", refreshLocalAuthInfo, 60000, { enabled: () => auth.supported && auth.local && !authLocked && !settingsDialog.open });
     // Som da loja: tile a cada 10 s; a lista do assistente a 1 s, só com o diálogo aberto
     somReiniciar();
     scheduler.add("som-estado", pollSomEstado, 10000, { immediate: true });

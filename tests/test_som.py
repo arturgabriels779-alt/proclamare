@@ -32,6 +32,7 @@ from typing import Any
 RAIZ = Path(__file__).resolve().parent.parent
 if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
+import tests  # noqa: E402,F401  - isola o ambiente (pasta de músicas temporária) ANTES do `import server`
 os.environ.setdefault("PROCLAMARE_NO_BROWSER", "1")
 
 import server  # noqa: E402
@@ -44,8 +45,8 @@ from som.modelo import Armazem, ErroEsquema  # noqa: E402
 # ---------------------------------------------------------------------------
 # Dados simulados
 # ---------------------------------------------------------------------------
-ID_REALTEK = "{0.0.0.00000000}.{5df311f7-326a-47cd-b823-c685be664fa3}"
-ID_BT = "{0.0.0.00000000}.{23a52224-118a-4403-b531-3051d47cb396}"
+ID_REALTEK = "{0.0.0.00000000}.{11111111-1111-4111-8111-111111111111}"
+ID_BT = "{0.0.0.00000000}.{22222222-2222-4222-8222-222222222222}"
 ID_HDMI = "{0.0.0.00000000}.{0a1b2c3d-1111-2222-3333-444455556666}"
 MAC_BT = "AA:BB:CC:DD:EE:3C"
 CONTAINER = "{43fa1e8d-aaaa-bbbb-cccc-ddddeeeeffff}"
@@ -53,7 +54,7 @@ ID_SPOTIFY = "7d2a91c4e0b84f5aa1c3d9e8f7b6a5c4d3e2f1a0"
 ID_USB = "{0.0.0.00000000}.{aaaa1111-2222-3333-4444-555566667777}"
 ID_FONE = "{0.0.0.00000000}.{bbbb1111-2222-3333-4444-555566667777}"
 SEGREDOS = (ID_REALTEK, ID_BT, ID_HDMI, ID_USB, ID_FONE, MAC_BT, CONTAINER, ID_SPOTIFY,
-            "5df311f7", "23a52224", "aaaa1111", "bbbb1111")
+            "11111111", "22222222", "aaaa1111", "bbbb1111")
 
 
 def bruto_linha(**extra: Any) -> EndpointBruto:
@@ -150,7 +151,7 @@ class TestNomes(unittest.TestCase):
         self.assertEqual(modelo.normalizar_nome("ＦＲＡＨＭ   ＡＰＰ"), "FRAHM APP")
 
     def test_remove_controle_formatacao_e_bidi(self) -> None:
-        sujo = "Ca​ixa‮ BT⁦﻿\x07\n!"
+        sujo = "Ca\u200bixa\u202e BT\u2066\ufeff\x07\n!"
         self.assertEqual(modelo.normalizar_nome(sujo), "Caixa BT!")
 
     def test_limite_de_64(self) -> None:
@@ -166,7 +167,7 @@ class TestNomes(unittest.TestCase):
         self.assertFalse(modelo.nome_incomum("Alto-falantes (Realtek(R) Audio)"))
         self.assertFalse(modelo.nome_incomum("Saída digital áéíõç"))
         self.assertTrue(modelo.nome_incomum("Cаixa"))            # 'а' cirílico
-        self.assertTrue(modelo.nome_incomum("Caixa‮"))      # bidi removido
+        self.assertTrue(modelo.nome_incomum("Caixa\u202e"))      # bidi removido
         self.assertTrue(modelo.nome_incomum("a" * 80))           # cortado
         self.assertTrue(modelo.nome_incomum("Caixa 🔊"))
         self.assertFalse(modelo.nome_incomum(None))
@@ -183,7 +184,7 @@ class TestSid(unittest.TestCase):
         self.assertRegex(modelo.gerar_sid("cast", "u"), modelo.RE_SID.pattern)
 
     def test_nao_contem_a_referencia(self) -> None:
-        self.assertNotIn("5df311f7", modelo.gerar_sid("local", ID_REALTEK))
+        self.assertNotIn("11111111", modelo.gerar_sid("local", ID_REALTEK))
 
     def test_tipo_invalido(self) -> None:
         with self.assertRaises(ValueError):
@@ -249,7 +250,7 @@ class TestEsquema(unittest.TestCase):
             {"saidas": {"nao-e-sid": entrada_ok()}},
             {"saidas": {SID: {**entrada_ok(), "tipo": "impressora"}}},
             {"saidas": {SID: {**entrada_ok(), "apelido": "x" * 41}}},
-            {"saidas": {SID: {**entrada_ok(), "apelido": "ok‮"}}},
+            {"saidas": {SID: {**entrada_ok(), "apelido": "ok\u202e"}}},
             {"saidas": {SID: {**entrada_ok(), "apelido": "  "}}},
             {"saidas": {SID: {**entrada_ok(), "canais": 0}}},
             {"saidas": {SID: {k: v for k, v in entrada_ok().items() if k != "tipo"}}},
@@ -452,8 +453,8 @@ class TestPontuacao(unittest.TestCase):
         self.assertEqual(s.estado_dispositivo, "disponivel")
 
     def test_extrair_mac(self) -> None:
-        inst = r"BTHENUM\{0000110B-0000-1000-8000-00805F9B34FB}_LOCALMFG&0002\7&36BD6D0D&0&4142FF395187_C00000000"
-        self.assertEqual(local._extrair_mac(inst), "41:42:FF:39:51:87")
+        inst = r"BTHENUM\{0000110B-0000-1000-8000-00805F9B34FB}_LOCALMFG&0002\7&00000000&0&AABBCCDDEE01_C00000000"
+        self.assertEqual(local._extrair_mac(inst), "AA:BB:CC:DD:EE:01")
         self.assertIsNone(local._extrair_mac("INTELAUDIO\\FUNC_01"))
         self.assertIsNone(local._extrair_mac(None))
 
@@ -2086,7 +2087,7 @@ class TestRotaSaida(BaseSom):
                  {"sid": self.linha.sid, "confirmada": False}, {"sid": self.linha.sid, "esquecer": False},
                  {"sid": self.linha.sid, "esquecer": True, "apelido": "x"},
                  {"sid": self.linha.sid, "apelido": ""}, {"sid": self.linha.sid, "apelido": "x" * 41},
-                 {"sid": self.linha.sid, "apelido": "ab‮cd"}, {"sid": self.linha.sid, "apelido": "a\nb"},
+                 {"sid": self.linha.sid, "apelido": "ab\u202ecd"}, {"sid": self.linha.sid, "apelido": "a\nb"},
                  {"sid": self.linha.sid, "zonas": []}, {"sid": self.linha.sid, "ref": {}},
                  {"sid": self.linha.sid, "rack": {}}, {"sid": self.linha.sid, "rack": {"entrada_frahm": "x"}},
                  {"sid": self.linha.sid, "rack": {"outro": 1}}, {"sid": self.linha.sid, "aprovada": "sim"},

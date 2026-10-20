@@ -42,6 +42,11 @@ PIN = "481926"
 HOST_REMOTO = "http://192.168.0.10:8502"
 IP_REMOTO = {"REMOTE_ADDR": "192.168.0.50"}
 ROTA = "/api/sistema/desligar"
+CABECALHOS_ESPERADOS = {
+    "Via", "Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Server", "X-Forwarded-Proto",
+    "X-Forwarded-Port", "X-Forwarded-By", "X-Real-IP", "CF-Connecting-IP", "True-Client-IP",
+    "Tailscale-User-Login",
+}
 LOG_SERVER = "proclamare"
 
 
@@ -158,8 +163,7 @@ class TesteDesligarRota(BaseRota):
                 self.assertIn(r.status_code, (401, 403))
                 self.espiao.assert_not_called()
                 self.assertFalse(server._desligamento_agendado)
-        self.assertEqual(set(server.CABECALHOS_DE_PROXY),
-                         {"Via", "Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP"})
+        self.assertEqual(set(server.CABECALHOS_DE_PROXY), CABECALHOS_ESPERADOS)
 
     def test_cabecalho_de_proxy_sem_pin_configurado_tambem_nao_desliga(self) -> None:
         for nome in server.CABECALHOS_DE_PROXY:

@@ -13,9 +13,7 @@
 <script src="/static/theme.js"></script>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400..700&display=swap">
+<link rel="preload" href="/static/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -87,6 +85,7 @@
     <!-- Digite o PIN -->
     <section class="gate__view" id="gate-pin" aria-labelledby="gate-pin-lead" hidden>
       <p class="gate__lead" id="gate-pin-lead">Digite o PIN para controlar as caixas da loja</p>
+      <p class="seg__note gate__tunnel" id="gate-tunnel" role="note" hidden>Este computador está pedindo PIN porque o Proclamare detectou um encaminhamento de rede (túnel) apontando para ele. Entre com o PIN normalmente. Para voltar a usar sem PIN, feche o encaminhamento ou inicie o Proclamare com PROCLAMARE_CONFIAR_LOOPBACK=1.</p>
       <form class="gate__form" id="gate-pin-form" novalidate>
         <label class="sr-only" for="gate-pin-input">PIN de acesso (6 a 8 números)</label>
         <div class="input gate__input" id="gate-pin-box">
@@ -145,6 +144,7 @@
       </div>
       <button type="button" class="btn btn--icon" id="btn-settings" aria-label="Configurações" title="Configurações">
         <svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>
+        <span class="btn__dot" id="settings-dot" aria-hidden="true" hidden></span>
       </button>
       <!-- Desligar (v2.5): só aparece no PC do Proclamare (/api/auth/status -> pode_desligar) -->
       <button type="button" class="btn btn--icon btn--power" id="btn-power" aria-label="Desligar o Proclamare" title="Desligar o Proclamare" aria-haspopup="dialog" hidden>
@@ -882,6 +882,29 @@
       </div>
     </div>
 
+    <div class="field spdisc" id="spotify-disc">
+      <span class="label" id="label-sp-disc">Desconectar o Spotify</span>
+      <p class="hint">Faz o Proclamare esquecer a conta do Spotify neste computador. Útil se o computador mudar de mãos ou se o arquivo de configuração vazar.</p>
+      <div class="actions actions--start">
+        <button type="button" class="btn btn--text btn--danger" id="btn-sp-disc" aria-describedby="label-sp-disc">Desconectar Spotify</button>
+      </div>
+      <div class="net__confirm" id="sp-disc-confirm" role="group" aria-labelledby="sp-disc-title" hidden>
+        <p class="net__confirm-title" id="sp-disc-title">Desconectar o Spotify?</p>
+        <p class="hint">A música do Spotify para de ser controlada por aqui até você conectar de novo.</p>
+        <label class="switch">
+          <input type="checkbox" role="switch" class="switch__input" id="sp-disc-creds">
+          <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+          <span class="switch__text">Apagar também o Client ID e o Client Secret</span>
+        </label>
+        <p class="hint">Para cortar o acesso de vez, remova o app em <b>spotify.com/account/apps</b> e gere um novo Client Secret no Dashboard do Spotify.</p>
+        <p class="form-error" id="sp-disc-error" role="alert" hidden></p>
+        <div class="actions">
+          <button type="button" class="btn btn--danger-solid" id="btn-sp-disc-yes">Sim, desconectar</button>
+          <button type="button" class="btn btn--ghost" id="btn-sp-disc-no">Manter conectado</button>
+        </div>
+      </div>
+    </div>
+
     <p class="form-error" id="settings-error" role="alert" hidden></p>
     </div>
 
@@ -1066,8 +1089,6 @@
 
     <div id="net-local" hidden>
       <p class="net__state" id="net-state" role="status"></p>
-      <p class="net__alert" id="net-alert-fails" hidden></p>
-      <p class="net__alert" id="net-alert-block" hidden></p>
       <form class="net__form" id="pin-form" novalidate>
         <div class="net__pair">
           <div class="field">
@@ -1091,9 +1112,19 @@
         <div class="actions net__revoke" id="net-revoke-row" hidden>
           <button type="button" class="btn btn--ghost" id="btn-revoke">Desconectar todos os aparelhos</button>
         </div>
+        <div class="net__confirm" id="pin-change-confirm" role="group" aria-labelledby="pin-change-title" hidden>
+          <p class="net__confirm-title" id="pin-change-title">Trocar o PIN?</p>
+          <p class="hint">Todos os aparelhos serão desconectados e precisarão do novo PIN.</p>
+          <div class="rev" id="pin-change-rev"></div>
+          <div class="actions">
+            <button type="button" class="btn btn--danger-solid" id="btn-pin-change-yes">Sim, trocar o PIN</button>
+            <button type="button" class="btn btn--ghost" id="btn-pin-change-no">Voltar</button>
+          </div>
+        </div>
         <div class="net__confirm" id="revoke-confirm" role="group" aria-labelledby="revoke-title" hidden>
           <p class="net__confirm-title" id="revoke-title">Desconectar todos os aparelhos?</p>
           <p class="hint">Quem estiver usando o painel pela rede vai precisar digitar o PIN de novo.</p>
+          <div class="rev" id="revoke-rev"></div>
           <div class="actions">
             <button type="button" class="btn btn--danger-solid" id="btn-revoke-yes">Sim, desconectar</button>
             <button type="button" class="btn btn--ghost" id="btn-revoke-no">Manter</button>
@@ -1102,6 +1133,7 @@
         <div class="net__confirm" id="pin-disable-confirm" role="group" aria-labelledby="pin-disable-title" hidden>
           <p class="net__confirm-title" id="pin-disable-title">Desativar o acesso pela rede?</p>
           <p class="hint">Todos os aparelhos serão desconectados e só este computador poderá controlar o painel.</p>
+          <div class="rev" id="pin-disable-rev"></div>
           <div class="actions">
             <button type="button" class="btn btn--danger-solid" id="btn-pin-disable-yes">Sim, desativar</button>
             <button type="button" class="btn btn--ghost" id="btn-pin-disable-no">Manter</button>
@@ -1115,6 +1147,48 @@
       <div class="actions">
         <button type="button" class="btn btn--ghost" id="btn-logout">Sair deste aparelho</button>
       </div>
+    </div>
+  </section>
+
+  <!-- Segurança (v2.7.1): só no PC da loja. Tentativas de PIN, acessos pela rede, túneis e o que aparelhos da rede deixaram. -->
+  <section class="sheet sheet--seg" id="seg-section" aria-labelledby="seg-title" hidden>
+    <h3 class="sheet__section" id="seg-title" tabindex="-1">Segurança</h3>
+    <p class="seg__state" id="seg-state" role="status"></p>
+
+    <div class="seg__alerts" id="seg-alerts"></div>
+
+    <div class="seg__block" id="seg-logins-block">
+      <h4 class="seg__h">Últimos acessos pela rede</h4>
+      <p class="hint" id="seg-logins-empty" hidden>Nenhum aparelho entrou pela rede ainda.</p>
+      <ul class="seg__list" id="seg-logins"></ul>
+    </div>
+
+    <div class="seg__liberar" id="seg-liberar-box" hidden>
+      <label class="switch">
+        <input type="checkbox" role="switch" class="switch__input" id="seg-zerar" aria-describedby="seg-liberar-hint">
+        <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+        <span class="switch__text">Zerar também o histórico de bloqueios</span>
+      </label>
+      <p class="hint" id="seg-liberar-hint">Sem marcar, “Liberar” tira só os bloqueios de agora e quem insistir volta a ser bloqueado por mais tempo. Marcando, todo mundo recomeça do zero.</p>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn btn--ghost" id="btn-seg-visto" hidden>Marcar como visto</button>
+      <button type="button" class="btn btn--ghost" id="btn-seg-liberar" hidden>Liberar login pela rede</button>
+    </div>
+    <p class="form-error" id="seg-error" role="alert" hidden></p>
+
+    <div class="seg__block" id="seg-remotos-block">
+      <div class="seg__head">
+        <h4 class="seg__h" id="seg-remotos-title">Feito por aparelhos da rede</h4>
+        <button type="button" class="btn btn--text btn--sm" id="btn-seg-aprovar-tudo" hidden>Aprovar tudo</button>
+      </div>
+      <p class="hint" id="seg-remotos-hint">Horários, listas, playlists do Spotify e mensagens prontas que um celular criou ou mudou. Confira e toque em “Aprovar” no que for da equipe.</p>
+      <p class="hint" id="seg-remotos-empty" hidden>Nada pendente. Tudo o que está no painel foi feito neste computador ou já foi aprovado.</p>
+      <div class="seg__note seg__removidos" id="seg-removidos" hidden>
+        <span id="seg-removidos-text"></span>
+        <button type="button" class="btn btn--text btn--sm" id="btn-seg-removidos">Ok, visto</button>
+      </div>
+      <div id="seg-remotos"></div>
     </div>
   </section>
 </dialog>

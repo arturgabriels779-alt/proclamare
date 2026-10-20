@@ -24,6 +24,25 @@
    1a. TOKENS DE LAYOUT, FORMA E MOVIMENTO (iguais nos dois temas)
    Ficam num bloco à parte para os @media do fim poderem sobrescrever.
    ===================================================================== */
+/* Fonte Inter (SIL OFL 1.1), servida pelo próprio Proclamare: sem Google Fonts, sem internet, sem enviar o IP a terceiros.
+   Variável (400-700). Licença em static/fonts/OFL.txt. O navegador só baixa o "latin-ext" se algum texto precisar. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/inter-latin-ext-wght-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/inter-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 :root {
   --r-tile: 24px;      /* tile bento (22px em ≤1023) */
   --r-tile-sm: 20px;   /* tiles de status (18px no celular) */
@@ -2856,3 +2875,52 @@ dialog.dialog--wide { scroll-padding-bottom: 120px; }
     .lib__item + .lib__item::before { left: 12px; }
   }
 }
+
+/* ---- Segurança (v2.7.1): selo no botão, revisão do que veio da rede, desconectar Spotify ---- */
+#btn-settings { position: relative; }
+.btn__dot {
+  position: absolute; top: 3px; right: 3px;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--live-solid);
+  box-shadow: 0 0 0 2px var(--bg, var(--material-solid));
+}
+.net__confirm .hint { color: var(--text-2); }   /* contraste sobre o fundo rosado da confirmação */
+.spdisc { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--separator); }
+.rev { display: flex; flex-direction: column; gap: 2px; }
+.rev:empty { display: none; }
+.rev__count { margin-bottom: 6px; font-size: 13px; line-height: 18px; color: var(--text-1); font-weight: 600; }
+.rev .switch { align-items: flex-start; padding: 4px 0; }
+.rev .switch__text { font-size: 14px; line-height: 20px; padding-top: 5px; }
+
+.sheet--seg { padding-top: 24px; border-top: 1px solid var(--separator); display: flex; flex-direction: column; gap: 14px; }
+.seg__state { display: flex; align-items: center; gap: 8px; font-size: 14px; line-height: 20px; color: var(--text-2); }
+.seg__state::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ok-dot); }
+.seg__state.is-alert { color: var(--text-1); font-weight: 600; }
+.seg__state.is-alert::before { background: var(--live-solid); }
+.seg__alerts { display: flex; flex-direction: column; gap: 8px; }
+.seg__alerts:empty { display: none; }
+.seg__note { padding: 10px 12px; border-radius: 12px; background: var(--warn-soft); color: var(--warn); font-size: 13px; line-height: 18px; }
+.seg__note--bad { background: var(--live-soft); color: var(--live); }
+.seg__note--soft { background: var(--fill-1); color: var(--text-2); }
+.seg__block { display: flex; flex-direction: column; gap: 8px; }
+.seg__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.seg__h { font: 600 15px/20px var(--font); letter-spacing: -0.01em; color: var(--text-1); }
+.seg__list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border-radius: var(--r-card); background: var(--material-solid); }
+.seg__list:empty { display: none; }
+.seg__row { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 14px; }
+.seg__row + .seg__row { border-top: 1px solid var(--separator); }
+.seg__row-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.seg__row-title { font-size: 14px; line-height: 20px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seg__row-meta { font-size: 12px; line-height: 16px; color: var(--text-3); overflow-wrap: anywhere; }
+.seg__row .btn { flex: none; }
+.seg__group { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.seg__group-title { font: 600 12px/16px var(--font); letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+.seg__row.is-leaving { opacity: 0.4; transition: opacity var(--dur-2) var(--ease); }
+@media (max-width: 479.98px) {
+  .seg__row-title, .seg__row-meta { white-space: normal; overflow-wrap: anywhere; }
+}
+.btn--text.is-confirm { background: var(--warn-soft); color: var(--warn); }
+.gate__tunnel { max-width: 36ch; text-align: left; }
+.seg__liberar { display: flex; flex-direction: column; gap: 4px; }
+.seg__removidos { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.seg__removidos .btn { flex: none; }

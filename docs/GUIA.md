@@ -42,8 +42,12 @@ cd proclamare   # pasta do projeto (clonada do GitHub)
 python -m venv venv
 # Windows: venv\Scripts\activate
 # Linux/Mac: source venv/bin/activate
-pip install -r requirements.txt
+pip install --only-binary :all: -r requirements.txt
 ```
+
+O `requirements.txt` tem **versões exatas** (as mesmas do `requirements.lock`), mas sem hashes
+e sem as dependências indiretas fixadas: serve para Linux/macOS. `--only-binary :all:` impede
+que o pip compile código-fonte baixado da internet.
 
 No Windows, o instalador (abaixo) usa o `requirements.lock`, que trava a versão de
 cada pacote **com hashes**
@@ -82,9 +86,12 @@ Para quem não quer usar o terminal:
    pasta de Inicialização usa `--silencioso` (liga o servidor sem abrir o
    navegador). Para mudar de ideia, rode o instalador de novo e responda: **N**
    remove o atalho de Inicialização.
-6. **Logs:** `logs/proclamare.log` (log do servidor, rotativo: 5 MB × 3 cópias) e
+6. **Logs:** `logs/proclamare.log` (log do servidor, rotativo: 5 MB × 3 cópias),
    `logs/inicio.log` (saída bruta do último início, útil para erros antes de o
-   log começar).
+   log começar) e `logs/inicio.anterior.log` (a do início anterior: se o programa
+   caiu e alguém o religou, **a causa da queda está aqui**). O servidor roda em
+   modo isolado do Python (`python -I`): variáveis como `PYTHONPATH` são ignoradas
+   e arquivos soltos na pasta do programa não substituem os pacotes instalados.
 7. **Se não abrir:** a mensagem de erro cita os arquivos de log — abra-os e veja
    as últimas linhas. Causas comuns: o instalador ainda não foi executado
    (mensagem "Execute primeiro o Instalar Proclamare.bat"); a porta 8502 está
@@ -92,10 +99,18 @@ Para quem não quer usar o terminal:
    bloqueou (escolha "Permitir").
 8. **Desinstalar:** Menu Iniciar → **Desinstalar Proclamare** (ou, no terminal,
    `powershell -NoProfile -ExecutionPolicy Bypass -File tools\instalar.ps1 -Desinstalar`).
-   Remove todos os atalhos, inclusive o de Inicialização, e pergunta se deve
-   apagar o `.venv` e o Python que o próprio Proclamare baixou (se baixou). A pasta
-   do programa, o `config.json` e a pasta de músicas são mantidos; para apagar tudo,
-   exclua a pasta depois.
+   Remove todos os atalhos, inclusive o de Inicialização, a tarefa "religar sozinho"
+   (se você a criou) e pergunta se deve apagar o `.venv` e o Python que o próprio
+   Proclamare baixou (se baixou). **Por padrão a pasta do programa, os seus dados
+   (`config.json`, `listas.json`, `programacao*.json`, `logs/`) e a pasta de músicas
+   são mantidos.** O instalador também pergunta "Apagar também os DADOS do
+   Proclamare?" (padrão: não). Se responder **S**, ele lista o que será apagado e
+   só apaga depois de você digitar `APAGAR`; só mexe em arquivos **dentro da pasta
+   do programa** (nunca na pasta de músicas, no Python ou em outros programas). Faça
+   isso se o computador for vendido, devolvido ou descartado (o `config.json` guarda o
+   hash do PIN e o segredo do Spotify). Para pular a primeira pergunta:
+   `-Desinstalar -ApagarDados` (a confirmação `APAGAR` continua sendo pedida).
+   Depois, exclua a pasta do programa se quiser tirar tudo.
 
 O lançador sempre conversa com `127.0.0.1`. Se você definiu `PROCLAMARE_HOST`
 com um IP específico que não seja de loopback, use `0.0.0.0` ou abra o painel
@@ -133,15 +148,23 @@ Ao rodar `Instalar Proclamare.bat`, o instalador faz isto:
 - `-RemoverPythonPrivado`: com `-Desinstalar`, apaga o Python do Proclamare sem perguntar.
 - `-SemDependencias`: nunca baixa Python (usa só o que já existe).
 
+**Qual Python o instalador escolhe:** prefere o **3.12** (é o que o Proclamare baixa e testa), depois 3.13, 3.11 e 3.10, e só aceita um Python do PC com o **patch mínimo exigido** da série (3.10.11, 3.11.9, 3.12.10, 3.13.5: um piso conservador; um Python mais velho que isso é ignorado e o instalador explica por quê). Se só houver 3.10 ou 3.11, ele usa e **avisa** que já não recebem correções de segurança em programa pronto (o 3.10 chega ao fim de vida em out/2026). A tabela fica em `$PatchMinimo` no `tools/instalar.ps1`.
+
+**Modo isolado (`python -I`):** o Proclamare roda, e os atalhos e a tarefa chamam o lançador, com `python -I`. Isso ignora `PYTHONPATH`, a pasta atual e o **site do usuário**. Consequência: pacotes instalados com `pip install --user` **não são vistos**. No modo `-SemDependencias` o instalador confere isso e avisa; instale os pacotes no próprio Python (sem `--user`) ou use o modo normal, que cria o `.venv`.
+
+**Pasta do programa:** o instalador **recusa instalar** se a pasta do programa puder ser alterada por qualquer usuário do computador (ele não cria atalhos nem a tarefa "religar sozinho" que executariam código trocável por outros). Prefira `%LOCALAPPDATA%\Programs\Proclamare` ou uma pasta dentro do seu perfil. O instalador não muda as permissões de uma pasta que ele não criou; isso é um **risco aceito** quando você mesmo libera a pasta para outros usuários.
+
 **Versão do Python do Proclamare:** o 3.12.10 é a última 3.12 com binários para Windows e não recebe mais correções de segurança do CPython. O app não usa o módulo `tarfile` e o pip roda só com wheels (`--only-binary`), então o risco hoje é baixo. A troca (3.13.x, ou 3.14.x quando o lock liberar o pygame no 3.14) fica para revisão até 2027-04.
 
 Para definir o PIN (6 a 8 dígitos) sem abrir o painel, rode no terminal, dentro
 da pasta do projeto: `.venv\Scripts\python server.py --definir-pin`.
 
-Se o **pip-audit** já estiver instalado no computador (opcional; instale-o fora do
-ambiente do Proclamare, ex.: `py -m pip install --user pip-audit`), o instalador
-também confere se as versões fixadas têm vulnerabilidades conhecidas. É só um
-**aviso**: nunca bloqueia a instalação. Se o `requirements.lock` não estiver na
+Se o módulo **pip-audit** já estiver instalado no Python de base (opcional; instale-o
+fora do `.venv` do Proclamare, ex.: `py -m pip install pip-audit`), o instalador
+também confere se as versões fixadas têm vulnerabilidades conhecidas. Ele só roda o
+módulo desse Python (que já passou pela checagem de dono e pasta); **nunca executa um
+`pip-audit` achado no PATH**. É só um **aviso**: nunca bloqueia a instalação. No GitHub,
+o `requirements.lock` também é auditado a cada mudança (workflow `testes`). Se o `requirements.lock` não estiver na
 pasta, o instalador **para** e pede o projeto completo; só instala pelo
 `requirements.txt` (sem verificação de hashes) se você passar `-PermitirSemHashes`.
 
@@ -200,10 +223,19 @@ alternativa; se as duas existirem, vale a `PROCLAMARE_*`.
 | `PROCLAMARE_LOG_FILE` | (vazio = console) | Arquivo de log. O log **rotaciona em 5 MB** e guarda **3 arquivos antigos** (`.1`, `.2`, `.3`). O lançador de duplo clique já define esta variável (em `logs/`) |
 | `PROCLAMARE_PID_FILE` | (vazio) | Arquivo JSON (`pid`, `porta`, `criado_em`, `executavel`) gravado quando o servidor começa a atender e removido ao encerrar; o lançador usa para desligar o processo certo. O lançador de duplo clique já define esta variável (em `logs/`) |
 | `PROCLAMARE_SPOTIFY_REDIRECT` | `http://127.0.0.1:8502/spotify/callback` | Redirect URI do Spotify. O Spotify só aceita `http` para o IP de loopback `127.0.0.1`/`[::1]`; para outro endereço é preciso `https://` (ex.: proxy com certificado) |
-| `PROCLAMARE_CONFIAR_LOOPBACK` | `1` | `0` = nenhuma conexão é "local": todos precisam de PIN (use com proxy/túnel no PC da loja; veja "Acesso pela rede (PIN)") |
+| `PROCLAMARE_CONFIAR_LOOPBACK` | `auto` | Quem é o "PC da loja" (sem PIN). `auto` (padrão): o próprio PC é local, **exceto** se o Proclamare detectar um túnel/encaminhamento para a porta; aí o PC também passa a pedir PIN. `1`: o PC é sempre local. `0`: ninguém é local, todos usam PIN (necessário com `tailscale serve` e proxies). Veja "Acesso pela rede (PIN)" |
+| `PROCLAMARE_AUDIT_FILE` | `logs/auditoria.log` | Arquivo da trilha de auditoria (veja a seção 10). Por padrão fica ao lado do `PROCLAMARE_LOG_FILE` |
 | `PROCLAMARE_MUSICAS_DIR` | `Músicas` do Windows`\Músicas do Proclamare` | Pasta das Minhas músicas (veja a seção 4b). Fica fora da pasta do programa de propósito: sobrevive a baixar uma versão nova |
 | `PROCLAMARE_MUSICAS_ENVIO` | `1` | `0` desliga o envio de músicas pelo painel (a pasta continua funcionando). Use `0` se a Wi-Fi da loja for compartilhada com clientes — veja "Segurança do envio" na seção 4b |
 | `PROCLAMARE_ALLOWED_HOSTS` | (vazio) | Nomes de host extras aceitos, separados por vírgula (ex.: `proclamare.loja.local`). IPs, `localhost` e o nome deste computador já são aceitos; qualquer outro nome recebe erro 421 (proteção contra DNS rebinding) |
+
+### Limites que protegem a loja (v2.7.1)
+- Anúncio: no máximo **10 por minuto por aparelho da rede** (o PC da loja não tem esse limite).
+- Programação: o teto de **60 minutos por dia** agora soma o áudio **e** a fala estimada dos
+  anúncios agendados; no máximo **72 horários ativos por dia** da semana; e no máximo **10
+  listas/playlists agendadas por dia criadas ou alteradas por cada aparelho da rede**
+  (editar o conteúdo de uma lista que já está agendada também conta).
+  Só é recusado o que piora um dia: uma programação já salva continua valendo.
 
 ### Dicas para o acesso remoto funcionar sem dor de cabeça
 
@@ -251,30 +283,86 @@ alternativa; se as duas existirem, vale a `PROCLAMARE_*`.
   sozinha por mais 14. O botão de sair esquece o aparelho.
 - **Trocar o PIN desconecta todos os aparelhos**: cada um precisará digitar o
   PIN novo. Se quiser só desconectar todo mundo **sem trocar o PIN**, use
-  **Revogar sessões** em Configurações → Acesso pela rede (no PC da loja).
+  **Desconectar todos os aparelhos** em Configurações → Acesso pela rede (no PC da loja).
 - **Sem PIN, o acesso pela rede fica desligado**: outros aparelhos conseguem abrir
   a página, mas não anunciar nem controlar a música. Remover o PIN também
   desconecta todos.
-- **Bloqueio por tentativas:** 5 PINs errados seguidos bloqueiam aquele aparelho
-  por 5 minutos (a 5ª tentativa errada já mostra o bloqueio). Se muitos erros
-  vierem de aparelhos diferentes (20 em 10 minutos), o login pela rede fica
-  bloqueado para todos por 10 minutos; se isso se repetir, o bloqueio dobra
-  (20 min, 40 min... até 24 h). Um login certo **não** apaga essa escalada: ela
-  só volta ao zero ao trocar/remover o PIN ou revogar as sessões no PC da loja,
-  ou desce um nível a cada 24 h sem novo bloqueio global. O computador da loja não é
-  afetado.
-- **Tentativas suspeitas:** em Configurações → Acesso pela rede, o PC da loja
-  mostra quantos PINs errados houve nas últimas 24 horas e se há um bloqueio
-  global ativo. Esses números não aparecem para os outros aparelhos.
-- **ATENÇÃO — proxy, túnel ou redirecionamento de porta no PC da loja:** se
-  houver proxy reverso (Caddy/nginx), túnel (SSH, cloudflared) ou
-  redirecionamento de porta (`netsh portproxy`, WSL) no PC da loja, **qualquer
-  aparelho consegue se passar pelo PC da loja e ignorar o PIN**, porque todas as
-  conexões chegam ao Proclamare como se viessem do próprio PC. Nesses casos
-  `PROCLAMARE_CONFIAR_LOOPBACK=0` é **OBRIGATÓRIO** (defina o PIN pela linha de
-  comando). Com ele, **ninguém** é "local": todos digitam o PIN, e trocar o PIN
-  e configurar o Spotify só são possíveis pela linha de comando / editando o
-  `config.json` com o servidor parado.
+- **Bloqueio por tentativas (contra quem tenta adivinhar o PIN):**
+  - **Por aparelho (IP):** 5 PINs errados seguidos bloqueiam aquele aparelho por 5 minutos (a 5ª
+    tentativa errada já mostra o bloqueio). Se o mesmo aparelho continuar errando depois, o
+    bloqueio **dobra** a cada vez (5 min, 10, 20... até 24 h). O nível desce **um degrau a cada 24
+    horas sem bloqueio**.
+  - **Por faixa de rede:** 20 erros em 10 minutos somando vários aparelhos da mesma faixa (`/24` no
+    IPv4, como `192.168.0.x`; `/64` no IPv6) bloqueiam a faixa por **10 minutos fixos** (esse
+    bloqueio **não escala**), mesmo que o invasor troque de IP. **Aparelhos que já entraram com o
+    PIN nos últimos 90 dias não são afetados** por esse bloqueio da faixa.
+  - **Teto diário:** 300 PINs errados em 24 horas travam o login pela rede **até o dono liberar
+    no PC da loja** (botão **Liberar login pela rede**).
+  - **Logins certos** também têm limite: no máximo 10 por minuto por aparelho.
+  - **Liberar login pela rede** zera os bloqueios do momento e a trava do teto diário e não
+    derruba ninguém. Por padrão **não zera a escalada** dos aparelhos (o próximo erro volta ao
+    nível alto); há uma opção para **também zerar a escalada** (continua sem derrubar ninguém).
+    **Trocar ou remover o PIN**, ou **Desconectar todos os aparelhos**, zera **tudo**. Um login
+    certo não apaga a escalada. O computador da loja não é afetado.
+  - **Reiniciar o Proclamare não perdoa:** o estado do bloqueio e a escalada de cada aparelho
+    **sobrevivem a reinício** (do programa e do PC). O PIN longo continua sendo a defesa de
+    verdade; o bloqueio só torna o chute lento.
+  - **Recomendação:** use PIN de **8 dígitos** (100 vezes mais combinações que 6) e não repita
+    o PIN de cartão, celular ou da loja.
+- **Tentativas suspeitas e área "Segurança":** no PC da loja (e só nele) o painel tem
+  uma área **Segurança** que mostra quantos PINs errados houve nas últimas 24 horas, se há
+  bloqueio ativo, os **últimos acessos** (hora e IP; um IP nunca visto antes acende o alerta) e
+  se o Proclamare detectou algum túnel. Os contadores de erros e os últimos acessos ficam
+  guardados e sobrevivem a reinício, assim como o estado dos bloqueios; nada disso aparece para
+  os outros aparelhos. O botão **Liberar login pela rede** desfaz os bloqueios de login do
+  momento **sem** derrubar ninguém e **sem** trocar o PIN (veja as regras acima).
+- **Feito por aparelhos da rede:** a mesma área lista o que celulares e outros computadores
+  criaram ou alteraram: horários, listas, atalhos do Spotify, mensagens prontas, **músicas
+  enviadas pelo celular** e mudanças no **Som da loja**. Se você reconhece um item, use **Aprovar**
+  (ele passa a ser seu; nas músicas, a aprovação é **música por música**); se não reconhece, use
+  **Apagar o que os aparelhos da rede criaram**. Esse botão apaga **só o que foi CRIADO por aparelhos da
+  rede** (horários, mensagens, listas, atalhos) e **nunca apaga músicas**: músicas enviadas só
+  saem se você as remover à mão. O que é seu e foi apenas **mudado** pela rede também **não é
+  apagado**: fica na lista para você olhar e aprovar (ou corrigir à mão).
+- **ATENÇÃO — proxy, túnel ou redirecionamento de porta no PC da loja:** com um proxy
+  (Caddy/nginx), túnel (SSH, cloudflared, ngrok) ou redirecionamento de porta
+  (`netsh portproxy`, WSL, `tailscale serve`), **qualquer aparelho poderia se passar pelo PC da
+  loja e ignorar o PIN**, porque todas as conexões chegam ao Proclamare como se viessem do próprio
+  PC. `PROCLAMARE_CONFIAR_LOOPBACK` tem 3 modos:
+  - `auto` (**padrão**): o PC é "local" normalmente. O Proclamare **detecta ALGUNS
+    encaminhamentos**: entradas do `netsh interface portproxy` para a porta dele e programas
+    `cloudflared`, `ngrok`, `frpc`, `bore`, `chisel`, `socat`, `localtunnel` ou `ssh -R/-L/-D`
+    **com a porta na linha de comando** (vigia a cada 60 s, só leitura; janela de até 1 minuto). Se achar um
+    encaminhamento "forte", o PC da loja **deixa de ser livre**, com ou sem PIN definido:
+    - **Com PIN:** o PC passa a **pedir o PIN também** (a tela de PIN explica o motivo).
+    - **Sem PIN:** o acesso fica **bloqueado** e o painel mostra isso. Saídas:
+      1. **Feche o encaminhamento** (o túnel, o `portproxy`): o acesso **volta sozinho em até 1
+         minuto**.
+      2. **Defina o PIN pela linha de comando.** Passo a passo: **desligue o Proclamare** (Menu
+         Iniciar → Desligar Proclamare); abra a **pasta do programa** no Explorador de Arquivos;
+         clique numa área vazia **segurando Shift e com o botão direito** e escolha **Abrir no
+         Terminal** (ou **Abrir janela do PowerShell aqui**); cole
+         `.venv\Scripts\python.exe server.py --definir-pin`, tecle Enter e digite o PIN duas
+         vezes (não aparece na tela; 8 números); **ligue o Proclamare de novo** e entre com esse PIN.
+      3. **Iniciar com `PROCLAMARE_CONFIAR_LOOPBACK=1`** só sabendo que **quem entra pelo
+         encaminhamento terá acesso total, sem PIN** (trocar PIN, Spotify, desligar o sistema).
+         Use apenas se você mesmo controla o túnel.
+    A vigia olha a cada 60 s (uma janela de **até 1 minuto** para detectar e para liberar) e
+    **também avisa quando não consegue ler um processo suspeito** (por falta de permissão): nesse
+    caso o aviso aparece, mas ela não consegue decidir sozinha.
+    Quando o encaminhamento some, volta ao normal.
+  - `1`: o PC é sempre local (não recomendado com túnel).
+  - `0`: **ninguém** é local; todos digitam o PIN, e trocar o PIN e configurar o Spotify só são
+    possíveis pela linha de comando / editando o `config.json` com o servidor parado.
+  **NÃO são detectados:** `cloudflared` rodando como serviço do Windows, `tailscale serve`, e
+  proxies (nginx/Caddy/Apache). Com qualquer um deles use
+  **`PROCLAMARE_CONFIAR_LOOPBACK=0`** (defina o PIN antes, pela linha de comando). Qualquer outro
+  programa ou conta do próprio PC continua sendo "o PC da loja" (risco aceito).
+- **Limite de conexões:** cada aparelho da rede pode ter até **64 conexões** ao mesmo tempo, os
+  aparelhos da rede somados até **300**, e **400 no total**; o PC da loja não entra na conta dos
+  300 e sempre tem lugar. Atrás de um repetidor
+  Wi-Fi ou NAT, **todos os celulares aparecem com o mesmo IP e contam como um só aparelho**
+  (também nos limites de PIN e de anúncios por minuto).
 - **Comando de PIN:** `--definir-pin` e `--remover-pin` recusam rodar com o
   Proclamare ligado (desligue antes: Menu Iniciar → Desligar Proclamare). Rode-os
   com o **mesmo usuário do Windows** que roda o Proclamare (não como outro
@@ -285,7 +373,7 @@ alternativa; se as duas existirem, vale a `PROCLAMARE_*`.
 - **O cookie vale para o endereço, não para a porta:** os navegadores não separam
   cookies por porta. Outro programa que você rode no mesmo PC/endereço (por
   exemplo em `http://192.168.0.10:3000`) recebe o cookie de sessão do Proclamare.
-  Não rode serviços de terceiros no mesmo endereço, ou use "Revogar sessões" se
+  Não rode serviços de terceiros no mesmo endereço, ou use "Desconectar todos os aparelhos" se
   desconfiar.
 - O PIN é guardado apenas como hash (PBKDF2) no `config.json`, junto de uma chave
   de sessão; o PIN em si nunca aparece nos logs. Lembre: a rede da loja usa
@@ -826,6 +914,20 @@ instalou o Proclamare**: o `.venv` depende do Python (o do computador ou o que o
 baixou), e a pasta do Python do Proclamare, em `%LOCALAPPDATA%` da conta que instalou, não é
 acessível por outra conta.
 
+### Windows — religar sozinho se cair (opcional)
+O atalho de Inicialização só liga o programa quando alguém entra no Windows. Se o
+Proclamare **travar** ou o Windows reiniciar sozinho de madrugada, as caixas ficam
+mudas e os horários não tocam. O instalador pergunta "Religar sozinho se cair?"
+(ou use `-ReiniciarAutomatico` / `-NaoReiniciarAutomatico`). Ele cria uma **tarefa do
+seu usuário** (sem administrador, sem serviço, sem privilégios) chamada
+"Proclamare - religar sozinho", que no logon e a cada 5 minutos roda
+`pythonw -I Proclamare.pyw --vigia` (modo isolado, como os atalhos). O `--vigia` **só religa se o programa caiu** (sobrou o arquivo
+`logs/proclamare.pid` sem processo vivo); se você desligou de propósito
+("Desligar Proclamare" ou o botão do painel), ele não faz nada. Para o Windows entrar
+sozinho na sua conta depois de reiniciar, configure o logon automático (`netplwiz`)
+**sabendo que isso deixa o PC aberto para quem estiver diante dele**. Para remover a
+tarefa, rode o instalador respondendo **N** ou use "Desinstalar Proclamare".
+
 ### Linux — systemd
 `/etc/systemd/system/proclamare.service`:
 ```ini
@@ -1064,3 +1166,107 @@ escolha de saída (apelido e uma referência interna) e continua fora do Git.
   "executor substituído"); se repetir, reinicie o `server.py`.
 - **Sem som nenhum:** confira se a saída de áudio padrão do computador da
   loja é mesmo a placa ligada ao amplificador.
+
+---
+
+## 9. Se algo der errado (segurança)
+
+Respire: o Proclamare só toca som e controla música; o pior caso é alguém anunciar ou programar
+algo indevido. Faça os passos na ordem. **Os passos de troca de PIN só funcionam no computador
+da loja.**
+
+### O PIN vazou ou alguém desconhecido está usando o painel
+1. No computador da loja, abra a área **Segurança** do painel: veja os **últimos acessos** (hora e
+   IP) e **Feito por aparelhos da rede** (o que foi criado ou alterado por celulares).
+2. **Configurações → Acesso pela rede → trocar o PIN** (6 a 8 números, nada óbvio). Trocar o PIN
+   **desconecta todos os aparelhos**; avise a equipe do PIN novo. Antes de confirmar, o painel
+   pergunta o que fazer com o que aparelhos da rede deixaram (o botão **Apagar o que os aparelhos da rede criaram**
+   apaga só o que foi **criado** por eles; o que é seu e foi só **mudado** fica para você aprovar):
+   - **desativar os horários** criados/alterados por aparelhos da rede (já vem marcado) e
+     interromper o que estiver tocando;
+   - **apagar** as mensagens prontas, listas e atalhos do Spotify **criados** por eles (músicas
+     enviadas pelo celular **nunca** são apagadas sozinhas: confira e aprove ou remova uma a uma);
+   - **restaurar as mensagens de fábrica** e **limpar a fila** do Tocador.
+   Na dúvida, marque tudo; o que for seu você refaz em um minuto.
+3. Confira o que sobrou: **Programação** (itens com o selo "Criado pelo celular"), **Mensagens
+   prontas**, **Minhas músicas → Listas**, atalhos do Spotify e a pasta **Enviadas** (apague
+   arquivos estranhos). Use **Aprovar** na área Segurança nos itens que forem seus.
+4. Olhe o `logs/auditoria.log` (linhas `acao=login` com `resultado=pin_errado` e IPs que não são
+   dos aparelhos da loja).
+5. Se a Wi-Fi é compartilhada com clientes: troque a senha dela e separe a rede dos clientes. Para
+   impedir envios de música pelo painel, defina `PROCLAMARE_MUSICAS_ENVIO=0` e reinicie.
+
+### Um celular ou computador da equipe foi perdido/roubado
+1. No computador da loja: **Configurações → Acesso pela rede → Desconectar todos os aparelhos**. Todos os
+   aparelhos terão de digitar o PIN de novo.
+2. Se o aparelho perdido podia ficar com o PIN anotado ou salvo, **troque também o PIN** (passo
+   acima) e revise a área **Segurança** e a Programação. **Desconectar todos os aparelhos** também oferece
+   desativar/apagar o que aparelhos da rede deixaram.
+3. Se o aparelho tinha a sua conta do Spotify aberta, troque a senha do Spotify.
+
+### O Client Secret do Spotify vazou (ou o `config.json` foi copiado/publicado)
+O `config.json` guarda o Client Secret, o token do Spotify e o hash do PIN.
+1. No computador da loja, use **Desconectar Spotify** no painel: ele apaga deste PC o token e o
+   aparelho escolhido (marque também a opção de apagar o Client ID e o Client Secret se quiser
+   sumir com eles do `config.json`). Isso **só vale neste PC**; o Spotify continua com o app
+   autorizado até o passo 3.
+2. Em [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard), abra o seu app e
+   **gere um novo Client Secret** (o botão pode se chamar "Rotate secret"/"Reset"); o antigo deixa
+   de valer.
+3. Em [spotify.com/account/apps](https://www.spotify.com/account/apps/), **remova o acesso** do
+   app. Isso invalida o token que ficou no arquivo copiado (quem copiou o arquivo ainda o tem).
+4. No computador da loja: **Configurar Spotify**, cole o Client Secret novo e conecte de novo.
+5. **Troque o PIN** e use **Desconectar todos os aparelhos**: quem copiou o arquivo pode tentar descobrir um PIN
+   fraco por tentativa e erro no próprio computador dele.
+6. Se o arquivo foi parar num repositório público (GitHub), apagar o arquivo não basta: os passos 2
+   e 3 são o que realmente protege.
+
+### O computador da loja foi roubado, vendido ou está com suspeita de vírus
+Quem usa o computador da loja controla o painel sem PIN. Faça os passos do Spotify acima (o botão **Desconectar Spotify** com a opção de apagar o Client ID/Secret ajuda), troque a
+senha do Spotify e, ao descartar o PC, rode o desinstalador com a opção de apagar os dados
+(seção 1, item 8).
+
+### Quero avisar sobre uma falha de segurança
+Veja o arquivo `SECURITY.md` do repositório (relato privado pelo GitHub).
+
+---
+
+## 10. Privacidade e LGPD (o que sai do computador e o que fica guardado)
+
+Os anúncios podem conter dados pessoais ("Senhora Maria Souza, sua encomenda chegou", placa de
+carro). Quem decide o que anunciar é a loja; estas são as informações para decidir bem:
+
+**O que sai do computador da loja**
+- **Texto dos anúncios no modo online** (a voz neural, padrão no modo *Auto* quando há internet):
+  o texto é enviado à **Microsoft** (serviço de leitura em voz alta do Edge, usado pela biblioteca
+  `edge-tts`), que o processa fora do Brasil, **sem contrato próprio com a sua loja**. Para que
+  nada saia, escolha o modo **Offline** (voz do Windows). Em qualquer modo, evite nomes completos,
+  CPF, telefone e placas; prefira "cliente do caixa 3" ou o número da senha.
+- **Músicas:** o Spotify e o YouTube recebem o que a conta/tocador pede (títulos de vídeo vão ao
+  YouTube). O Proclamare não grava nem escuta áudio.
+- **Fonte do painel:** a fonte Inter vem do próprio Proclamare (pasta `static/fonts`, licença OFL);
+  o painel não consulta o Google Fonts.
+- O Proclamare **não envia nada aos seus autores**: não há telemetria.
+
+**O que fica guardado no computador da loja** (tudo na pasta do programa)
+- `config.json`: hash do PIN, chave de sessão, Client Secret e tokens do Spotify, saídas de som.
+- `programacao.json`: inclui o **texto** dos anúncios agendados. `listas.json`: listas e atalhos.
+- `logs/proclamare.log`: log comum do servidor (rotativo por tamanho: 5 MB × 3 cópias), sem textos
+  de anúncios e **sem IP dos aparelhos** (o IP fica só na auditoria, abaixo).
+- `logs/auditoria.log` (pode mudar com `PROCLAMARE_AUDIT_FILE`): a **trilha de auditoria**, uma
+  linha por ação (`acao=`, `ip=`, `origem=local|remoto`): logins e PINs errados, troca de PIN,
+  anúncios (só o **número de caracteres** e o resultado, **nunca o texto**), envio de músicas,
+  configuração do Spotify etc. É o **único lugar com o IP dos aparelhos**, com data e fuso. Tem **rotação
+  diária e guarda 90 dias**; o que passa disso é apagado sozinho. Comandos de música e fila
+  entram só como resumo por minuto.
+  Para apagar antes (PC vendido/descartado), use a purga do desinstalador. `audios_temp/` guarda
+  temporariamente o áudio dos anúncios.
+
+**O que fica guardado em cada celular/computador da equipe**
+- O **histórico dos últimos 20 anúncios** fica no armazenamento do navegador daquele aparelho
+  (não no servidor). **Sair** num aparelho da rede **apaga esse histórico e os dados do painel
+  naquele aparelho**. No PC da loja (que não tem "Sair"), use **Limpar** no histórico. Em
+  aparelhos que mudem de dono, limpe também os dados do site no navegador.
+
+Este texto é informativo e não substitui orientação jurídica. Em dúvida sobre base legal,
+aviso aos clientes ou funcionários, consulte um profissional.

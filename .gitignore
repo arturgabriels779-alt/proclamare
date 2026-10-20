@@ -25,3 +25,17 @@ __pycache__/
 venv/
 .venv/
 env/
+
+# Segredos genericos e lixo de sistema (P38): nunca publicar
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+*.log.*
+*.zip
+Thumbs.db
+desktop.ini

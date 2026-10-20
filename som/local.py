@@ -164,7 +164,7 @@ class EndpointBruto:
 
 
 def _extrair_mac(instancia: Any) -> str | None:
-    """MAC do aparelho Bluetooth a partir do ID de instância (…&0&4142FF395187_C00000000)."""
+    """MAC do aparelho Bluetooth a partir do ID de instância (…&0&AABBCCDDEE01_C00000000)."""
     import re
 
     if not isinstance(instancia, str):

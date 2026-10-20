@@ -1,0 +1,105 @@
+# CI do Proclamare: testes + verificacao de seguranca das dependencias.
+# - Roda em windows-latest com Python 3.12 (o mesmo do instalador).
+# - Instala SO do requirements.lock (hashes obrigatorios, so wheels, sem resolver nada).
+# - Nenhum teste toca som real: o pygame e os dispositivos sao simulados nos proprios testes; a
+#   enumeracao real de audio so roda com PROCLAMARE_TESTE_ENUM_REAL=1 (aqui fica desligada).
+# - Acoes fixadas por SHA de commit (comentario = tag). O Dependabot (github-actions) propoe as trocas.
+name: testes
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # Semanal: uma CVE nova num pacote ja fixado no lock aparece mesmo sem nenhum commit.
+  schedule:
+    - cron: "17 6 * * 1"
+
+# Minimo necessario: o CI so le o codigo.
+permissions:
+  contents: read
+
+concurrency:
+  group: testes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testes:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    env:
+      PYTHONUTF8: "1"
+      PROCLAMARE_NO_BROWSER: "1"
+      # Sem dispositivo de audio: SDL em modo "dummy" (rede de seguranca; os testes ja usam pygame falso).
+      SDL_AUDIODRIVER: dummy
+      SDL_VIDEODRIVER: dummy
+    steps:
+      - name: Baixar o codigo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Instalar o Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Instalar dependencias (lock com hashes, so wheels)
+        shell: pwsh
+        run: |
+          python -I -m pip install --require-hashes --only-binary :all: --no-deps -r requirements.lock
+
+      - name: Pasta temporaria de musicas (nunca a pasta real)
+        shell: pwsh
+        run: |
+          $pasta = Join-Path $env:RUNNER_TEMP 'proclamare-musicas-ci'
+          New-Item -ItemType Directory -Force -Path $pasta | Out-Null
+          "PROCLAMARE_MUSICAS_DIR=$pasta" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Rodar os testes
+        shell: pwsh
+        timeout-minutes: 25
+        run: |
+          python -m unittest discover -s tests -t . -v
+
+  seguranca:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Baixar o codigo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Instalar o Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.13"
+
+      # pip-audit e bandit ficam FORA do ambiente do Proclamare (venv proprio) e sao instalados COM HASHES a
+      # partir de .github/requirements-ci.txt (gerado de requirements-ci.in com pip-compile --generate-hashes
+      # em Python 3.13; o Dependabot propoe as trocas).
+      - name: Instalar as ferramentas de seguranca
+        shell: pwsh
+        run: |
+          python -m venv "$env:RUNNER_TEMP\ferramentas"
+          & "$env:RUNNER_TEMP\ferramentas\Scripts\python.exe" -I -m pip install --require-hashes --only-binary :all: --no-deps -r .github/requirements-ci.txt
+
+      # Falha se alguma versao do lock tiver vulnerabilidade conhecida (consulta o PyPI/OSV).
+      - name: pip-audit sobre o requirements.lock
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          & "$env:RUNNER_TEMP\ferramentas\Scripts\python.exe" -I -m pip_audit -r requirements.lock --no-deps --disable-pip --progress-spinner off
+
+      # Bandit: so relatorio por enquanto (nao bloqueia). Troque para falhar quando os achados forem triados.
+      - name: bandit (relatorio, nao bloqueia)
+        shell: pwsh
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          & "$env:RUNNER_TEMP\ferramentas\Scripts\python.exe" -I -m bandit -r server.py musicas.py programacao.py waitress_limites.py Proclamare.pyw som -ll --exit-zero

@@ -188,7 +188,7 @@ class TesteCrud(BaseAtalho):
         casos = [({"nome": "A"}, "link"), ({"link": LINK_PLAYLIST}, "nome"), ({}, "nome"),
                  ({"nome": "A", "link": LINK_PLAYLIST, "x": 1}, "chave"),
                  ({"nome": "", "link": LINK_PLAYLIST}, "nome"), ({"nome": "x" * 41, "link": LINK_PLAYLIST}, "nome"),
-                 ({"nome": "a\nb", "link": LINK_PLAYLIST}, "nome"), ({"nome": "a‮b", "link": LINK_PLAYLIST}, "nome"),
+                 ({"nome": "a\nb", "link": LINK_PLAYLIST}, "nome"), ({"nome": "a\u202eb", "link": LINK_PLAYLIST}, "nome"),
                  ({"nome": 5, "link": LINK_PLAYLIST}, "nome")]
         for corpo, campo in casos:
             r = self.post("/api/spotify/atalhos", corpo)

@@ -1,10 +1,12 @@
 """Lançador do Proclamare para Windows (duplo clique, sem janela de console).
 
-Uso (via atalhos criados por ``Instalar Proclamare.bat``):
+Uso (via atalhos criados por ``Instalar Proclamare.bat``; todos chamam ``pythonw.exe -I``: o
+lançador só usa a biblioteca padrão, então o modo isolado vale também para ele):
 
-    pythonw.exe Proclamare.pyw               liga o servidor (se preciso) e abre o painel
-    pythonw.exe Proclamare.pyw --silencioso  liga sem abrir o navegador (atalho de Inicialização)
-    pythonw.exe Proclamare.pyw --parar       desliga o servidor iniciado por este lançador
+    pythonw.exe -I Proclamare.pyw               liga o servidor (se preciso) e abre o painel
+    pythonw.exe -I Proclamare.pyw --silencioso  liga sem abrir o navegador (atalho de Inicialização)
+    pythonw.exe -I Proclamare.pyw --parar       desliga o servidor iniciado por este lançador
+    pythonw.exe -I Proclamare.pyw --vigia       religa SÓ se o servidor caiu (tarefa opcional)
 
 Comportamento:
   * Instância única: se o servidor já responde em ``/api/status``, apenas abre
@@ -14,10 +16,21 @@ Comportamento:
     o log rotativo (``logs/proclamare.log``) e o arquivo de PID (``logs/proclamare.pid``,
     JSON com pid, porta e hora de criação do processo), conforme as variáveis
     PROCLAMARE_LOG_FILE e PROCLAMARE_PID_FILE passadas aqui.
-    A saída bruta do início (ex.: ImportError) vai para ``logs/inicio.log``.
+    A saída bruta do início (ex.: ImportError, queda do processo) vai para
+    ``logs/inicio.log``; o do início anterior é guardado em ``logs/inicio.anterior.log``
+    (assim a causa de uma queda não some quando alguém religa).
   * ``--parar`` só encerra o processo se o PID do arquivo ainda for o mesmo
-    processo (nome python/pythonw + hora de criação idêntica), tudo pelo mesmo
+    processo (python/pythonw de uma pasta esperada: a do .venv, a do Python-base
+    do .venv ou a deste lançador + hora de criação idêntica), tudo pelo mesmo
     handle, o que evita matar um PID reaproveitado.
+  * O servidor roda em modo isolado (``python -I``): ignora PYTHONPATH/PYTHONHOME e
+    o site do usuário, e a pasta do programa entra no FIM do ``sys.path`` (nunca
+    antes da biblioteca padrão e do ``site-packages``: um ``pygame/`` ou ``json.py``
+    solto na pasta não toma o lugar do pacote de verdade).
+  * ``--vigia`` (usado pela tarefa opcional "religar sozinho", criada pelo
+    instalador): só religa o servidor se ele CAIU (arquivo de PID sobrando, sem
+    processo vivo). Desligado de propósito (``--parar`` ou botão do painel)
+    apaga o PID e o vigia não faz nada.
   * Qualquer falha aparece em caixa de mensagem nativa do Windows.
 
 Variáveis de ambiente lidas (mesmas regras do server.py):
@@ -59,6 +72,7 @@ SERVER_PY: Path = RAIZ / "server.py"
 PASTA_LOGS: Path = RAIZ / "logs"
 ARQ_LOG: Path = PASTA_LOGS / "proclamare.log"      # gravado pelo servidor (rotativo)
 ARQ_INICIO: Path = PASTA_LOGS / "inicio.log"       # stdout/stderr bruto do início
+ARQ_INICIO_ANTERIOR: Path = PASTA_LOGS / "inicio.anterior.log"   # o do início anterior (causa de queda)
 ARQ_PID: Path = PASTA_LOGS / "proclamare.pid"      # gravado pelo servidor (JSON)
 ARQ_TRAVA: Path = PASTA_LOGS / "lancador.lock"
 
@@ -83,13 +97,28 @@ PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 SYNCHRONIZE = 0x00100000
 WAIT_OBJECT_0 = 0x0
 
+# Código do modo isolado: com ``-I`` a pasta do script NÃO entra no sys.path, então ela é acrescentada
+# no FIM (os módulos locais - musicas, programacao, som, waitress_limites - continuam importáveis, mas
+# a biblioteca padrão e o site-packages sempre vencem). argv[1] = caminho do server.py.
+_CODIGO_ISOLADO: str = (
+    "import os, sys, runpy; p = sys.argv[1]; sys.argv = sys.argv[1:]; "
+    "sys.path.append(os.path.dirname(os.path.abspath(p))); "
+    "runpy.run_path(p, run_name='__main__')"
+)
+# Variáveis que mudam de onde o Python carrega código (o -I já as ignora; removidas por garantia).
+_VARIAVEIS_PYTHON_PERIGOSAS = ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
+                               "PYTHONINSPECT", "PYTHONEXECUTABLE")
+
 
 # --------------------------------------------------------------------------
 # Mensagens ao usuário
 # --------------------------------------------------------------------------
+_SEM_JANELAS: bool = False  # ligado por --vigia: tarefa em segundo plano nunca abre navegador nem caixa
+
+
 def modo_teste() -> bool:
-    """Retorna True se PROCLAMARE_NO_BROWSER=1 (sem navegador nem diálogos)."""
-    return os.environ.get("PROCLAMARE_NO_BROWSER", "").strip() == "1"
+    """Retorna True se PROCLAMARE_NO_BROWSER=1 ou no modo --vigia (sem navegador nem diálogos)."""
+    return _SEM_JANELAS or os.environ.get("PROCLAMARE_NO_BROWSER", "").strip() == "1"
 
 
 def avisar(texto: str, erro: bool = False) -> None:
@@ -233,22 +262,38 @@ def achar_pythonw() -> str:
     return str(atual)
 
 
+def _guardar_inicio_anterior() -> None:
+    """Move ``inicio.log`` para ``inicio.anterior.log`` (só se tiver conteúdo; erros são ignorados)."""
+    try:
+        if ARQ_INICIO.is_file() and ARQ_INICIO.stat().st_size > 0:
+            os.replace(ARQ_INICIO, ARQ_INICIO_ANTERIOR)
+    except OSError:
+        pass  # arquivo em uso ou sem permissão: o início segue (o log novo apenas o sobrescreve)
+
+
 def iniciar_servidor() -> subprocess.Popen:
     """Sobe o server.py destacado e sem console.
 
     O servidor grava o log rotativo e o PID (variáveis abaixo); a saída bruta
-    do início (stdout/stderr) vai para ``logs/inicio.log`` (truncado a cada início).
+    do início (stdout/stderr) vai para ``logs/inicio.log``. Antes de recomeçar o arquivo,
+    o conteúdo anterior (se houver) vira ``inicio.anterior.log``: a causa de uma queda
+    não se perde quando alguém religa.
     """
     PASTA_LOGS.mkdir(exist_ok=True)
     apagar_pid()  # PID velho (servidor não está respondendo): o novo servidor grava o seu
-    ambiente = dict(os.environ)
-    ambiente["PYTHONUNBUFFERED"] = "1"
-    ambiente["PYTHONIOENCODING"] = "utf-8"
+    _guardar_inicio_anterior()
+    ambiente = {k: v for k, v in os.environ.items() if k.upper() not in _VARIAVEIS_PYTHON_PERIGOSAS}
+    # Sem PYTHONUNBUFFERED/PYTHONIOENCODING: o modo -I as ignora. Os equivalentes vão como
+    # flags do interpretador (-u e -X utf8) na linha de comando abaixo.
     ambiente["PROCLAMARE_LOG_FILE"] = str(ARQ_LOG.resolve())
     ambiente["PROCLAMARE_PID_FILE"] = str(ARQ_PID.resolve())
     with open(ARQ_INICIO, "wb") as saida:
         return subprocess.Popen(  # sem shell: lista de argumentos
-            [achar_pythonw(), str(SERVER_PY)],
+            # -I: modo isolado (ignora PYTHON*, o site do usuário e a pasta atual; pacotes instalados
+            # com "pip --user" NÃO são vistos); -u: sem buffer; -X utf8: texto em UTF-8; -X faulthandler:
+            # se o processo morrer de forma brusca, o rastro vai para o inicio.log (stderr).
+            [achar_pythonw(), "-I", "-u", "-X", "utf8", "-X", "faulthandler", "-c", _CODIGO_ISOLADO,
+             str(SERVER_PY)],
             cwd=str(RAIZ),
             stdin=subprocess.DEVNULL,
             stdout=saida,
@@ -443,15 +488,44 @@ NAO_CONFERE = "nao_confere"  # existe, mas não é o nosso servidor (nada foi mo
 FALHOU = "falhou"
 
 
+def _pastas_python_esperadas() -> set[str]:
+    """Pastas onde o python/pythonw do servidor pode estar (normalizadas).
+
+    * ``.venv\\Scripts`` da pasta do programa;
+    * a pasta ``home`` do ``.venv\\pyvenv.cfg`` (o venv do Windows é um redirecionador: o processo
+      do servidor aparece com o python-base);
+    * as pastas do Python que está rodando este lançador (``sys.executable``/``base_prefix``).
+    """
+    pastas = {RAIZ / ".venv" / "Scripts", Path(sys.executable).parent,
+              Path(sys.base_prefix), Path(sys.exec_prefix)}
+    try:
+        cfg = RAIZ / ".venv" / "pyvenv.cfg"
+        for linha in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+            chave, _, valor = linha.partition("=")
+            if chave.strip().lower() == "home" and valor.strip():
+                pastas.add(Path(valor.strip()))
+    except OSError:
+        pass
+    return {_normaliza(str(p)) for p in pastas}
+
+
+def _imagem_esperada(imagem: str) -> bool:
+    """True se ``imagem`` é python.exe/pythonw.exe dentro de uma das pastas esperadas."""
+    if os.path.basename(imagem).lower() not in ("python.exe", "pythonw.exe"):
+        return False
+    return _normaliza(os.path.dirname(imagem)) in _pastas_python_esperadas()
+
+
 def _verificar_processo(k: "ctypes.WinDLL", handle: int, pid: int,
                         criado_em: Optional[int]) -> bool:
-    """True se o handle é python/pythonw e (criado_em idêntico, ou cmdline do server.py)."""
-    # 1) Nome do executável precisa ser python.exe / pythonw.exe.
+    """True se o handle é python/pythonw de pasta esperada e (criado_em idêntico, ou cmdline do server.py)."""
+    # 1) O CAMINHO COMPLETO do executável precisa ser python.exe / pythonw.exe de uma pasta esperada
+    #    (só o nome não basta: qualquer programa pode se chamar python.exe).
     buf = ctypes.create_unicode_buffer(32768)
     tam = wintypes.DWORD(len(buf))
     if not k.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(tam)):
         return False
-    if os.path.basename(buf.value).lower() not in ("python.exe", "pythonw.exe"):
+    if not _imagem_esperada(buf.value):
         return False
     # 2) Hora de criação idêntica à gravada pelo servidor (ou plano B por cmdline).
     if criado_em is not None:
@@ -543,10 +617,30 @@ def parar() -> int:
     return 0
 
 
+def vigiar() -> int:
+    """Religa o servidor SÓ se ele caiu (usado pela tarefa opcional "religar sozinho").
+
+    Caiu = o arquivo de PID sobrou (queda, PC desligado na tomada, reinício do Windows) e não há
+    processo vivo nem servidor respondendo. Se o PID não existe, o servidor foi desligado de
+    propósito (``--parar`` ou botão do painel apagam o PID) ou nunca foi ligado: não faz nada.
+    Nunca abre o navegador nem mostra caixa de mensagem em caso de sucesso.
+    """
+    global _SEM_JANELAS
+    _SEM_JANELAS = True  # uma tarefa a cada poucos minutos não pode encher a tela de caixas de erro
+    url = f"http://127.0.0.1:{ler_porta()}"
+    if ler_info_pid() is None or servidor_responde(url):
+        return 0
+    if servidor_registrado_vivo():
+        return 0  # só está lento
+    return ligar(silencioso=True)
+
+
 def main(argv: list[str]) -> int:
-    """Ponto de entrada: ``--parar`` desliga; ``--silencioso`` liga sem navegador."""
+    """Ponto de entrada: ``--parar`` desliga; ``--vigia`` religa se caiu; ``--silencioso`` liga sem navegador."""
     if "--parar" in argv:
         return parar()
+    if "--vigia" in argv:
+        return vigiar()
     return ligar(silencioso="--silencioso" in argv)
 
 
