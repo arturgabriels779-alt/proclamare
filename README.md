@@ -149,3 +149,17 @@ das dependências (`pip-audit`) a cada mudança (`.github/workflows/testes.yml`)
 Contas pessoais de Spotify e YouTube são licenciadas para uso pessoal. Tocar música para clientes
 em um estabelecimento comercial normalmente exige licenciamento à parte — no Brasil, pelo **ECAD**.
 Os próprios termos do Spotify também não permitem usar a conta pessoal/Premium para tocar na loja: para uso comercial prefira **Minhas músicas** com arquivos licenciados ou um serviço de música ambiente licenciado (seção 5 do guia). Os termos mudam: confira os vigentes em spotify.com/legal e consulte antes de usar em operação contínua.
+
+## 📄 Licença
+
+Copyright (C) 2026 Artur Gabriel.
+
+O Proclamare é software livre, distribuído sob a **GNU Affero General Public License v3.0**
+(AGPL-3.0); o texto completo está em [`LICENSE`](LICENSE). Na prática:
+
+- qualquer pessoa ou loja pode **usar de graça**, estudar e modificar o programa;
+- quem **distribuir** o Proclamare, modificado ou não, ou **oferecê-lo como serviço pela rede**,
+  precisa entregar o código-fonte completo sob a mesma licença;
+- o programa vem **sem garantia** de qualquer tipo (seções 15 e 16 da licença).
+
+A fonte Inter (`static/fonts/`) tem licença própria, a SIL Open Font License (`static/fonts/OFL.txt`).
