@@ -298,6 +298,7 @@ b { font-weight: 600; }
   text-wrap: pretty;
 }
 .hint b { color: var(--text-2); }
+
 .hint.is-attention { color: var(--text-2); }
 .hint.is-attention::before {
   content: "";
@@ -331,6 +332,23 @@ kbd {
   flex-direction: column;
   gap: var(--gap-bento);
 }
+
+/* ---- Rodapé com o crédito do autor ---- */
+.credits {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 2px 8px;
+  padding-top: 8px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-3);
+  text-align: center;
+}
+.credits p { margin: 0; }
+.credits b { color: var(--text-2); font-weight: 600; }
+.credits__mail { color: inherit; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.credits__mail:hover { color: var(--accent-text); }
 
 /* ---- Topo ---- */
 .topbar {
