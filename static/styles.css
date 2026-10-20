@@ -347,8 +347,8 @@ kbd {
 }
 .credits p { margin: 0; }
 .credits b { color: var(--text-2); font-weight: 600; }
-.credits__mail { color: inherit; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
-.credits__mail:hover { color: var(--accent-text); }
+.credits__link { color: inherit; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.credits__link:hover { color: var(--accent-text); }
 
 /* ---- Topo ---- */
 .topbar {
