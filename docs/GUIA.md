@@ -296,8 +296,10 @@ alternativa; se as duas existirem, vale a `PROCLAMARE_*`.
     IPv4, como `192.168.0.x`; `/64` no IPv6) bloqueiam a faixa por **10 minutos fixos** (esse
     bloqueio **não escala**), mesmo que o invasor troque de IP. **Aparelhos que já entraram com o
     PIN nos últimos 90 dias não são afetados** por esse bloqueio da faixa.
-  - **Teto diário:** 300 PINs errados em 24 horas travam o login pela rede **até o dono liberar
-    no PC da loja** (botão **Liberar login pela rede**).
+  - **Teto diário:** 300 PINs errados em 24 horas travam o login pela rede **para aparelhos que
+    nunca entraram antes**. Aparelhos que já entraram com o PIN nos últimos 90 dias continuam
+    podendo entrar (com o limite por aparelho). A trava acaba sozinha 24 horas depois do último
+    erro, ou antes se o dono clicar em **Liberar login pela rede** no PC da loja.
   - **Logins certos** também têm limite: no máximo 10 por minuto por aparelho.
   - **Liberar login pela rede** zera os bloqueios do momento e a trava do teto diário e não
     derruba ninguém. Por padrão **não zera a escalada** dos aparelhos (o próximo erro volta ao

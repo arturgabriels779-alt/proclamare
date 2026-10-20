@@ -148,8 +148,11 @@ Contrato v2.7.1 (correções da auditoria de segurança)
     da faixa -> bloqueio FIXO de 10 min, SEM escalada (uma faixa é a Wi-Fi inteira); IPs que já entraram com o PIN
     certo nos últimos 90 dias (seguranca.ips) ficam FORA da faixa (não contam e não são barrados por ela; seguem só o
     limite por IP). 429 da faixa: "codigo": "bloqueio_rede", "Muitas tentativas vindas desta rede". (3) TETO GERAL
-    DIÁRIO: 300 erros em 24 h no total -> o login pela rede TRAVA até o dono liberar no PC da loja (429 com
-    "travado": true); na partida a contagem e a trava são refeitas a partir de seguranca.falhas (reiniciar não
+    DIÁRIO: 300 erros em 24 h no total -> o login pela rede TRAVA para quem NÃO é conhecido (429 com "travado":
+    true, "bloqueado_por_s" = o que falta para a trava expirar). IPs conhecidos (login certo nos últimos 90 dias)
+    continuam podendo tentar, sujeitos só ao limite/escalada POR IP (um atacante com muitos IPs não derruba o login
+    da equipe). A trava EXPIRA sozinha 24 h depois do último erro que a manteve; o dono pode liberar antes
+    (alerta e "login_travado" continuam enquanto durar); na partida a contagem e a trava são refeitas a partir de seguranca.falhas (reiniciar não
     devolve 300 tentativas; seguranca.liberado_em impede que erros anteriores a uma liberação religuem a trava).
     Logins CERTOS: no máximo 10/min por IP (429). POST /api/auth/liberar {"zerar_escalada"?: bool} (só local; {}
     continua válido) tira os bloqueios ativos e o trava SEM derrubar sessões nem trocar o PIN; mantém o nível de
@@ -167,7 +170,7 @@ Contrato v2.7.1 (correções da auditoria de segurança)
     "pendentes_remotos": int (= pendentes.total)}. Os contadores ficam no config.json (chave "seguranca": falhas
     das últimas 24 h, últimos 20 logins, IPs conhecidos por 90 dias, "visto_ate" e "novos" = logins de IP novo ainda
     não vistos, à parte, até 100: 20 logins comuns não apagam o alerta; login certo de IP já conhecido há menos de
-    1 h não regrava o arquivo) e SOBREVIVEM a reinício. "bloqueio_global_s" agora é 86400 só quando travado (0 senão).
+    1 h não regrava o arquivo) e SOBREVIVEM a reinício. "bloqueio_global_s" agora é, só quando travado, o que falta para a trava expirar (até 86400; 0 senão).
     "alerta" liga com 5+ PINs errados desde o último "visto", login travado ou algum IP/rede bloqueado, login de IP
     nunca visto ainda não visto, ou encaminhamento de rede detectado. POST /api/auth/alertas/visto {} (só local) marca como visto.
     falhas_recentes e bloqueio_global_s (v2.2) continuam, agora persistidos.
@@ -1645,9 +1648,12 @@ API_PUBLICAS = frozenset({
 #      escalada (uma faixa é a Wi-Fi inteira: escalar deixaria um atacante derrubar o login da equipe por horas).
 #      IPs que já entraram com o PIN certo nos últimos 90 dias (seguranca.ips) FICAM FORA da faixa: não contam para
 #      ela nem são barrados por ela; seguem só o limite por IP (camada 1).
-#   3. TETO GERAL DIÁRIO: 300 erros em 24 h no total -> o login pela rede TRAVA até o dono liberar no PC da loja
-#      (POST /api/auth/liberar) ou trocar o PIN / revogar as sessões. É o único caso sem fim por tempo, e vale
-#      também depois de reiniciar (a contagem é refeita a partir de seguranca.falhas).
+#   3. TETO GERAL DIÁRIO: 300 erros em 24 h no total -> o login pela rede TRAVA para quem NÃO é conhecido. IPs
+#      conhecidos (login certo nos últimos 90 dias, seguranca.ips - a mesma regra que isenta da faixa) continuam
+#      podendo tentar, sujeitos só ao limite/escalada POR IP: um atacante com muitos IPs não derruba o login da
+#      equipe. A trava EXPIRA sozinha 24 h depois do último erro que a manteve; o dono pode liberar antes
+#      (POST /api/auth/liberar) ou trocar o PIN / revogar as sessões. Vale também depois de reiniciar (a contagem
+#      é refeita a partir de seguranca.falhas, com o mesmo prazo).
 # "Liberar" zera os bloqueios e o trava, mas NÃO o nível de escalada por IP, a menos que peça {"zerar_escalada": true};
 # trocar o PIN ou revogar zera tudo, inclusive os níveis. Logins CERTOS também têm limite: 10/min por IP.
 LOGIN_IP_MAX_ERROS = 5
@@ -1666,7 +1672,8 @@ _login_lock = threading.Lock()
 # chave ("ip:<ip>" | "rede:<prefixo>") -> {"t": deque[monotonic], "bloq": monotonic, "nivel": int, "fim": monotonic}
 _login_ips: dict[str, dict[str, Any]] = {}
 _login_dia: deque = deque()          # monotonic de cada PIN errado nas últimas 24 h (teto geral diário)
-_login_travado = False               # True: teto diário estourou; só o dono libera no PC
+_login_travado = False               # True: teto diário estourou; desconhecidos barrados até expirar ou o dono liberar
+_login_trava_ate = 0.0               # monotonic: a trava expira aqui (24 h depois do último erro que a manteve)
 _login_falhas: deque = deque(maxlen=5000)  # time.time() de cada PIN errado (remoto), p/ o painel
 _versao_vista: int | None = None
 
@@ -1931,11 +1938,12 @@ def _login_resetar_global() -> None:
     Zera TUDO do login (bloqueios, contadores, níveis de escalada - também no disco - e o trava diário) em
     troca/remoção do PIN, revogação local ou mudança de acesso_versao por fora.
     """
-    global _login_travado
+    global _login_travado, _login_trava_ate
     with _login_lock:
         _login_ips.clear()
         _login_dia.clear()
         _login_travado = False
+        _login_trava_ate = 0.0
     _seg_marcar_liberado(zerar_niveis=True)
 
 
@@ -1945,7 +1953,7 @@ def _login_liberar(zerar_escalada: bool = False) -> None:
     escalada de cada IP (o próximo bloqueio de quem insiste continua longo), salvo `zerar_escalada` (aí zera também
     os níveis, no disco inclusive). Nunca mexe nas sessões.
     """
-    global _login_travado
+    global _login_travado, _login_trava_ate
     with _login_lock:
         for reg in _login_ips.values():
             reg["t"].clear()
@@ -1955,6 +1963,7 @@ def _login_liberar(zerar_escalada: bool = False) -> None:
                 reg["fim"] = 0.0
         _login_dia.clear()
         _login_travado = False
+        _login_trava_ate = 0.0
     _seg_marcar_liberado(zerar_niveis=zerar_escalada)
 
 
@@ -1983,9 +1992,14 @@ def _login_registro(chave: str) -> dict[str, Any]:
 
 
 def _login_limpar(agora: float) -> None:
-    """(com _login_lock) Descarta registros vencidos; limita o tamanho do dicionário."""
+    """(com _login_lock) Descarta registros vencidos; limita o tamanho do dicionário; expira a trava diária."""
+    global _login_travado
     while _login_dia and agora - _login_dia[0] > FALHAS_JANELA_S:
         _login_dia.popleft()
+    if _login_travado and agora >= _login_trava_ate:   # 24 h sem nenhum erro que a mantivesse
+        _login_travado = False
+        _login_dia.clear()
+        log.info("A trava do login pela rede expirou (24 h sem novos erros).")
     for chave in list(_login_ips):
         reg = _login_ips[chave]
         janela = LOGIN_IP_BLOQUEIO_S if chave.startswith("ip:") else LOGIN_REDE_JANELA_S
@@ -2028,15 +2042,15 @@ def _login_reservar(ip: str, conhecido: bool = False) -> tuple[bool, int, str | 
     """
     Registra uma tentativa ANTES de verificar o PIN (uma rajada paralela não passa do limite). Devolve
     (permitida, segundos_bloqueado, motivo) com motivo "ip" | "rede" | "travado" | None. Tentativa já bloqueada não
-    é contada nem logada (sem inundar o log). Travado pelo teto diário: (False, 24 h, "travado") até o dono liberar.
+    é contada nem logada (sem inundar o log). Travado pelo teto diário: desconhecidos levam (False, segundos até a trava expirar, "travado"); conhecidos não.
     `conhecido` = o IP já entrou com o PIN certo nos últimos 90 dias: fica FORA da contagem e do bloqueio da faixa.
     """
     agora = time.monotonic()
     rede = None if conhecido else _chave_rede(ip)
     with _login_lock:
         _login_limpar(agora)
-        if _login_travado:
-            return False, int(LOGIN_BLOQUEIO_MAX_S), "travado"
+        if _login_travado and not conhecido:   # conhecido segue só o limite por IP (abaixo)
+            return False, _segundos(_login_trava_ate - agora), "travado"
         reg_ip = _login_registro("ip:" + ip)
         reg_rede = _login_registro(rede) if rede else None
         if agora < reg_ip["bloq"]:
@@ -2062,7 +2076,7 @@ def _login_falhou(ip: str, conhecido: bool = False) -> tuple[int, int, str | Non
     (do IP, da faixa ou o trava diário), os segundos vêm > 0 e o cliente recebe 429 já agora. Loga uma vez por
     bloqueio, nunca por requisição (e SEM o IP: o IP fica só na auditoria).
     """
-    global _login_travado
+    global _login_travado, _login_trava_ate
     agora = time.monotonic()
     bloqueado = 0
     motivo: str | None = None
@@ -2083,9 +2097,13 @@ def _login_falhou(ip: str, conhecido: bool = False) -> tuple[int, int, str | Non
                 if not bloqueado:
                     bloqueado, motivo = dur, "rede"
                 log.warning("Login remoto bloqueado por %d min: muitos PINs errados vindos da mesma rede.", dur // 60)
-        if len(_login_dia) >= LOGIN_DIA_MAX_ERROS and not _login_travado:
+        if _login_travado:   # cada erro (de conhecido, que ainda pode tentar) mantém a trava por mais 24 h
+            _login_trava_ate = agora + FALHAS_JANELA_S
+        elif len(_login_dia) >= LOGIN_DIA_MAX_ERROS:
             _login_travado = True
-            bloqueado, motivo = int(LOGIN_BLOQUEIO_MAX_S), "travado"
+            _login_trava_ate = agora + FALHAS_JANELA_S
+            if not conhecido:
+                bloqueado, motivo = int(FALHAS_JANELA_S), "travado"
             log.warning("%d PINs errados em 24 h: o login pela rede está TRAVADO até o dono liberar no PC da loja.",
                         LOGIN_DIA_MAX_ERROS)
     return bloqueado, restantes, motivo
@@ -2122,7 +2140,7 @@ def _login_restaurar_do_disco() -> None:
     houver 300 ou mais desde a última liberação) e os níveis de escalada por IP. Sem isto, reiniciar o servidor
     devolveria 300 tentativas novas e os bloqueios curtos a quem já tinha escalado.
     """
-    global _login_travado
+    global _login_travado, _login_trava_ate
     seg = _seg_ler()
     agora_mono, agora = time.monotonic(), time.time()
     desde = max(agora - FALHAS_JANELA_S, seg.get("liberado_em", 0.0))
@@ -2131,6 +2149,8 @@ def _login_restaurar_do_disco() -> None:
         _login_dia.clear()
         _login_dia.extend(agora_mono - (agora - t) for t in sorted(recentes))
         _login_travado = len(recentes) >= LOGIN_DIA_MAX_ERROS
+        # expira 24 h depois do ÚLTIMO erro registrado (o mesmo prazo de antes de reiniciar)
+        _login_trava_ate = agora_mono + (max(recentes) + FALHAS_JANELA_S - agora) if recentes else 0.0
         for ip, info in seg.get("niveis", {}).items():
             reg = _login_registro("ip:" + ip)
             reg["nivel"] = info["n"]
@@ -2423,7 +2443,8 @@ def auth_status() -> Response:
             _login_limpar(agora)
             travado = _login_travado
             bloqueados = sum(1 for r in _login_ips.values() if agora < r["bloq"])
-        bloqueio = int(LOGIN_BLOQUEIO_MAX_S) if travado else 0
+            restante_trava = _segundos(_login_trava_ate - agora) if travado else 0
+        bloqueio = restante_trava
         seg = _seg_resumo(cfg, bloqueio, travado, bloqueados)
         # falhas_recentes/bloqueio_global_s: os campos da v2.2 (agora persistidos, 24 h)
         resp["falhas_recentes"] = seg["falhas_24h"]

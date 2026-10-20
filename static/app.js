@@ -9349,7 +9349,8 @@
 
     const notas = [];
     if (seg.travado) {
-      notas.push(["seg__note--bad", "Login pela rede travado (muitas tentativas erradas) — só você libera aqui. Quem já está conectado não é afetado."]);
+      const horas = Math.max(1, Math.ceil(seg.bloqueioS / 3600));
+      notas.push(["seg__note--bad", "Login pela rede travado para aparelhos novos (muitas tentativas erradas). Acaba sozinho em até " + horas + (horas === 1 ? " hora" : " horas") + ", ou libere aqui. Aparelhos que já usam o PIN e quem já está conectado não são afetados."]);
     }
     if (seg.bloqueios > 0) {
       notas.push(["", (seg.bloqueios === 1 ? "1 aparelho/rede bloqueado" : seg.bloqueios + " aparelhos/redes bloqueados") + " agora por errar o PIN."]);

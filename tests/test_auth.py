@@ -266,25 +266,74 @@ class TesteTentativas(BaseAuth):
         for i in range(server.LOGIN_DIA_MAX_ERROS // 4):
             self.errar(f"10.{i // 250}.{i % 250}.1", 4)                  # 4 por IP, uma faixa diferente cada
 
-    def test_teto_diario_trava_o_login_ate_o_dono_liberar(self) -> None:
+    def test_teto_diario_trava_desconhecidos_e_expira_sozinho_em_24h(self) -> None:
         self.esgotar_o_dia()
         self.assertTrue(server._login_esta_travado())
         r = self.login(PIN, ip="172.16.5.5")
         self.assertEqual(r.status_code, 429)
         self.assertTrue(r.get_json()["travado"])
         self.assertIn("liberar", r.get_json()["error"])
-        self.rel.avancar(48 * 3600)                                      # tempo passar NÃO destrava
+        self.assertLessEqual(r.get_json()["bloqueado_por_s"], 86400)
+        self.rel.avancar(23 * 3600)                                      # ainda travado
         self.assertEqual(self.login(PIN, ip="172.16.5.5").status_code, 429)
         sessao = self.token_valido()
         self.assertEqual(self.c.post("/api/auth/login", json={"pin": PIN}).status_code, 200)   # o PC da loja entra
         self.assertEqual(self.remoto("get", "/api/mensagens", headers=self.com_cookie(sessao)).status_code, 200)
         st = self.c.get("/api/auth/status").get_json()
-        self.assertEqual(st["bloqueio_global_s"], 86400)
+        self.assertTrue(0 < st["bloqueio_global_s"] <= 3600 + 1)         # falta ~1 h para expirar
         self.assertTrue(st["seguranca"]["login_travado"])
         self.assertTrue(st["seguranca"]["alerta"])
+        self.rel.avancar(3601)                                            # 24 h depois do último erro: expirou
+        self.assertEqual(self.login(PIN, ip="172.16.5.5").status_code, 200)
+        self.assertFalse(server._login_esta_travado())
+        self.assertEqual(self.c.get("/api/auth/status").get_json()["bloqueio_global_s"], 0)
+
+    def test_dono_libera_a_trava_antes_de_expirar(self) -> None:
+        self.esgotar_o_dia()
         self.assertEqual(self.c.post("/api/auth/liberar", json={}).status_code, 200)
         self.assertEqual(self.login(PIN, ip="172.16.5.5").status_code, 200)
-        self.assertEqual(self.c.get("/api/auth/status").get_json()["bloqueio_global_s"], 0)
+
+    def test_trava_conhecido_com_pin_certo_entra(self) -> None:
+        self.assertEqual(self.login(PIN, ip="192.168.4.20").status_code, 200)    # funcionário: entrou antes (conhecido)
+        self.esgotar_o_dia()                                              # atacante com muitos IPs estoura o teto
+        self.assertTrue(server._login_esta_travado())
+        self.assertEqual(self.login(PIN, ip="192.168.4.20").status_code, 200)    # conhecido continua entrando
+        r = self.login(PIN, ip="192.168.4.21")                            # desconhecido: travado
+        self.assertEqual((r.status_code, r.get_json()["travado"]), (429, True))
+
+    def test_trava_conhecido_errando_e_barrado_pelo_limite_por_ip(self) -> None:
+        self.login(PIN, ip="192.168.4.20")
+        self.esgotar_o_dia()
+        codigos = [self.login("000001", ip="192.168.4.20") for _ in range(5)]
+        self.assertEqual([c.status_code for c in codigos], [401, 401, 401, 401, 429])
+        ultimo = codigos[-1].get_json()
+        self.assertNotIn("travado", ultimo)                               # é o bloqueio POR IP (5 min), não a trava
+        self.assertEqual(ultimo["bloqueado_por_s"], 300)
+        self.assertEqual(self.login(PIN, ip="192.168.4.20").status_code, 429)
+        self.rel.avancar(301)
+        self.assertEqual(self.login(PIN, ip="192.168.4.20").status_code, 200)
+
+    def test_erro_de_conhecido_mantem_a_trava_por_mais_24h(self) -> None:
+        self.login(PIN, ip="192.168.4.20")
+        self.esgotar_o_dia()
+        self.rel.avancar(20 * 3600)
+        self.login("000001", ip="192.168.4.20")                           # erro que mantém a trava
+        self.rel.avancar(20 * 3600)                                       # 40 h do primeiro, 20 h do último erro
+        self.assertEqual(self.login(PIN, ip="172.16.5.5").status_code, 429)
+        self.rel.avancar(4 * 3600 + 1)
+        self.assertEqual(self.login(PIN, ip="172.16.5.5").status_code, 200)
+
+    def test_restaurar_do_disco_usa_o_mesmo_prazo_do_ultimo_erro(self) -> None:
+        for _ in range(server.LOGIN_DIA_MAX_ERROS):
+            server._seg_registrar_falha()
+        self.rel.avancar(10 * 3600)
+        self.esquecer_a_memoria()
+        server._login_restaurar_do_disco()
+        self.assertTrue(server._login_esta_travado())
+        self.rel.avancar(13 * 3600)                                       # 23 h do último erro
+        self.assertEqual(self.login(PIN, ip="172.16.5.5").status_code, 429)
+        self.rel.avancar(2 * 3600)                                        # passou de 24 h
+        self.assertEqual(self.login(PIN, ip="172.16.5.5").status_code, 200)
 
     def test_liberar_zera_os_bloqueios_mas_nao_o_nivel_de_escalada(self) -> None:
         ip = "192.168.0.50"
@@ -991,7 +1040,7 @@ class TesteAlertas(BaseAuth):
                 server._login_falhou(f"10.0.{i}.1")
         s = self.seg()
         self.assertTrue(s["login_travado"])
-        self.assertEqual(self.c.get("/api/auth/status").get_json()["bloqueio_global_s"], 86400)
+        self.assertTrue(0 < self.c.get("/api/auth/status").get_json()["bloqueio_global_s"] <= 86400)
 
     def test_documento_no_disco_tem_limites_e_ignora_lixo(self) -> None:
         cfg = server.load_config()
