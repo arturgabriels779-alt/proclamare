@@ -35,7 +35,7 @@ USUARIOS = {"gerente": ("gil.gerente", SENHA_GER), "funcionario": ("fia.func", S
 
 # Valores para as partes variáveis das regras (formatos válidos; os itens não existem: 404/400 do handler).
 VALORES = {"lista_id": "abcd1234", "atalho_id": "abcd1234", "item_id": "abcd1234", "music_id": "m" * 16,
-           "filename": "app.js"}
+           "filename": "app.js", "conta_id": "abcd1234"}
 
 # Corpo mínimo por rota (o resto vai com {}). Os perigosos levam uma chave a mais: o handler recusa com 400
 # DEPOIS da permissão (nada desliga, nada abre o Explorer).
@@ -198,10 +198,11 @@ class TesteMatriz(BasePermissoes):
         def liberadas(perfil: str) -> set[tuple[str, str]]:
             return {rota for rota in rotas_protegidas() if not deve_negar(perfil, *rota)}
 
-        # funcionário: só o anúncio, as mensagens prontas, ler a voz da loja (e as que a própria rota decide)
+        # funcionário: só o anúncio, as mensagens prontas, ler a voz da loja, trocar a própria senha (e as que a
+        # própria rota decide)
         self.assertEqual(liberadas("funcionario"), {
             ("POST", "/api/announce"), ("GET", "/api/mensagens"), ("GET", "/api/voz"), ("GET", "/api/voices"),
-            ("POST", "/api/auth/primeiro-adm"),
+            ("POST", "/api/auth/primeiro-adm"), ("POST", "/api/conta/senha"),
         })
         # gerente: tudo menos saídas de som (mudar), segurança/rede e credenciais/conexão do Spotify
         self.assertEqual(set(rotas_protegidas()) - liberadas("gerente"), {

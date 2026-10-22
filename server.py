@@ -54,6 +54,10 @@ Inventário de rotas (v2.8)
   POST /api/auth/liberar                   local | - | {} (modo contas: só ADM logado)
   POST /api/auth/alertas/visto             local | - | {} (modo contas: só ADM logado)
   POST /api/auth/primeiro-adm              local | 10/min | {"usuario","nome","funcao","senha"} (só sem nenhuma conta; senão 409)
+  GET  /api/contas                         pin | - | - (modo PIN: 409 "modo_pin")
+  POST /api/contas                         pin | 20/min por IP e conta | {"usuario","nome","funcao","perfil","senha"}
+  POST /api/contas/<conta_id>              pin | 20/min por IP e conta | {"versao","nome"?,"funcao"?,"perfil"?,"ativa"?,"senha"?}
+  POST /api/conta/senha                    pin | 10/min por IP e conta; 5 erros/15 min por conta | {"senha_atual","senha_nova"}
   GET  /api/seguranca/remotos              local | - | -
   POST /api/seguranca/remotos/aprovar      local | - | {"tipo","id"} | {"todos":true}
   POST /api/sistema/desligar               local | - | {}
@@ -116,8 +120,8 @@ Inventário de rotas (v2.8)
   GET  /spotify/login                      pin | 5/min | - (redireciona; nunca devolve texto)
   GET  /spotify/callback                   publica | - | ?code=&state= (state de uso único)
 
-Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por rota)
------------------------------------------------------------------------------------
+Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por rota, B5 rotas de contas)
+--------------------------------------------------------------------------------------------------------
   Modos. Sem nenhuma conta em contas.json (ao lado do config.json) vale o MODO PIN exatamente como na v2.7.1 (o PC
   da loja é livre; a sessão de PIN vale como perfil "gerente"). Com pelo menos uma conta vale o MODO CONTAS:
   login por usuário e senha; o PC das caixas também precisa entrar (rotas "só local" continuam por cima).
@@ -129,7 +133,8 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
   desconhecido = 403. Fora da camada: ROTAS_PUBLICAS (API_PUBLICAS, "/", "/static/...", "/spotify/callback") e
   requisição sem regra (404). As checagens "só local" (somente_local, _exigir_adm_local, campos do PC) continuam POR
   CIMA, nas rotas. Mapa (matriz B1): anunciar = POST /api/announce; None = GET /api/mensagens, GET /api/voz, GET
-  /api/voices (só local), POST /api/auth/primeiro-adm (a rota decide: 409 em modo contas); mensagens_editar = POST
+  /api/voices (só local), POST /api/auth/primeiro-adm (a rota decide: 409 em modo contas), POST /api/conta/senha;
+  contas = GET/POST /api/contas e POST /api/contas/<conta_id>; mensagens_editar = POST
   /api/mensagens e /restaurar; voz = POST /api/voz e /api/voz/ouvir; musica = /api/youtube/*, /api/musicas/*
   (remover/abrir-pasta seguem só locais), /api/listas*, Spotify de tocar/buscar/aparelhos/atalhos/atual-contexto e
   GET /api/som/estado|saidas; programacao = /api/programacao*; som = POST /api/som/*; seguranca = /api/seguranca/*
@@ -192,6 +197,36 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
                      /api/auth/alertas/visto (modo contas) -> SÓ LOCAL e só ADM logado (403 "sem_permissao" para
                      gerente/funcionário/sem sessão); revogar encerra TODAS as sessões (acesso_versao + 1), inclusive
                      a de quem revogou, e mantém as opções de revisão.
+  Rotas de contas (B5). SÓ em modo contas: em modo PIN as quatro dão 409 {"codigo":"modo_pin"} para todos (o PC
+                     das caixas e as sessões de PIN também; o primeiro ADM nasce SÓ por /api/auth/primeiro-adm).
+                     Quem age é sempre a conta logada (relida a cada requisição). Erros de contas: {"ok":false,
+                     "error","codigo","campo"?}. Respostas NUNCA têm senha_hash nem sessao_v (conta pública:
+                     id, usuario, nome, funcao, perfil, ativa, versao, criada_em/por, alterada_em/por).
+  GET  /api/contas   ("contas") -> {ok, versao (do arquivo), contas:[pública + "pode_editar"]}. O gerente vê TODAS e
+                     edita só funcionários; o ADM edita todas. "pode_editar" é false na própria conta.
+  POST /api/contas   ("contas") {"usuario","nome","funcao","perfil","senha"} (estrito, todos obrigatórios) -> 201
+                     {ok, conta}. 403 "sem_permissao" se contas.pode_gerenciar(perfil do ator, perfil) é falso (gerente
+                     só cria funcionário; checado ANTES de duplicado/limite); 409 "usuario_repetido"/"limite_contas";
+                     400 com "campo" (senha 8..128 e diferente do usuário). 20/min por IP e por conta, ANTES do PBKDF2.
+  POST /api/contas/<conta_id> ("contas") {"versao", "nome"?, "funcao"?, "perfil"?, "ativa"?, "senha"?} (estrito; o
+                     usuário/login não muda; pelo menos um campo além da versão, senão 400 "vazio") -> {ok, conta}.
+                     id torto ou inexistente = 404 "nao_encontrada"; a PRÓPRIA conta = 409 "propria_conta" (ninguém
+                     se desativa, se rebaixa nem se edita por aqui; a própria senha é /api/conta/senha); fora da
+                     hierarquia (gerente x gerente/ADM, ou promover) = 403 "sem_permissao"; versão antiga = 409
+                     "versao_mudou"; sem nenhum ADM ativo depois = 409 "ultimo_adm". Trocar senha, perfil ou ativa
+                     faz sessao_v + 1: as sessões abertas da conta caem na PRÓXIMA requisição (401). Contas nunca são
+                     apagadas, só desativadas ("ativa": false). 20/min por IP e por conta.
+  POST /api/conta/senha (qualquer conta logada) {"senha_atual","senha_nova"} (estrito) -> {ok}. 10/min por IP e por
+                     conta; senha nova inválida = 400 campo "senha_nova" ("tamanho", "tipo", "igual_usuario",
+                     "mesma_senha"); senha atual errada = 400 {"codigo":"senha_errada","campo":"senha_atual"}; 5 erros
+                     em 15 min por conta = 429 {"codigo":"muitas_tentativas","bloqueado_por_s"} sem PBKDF2. Sucesso:
+                     sessao_v + 1 (TODAS as outras sessões da conta caem) e o cookie DESTA sessão é reemitido com o
+                     mesmo iat (teto de 90 dias desde o login) e a mesma origem (PC das caixas: "l": 1, 5 min; rede:
+                     14 dias).
+  Auditoria das rotas de contas: contas_criar / contas_alterar / conta_senha com resultado (ok, sem_permissao,
+  propria_conta, versao_mudou, ultimo_adm, usuario_repetido, limite_contas, nao_encontrada, senha_errada, limite,
+  invalido), perfil (da conta criada/alterada; o da própria em conta_senha), conta=c<10 hex> (quem agiu) e, em
+  contas_alterar, campos=N e sessoes_derrubadas=0|1. NUNCA nome, usuário, senha ou id.
   CLI python server.py --redefinir-senha <usuario>: só com o servidor desligado; lê a senha nova duas vezes (sem
                      eco; uma linha cada com stdin em pipe), mesmas regras do painel, sessao_v + 1 (derruba as sessões
                      da conta). Em modo contas --definir-pin/--remover-pin recusam (código 1).
@@ -2126,6 +2161,11 @@ PERMISSOES_ROTAS: dict[tuple[str, str], str | None] = {
     ("GET", "/api/seguranca/remotos"): "seguranca",
     ("POST", "/api/seguranca/remotos/aprovar"): "seguranca",
     ("POST", "/api/sistema/desligar"): "desligar",    # continua SÓ LOCAL
+    # Contas (B5): gerenciar = "contas" (gerente/ADM; a hierarquia é da rota); a própria senha = qualquer conta
+    ("GET", "/api/contas"): "contas",
+    ("POST", "/api/contas"): "contas",
+    ("POST", "/api/contas/<conta_id>"): "contas",
+    ("POST", "/api/conta/senha"): None,
     # Saídas de som: ler os blocos = quem mexe na música; mudar = só ADM
     ("GET", "/api/som/estado"): "musica",
     ("GET", "/api/som/saidas"): "musica",
@@ -8123,18 +8163,22 @@ def criar_conta(dados: Any, ator: dict | None, *, primeiro_adm: bool = False) ->
 
 
 def alterar_conta(conta_id: Any, mudancas: Any, versao: Any, ator: dict | None, *,
-                  sistema: bool = False) -> dict:
+                  sistema: bool = False, propria: bool = False) -> dict:
     """
     Altera nome/função/perfil/ativa/senha de uma conta (o login não muda) e devolve a cópia interna.
     `versao` = a que o cliente viu (409 `versao_mudou` se outro aparelho salvou antes). Sem ator (sem hierarquia)
     SÓ com `sistema=True` (CLI --redefinir-senha); `ator` None sem a marca, ou ator junto com ela, = 403
     "sem_permissao". Trocar senha, perfil ou ativa faz `sessao_v += 1` (derruba as sessões abertas da conta).
+    `propria=True` (B5, POST /api/conta/senha): o ator troca a PRÓPRIA senha - sem hierarquia (o gerente não
+    gerencia gerentes, mas troca a própria senha), e só vale com ator, conta_id == ator["id"] e só a chave "senha".
     """
-    if (ator is None) != sistema:
+    if (ator is None) != sistema or (propria and (ator is None or conta_id != ator.get("id"))):
         raise ErroContas("Seu perfil não pode alterar essa conta.", 403, "sem_permissao")
     limpa, campo, motivo = contas.validar_alteracao(mudancas)
     if limpa is None:
         raise _erro_validacao_conta(campo, motivo)
+    if propria and set(limpa) != {"senha"}:
+        raise ErroContas("Seu perfil não pode alterar essa conta.", 403, "sem_permissao")
     if not isinstance(versao, int) or isinstance(versao, bool):
         raise ErroContas("Informe a versão da conta.", 400, "ausente", "versao")
     hash_novo = contas.hash_senha(limpa["senha"]) if "senha" in limpa else None   # caro: fora do lock
@@ -8143,7 +8187,7 @@ def alterar_conta(conta_id: Any, mudancas: Any, versao: Any, ator: dict | None, 
         alvo = next((c for c in doc["contas"] if c["id"] == conta_id), None)
         if alvo is None:
             raise ErroContas("Conta não encontrada.", 404, "nao_encontrada")
-        if ator is not None:
+        if ator is not None and not propria:
             papel = ator.get("perfil", "")
             if not contas.pode_gerenciar(papel, alvo["perfil"]) or (
                     "perfil" in limpa and not contas.pode_gerenciar(papel, limpa["perfil"])):
@@ -8173,6 +8217,195 @@ def alterar_conta(conta_id: Any, mudancas: Any, versao: Any, ator: dict | None, 
         doc["versao"] += 1
         _contas_arquivo.gravar(doc)
         return copy.deepcopy(alvo)
+
+
+# --- v2.8 (B5): rotas de contas e troca da própria senha ------------------------------------------------------
+# Só em MODO CONTAS: em modo PIN (nenhuma conta) todas respondem 409 "modo_pin" - para todos, inclusive o PC das
+# caixas e as sessões de PIN (o primeiro ADM nasce SÓ por /api/auth/primeiro-adm; isto fecha o "ADM criado pela
+# rede"). Quem age é SEMPRE a conta logada desta requisição (conta_da_requisicao(), relida do contas.json); a
+# capacidade "contas" vem de PERMISSOES_ROTAS e a hierarquia (contas.pode_gerenciar) de criar_conta/alterar_conta.
+# Limite de taxa ANTES de qualquer PBKDF2. Auditoria: ação, perfil, resultado e o token opaco da conta que agiu;
+# nunca nome, usuário, senha ou id.
+CONTAS_GRAVAR_MAX_POR_MIN = 20     # criar e alterar (cada uma), por IP E por conta
+CONTA_SENHA_MAX_POR_MIN = 10       # POST /api/conta/senha, por IP E por conta
+CONTA_SENHA_MAX_ERROS = 5          # senha atual errada: 5 em 15 min -> 429 (sem PBKDF2) até a mais antiga sair
+CONTA_SENHA_JANELA_S = 900.0
+MSG_MUITOS_PEDIDOS = "Muitos pedidos seguidos. Aguarde um minuto."
+# id da conta -> instantes (monotonic) das senhas atuais erradas; no máximo CONTAS_MAX chaves (ids de contas reais).
+_conta_senha_erros: dict[str, deque] = {}
+_conta_senha_lock = threading.Lock()
+
+
+def _exigir_ator_de_conta() -> dict:
+    """A conta logada que faz a requisição. Modo PIN = 409 "modo_pin"; sem conta logada = 401 (o before_request já
+    barra; aqui é a segunda trava, falha fechado)."""
+    if not modo_contas():
+        raise ErroContas("As contas só existem depois de criar o administrador no PC das caixas.", 409, "modo_pin")
+    ator = conta_da_requisicao()
+    if ator is None:
+        raise ErroContas("Entre com seu usuário e senha para continuar.", 401, "login_requerido")
+    return ator
+
+
+def _conta_vista(conta: dict, ator: dict) -> dict:
+    """Conta como o painel a vê (sem senha_hash/sessao_v) + "pode_editar": o ator gerencia o perfil dela e não é
+    ele mesmo (a própria conta não muda por /api/contas/<id>; a própria senha é /api/conta/senha)."""
+    vista = conta_publica(conta)
+    vista["pode_editar"] = contas.pode_gerenciar(ator["perfil"], conta["perfil"]) and conta["id"] != ator["id"]
+    return vista
+
+
+def _resultado_auditoria(exc: ErroContas) -> str:
+    """Resultado estável para a auditoria: o código do erro de regra (401/403/404/409); validação = "invalido"."""
+    return exc.codigo if exc.status in (401, 403, 404, 409) and exc.codigo else "invalido"
+
+
+def _auditar_conta(acao: str, resultado: str, perfil: Any = None, **campos: Any) -> None:
+    """Só ação, resultado, perfil (da conta afetada) e o token opaco de quem agiu (_conta_auditoria)."""
+    auditar(acao, resultado=resultado, perfil=perfil if perfil in contas.PERFIS else None,
+            conta=_conta_auditoria(), **campos)
+
+
+@app.get("/api/contas")
+def contas_listar() -> Response:
+    """{ok, versao, contas: [pública + pode_editar]}: o gerente vê TODAS (edita só funcionários); o ADM edita todas
+    menos a própria."""
+    ator = _exigir_ator_de_conta()
+    doc = _contas_arquivo.ler()
+    return jsonify({"ok": True, "versao": doc["versao"], "contas": [_conta_vista(c, ator) for c in doc["contas"]]})
+
+
+@app.post("/api/contas")
+def contas_criar() -> Any:
+    """{usuario, nome, funcao, perfil, senha} (estrito, todas obrigatórias) -> 201 {ok, conta}. 403 "sem_permissao"
+    se o ator não gerencia o perfil pedido (gerente só cria funcionário); 409 usuario_repetido/limite_contas."""
+    ator = _exigir_ator_de_conta()
+    if _excedeu_limite_ip_e_conta("contas_criar:", CONTAS_GRAVAR_MAX_POR_MIN, 60.0):
+        raise ErroApi(MSG_MUITOS_PEDIDOS, 429)
+    dados = corpo_json()
+    exigir_chaves(dados, ("usuario", "nome", "funcao", "perfil", "senha"))
+    try:
+        conta = criar_conta(dados, ator)
+    except ErroContas as exc:
+        _auditar_conta("contas_criar", _resultado_auditoria(exc), dados.get("perfil"))
+        raise
+    _auditar_conta("contas_criar", "ok", conta["perfil"])
+    log.info("Conta criada pelo painel (perfil %s).", conta["perfil"])
+    return jsonify({"ok": True, "conta": _conta_vista(conta, ator)}), 201
+
+
+@app.post("/api/contas/<conta_id>")
+def contas_alterar(conta_id: str) -> Response:
+    """
+    {versao, nome?, funcao?, perfil?, ativa?, senha?} (estrito; pelo menos um campo além da versão) -> {ok, conta}.
+    A PRÓPRIA conta não muda por aqui (409 "propria_conta": ninguém se desativa nem se rebaixa; a própria senha é
+    /api/conta/senha). Hierarquia (403), versão (409 versao_mudou) e último ADM (409 ultimo_adm) ficam com
+    alterar_conta, que confere tudo de novo sob o lock. Trocar senha/perfil/ativa derruba as sessões da conta.
+    """
+    ator = _exigir_ator_de_conta()
+    if _excedeu_limite_ip_e_conta("contas_alterar:", CONTAS_GRAVAR_MAX_POR_MIN, 60.0):
+        raise ErroApi(MSG_MUITOS_PEDIDOS, 429)
+    dados = corpo_json()
+    exigir_chaves(dados, ("versao", "nome", "funcao", "perfil", "ativa", "senha"))
+    alvo = conta_por_id(conta_id) if _CONTA_ID_RE.fullmatch(conta_id) else None
+    perfil_alvo = alvo["perfil"] if alvo else None
+    mudancas = {k: v for k, v in dados.items() if k != "versao"}
+    try:
+        if alvo is None:
+            raise ErroContas("Conta não encontrada.", 404, "nao_encontrada")
+        if alvo["id"] == ator["id"]:
+            raise ErroContas("A sua própria conta não muda por aqui (para a sua senha, use \"Trocar minha senha\").",
+                             409, "propria_conta")
+        if not contas.pode_gerenciar(ator["perfil"], perfil_alvo):
+            # pré-checagem barata (alterar_conta confere de novo sob o lock): recusa sem calcular o PBKDF2
+            raise ErroContas("Seu perfil não pode alterar essa conta.", 403, "sem_permissao")
+        conta = alterar_conta(conta_id, mudancas, dados.get("versao"), ator)
+    except ErroContas as exc:
+        _auditar_conta("contas_alterar", _resultado_auditoria(exc), perfil_alvo)
+        raise
+    derrubou = conta["sessao_v"] != alvo["sessao_v"]
+    _auditar_conta("contas_alterar", "ok", conta["perfil"], campos=len(mudancas), sessoes_derrubadas=int(derrubou))
+    log.info("Conta alterada pelo painel (%d campo(s)%s).", len(mudancas),
+             "; sessões da conta encerradas" if derrubou else "")
+    return jsonify({"ok": True, "conta": _conta_vista(conta, ator)})
+
+
+def _senha_reservar_tentativa(conta_id: str) -> int:
+    """
+    Reserva UMA tentativa de senha atual para a conta (atômico: duas requisições juntas não passam do teto).
+    Devolve 0 se pode tentar (a tentativa já conta como erro até _senha_tentativa_certa) ou os segundos de espera.
+    """
+    agora = time.monotonic()
+    with _conta_senha_lock:
+        hist = _conta_senha_erros.setdefault(conta_id, deque())
+        while hist and agora - hist[0] > CONTA_SENHA_JANELA_S:
+            hist.popleft()
+        if len(hist) >= CONTA_SENHA_MAX_ERROS:
+            return max(1, int(hist[0] + CONTA_SENHA_JANELA_S - agora) + 1)
+        hist.append(agora)
+        return 0
+
+
+def _senha_tentativa_certa(conta_id: str) -> None:
+    """Senha atual certa: zera os erros da conta."""
+    with _conta_senha_lock:
+        _conta_senha_erros.pop(conta_id, None)
+
+
+@app.post("/api/conta/senha")
+def conta_trocar_senha() -> Any:
+    """
+    Qualquer conta logada troca a PRÓPRIA senha: {senha_atual, senha_nova} (estrito) -> {ok}. Ordem: 10/min por IP
+    e conta -> validação (senha nova 8..128, diferente do usuário e da atual) -> 5 senhas atuais erradas em 15 min =
+    429 (sem PBKDF2) -> confere a atual (errada = 400 "senha_errada", campo "senha_atual") -> grava (sessao_v + 1:
+    TODAS as sessões da conta caem) -> reemite o cookie DESTA sessão: mesmo login original (iat; o teto de 90 dias
+    continua) e mesma origem (PC das caixas: "l": 1 e 5 min; rede: 14 dias).
+    """
+    ator = _exigir_ator_de_conta()
+    if _excedeu_limite_ip_e_conta("conta_senha:", CONTA_SENHA_MAX_POR_MIN, 60.0):
+        raise ErroApi(MSG_MUITOS_PEDIDOS, 429)
+    dados = corpo_json()
+    exigir_chaves(dados, ("senha_atual", "senha_nova"))
+    atual, nova = dados.get("senha_atual"), dados.get("senha_nova")
+    if not isinstance(atual, str) or not atual or len(atual) > contas.SENHA_MAX:
+        raise ErroContas("Informe a sua senha atual.", 400, "ausente" if not atual else "invalido", "senha_atual")
+    if nova is None:
+        raise ErroContas("Informe a senha nova.", 400, "ausente", "senha_nova")
+    limpa, _, motivo = contas.validar_alteracao({"senha": nova})
+    if limpa is None:
+        raise ErroContas(f"Senha nova inválida (de {contas.SENHA_MIN} a {contas.SENHA_MAX} caracteres).", 400,
+                         motivo, "senha_nova")
+    if nova.strip().lower() == ator["usuario"]:
+        raise ErroContas("A senha não pode ser igual ao usuário.", 400, "igual_usuario", "senha_nova")
+    if nova == atual:
+        raise ErroContas("A senha nova precisa ser diferente da atual.", 400, "mesma_senha", "senha_nova")
+    espera = _senha_reservar_tentativa(ator["id"])
+    if espera:
+        _auditar_conta("conta_senha", "limite", ator["perfil"])
+        minutos = max(1, -(-espera // 60))
+        return jsonify({"ok": False, "codigo": "muitas_tentativas", "bloqueado_por_s": espera,
+                        "error": f"Muitas tentativas com a senha atual errada. Tente novamente em {minutos} min."}), 429
+    if not contas.conferir_senha(atual, ator["senha_hash"]):
+        _auditar_conta("conta_senha", "senha_errada", ator["perfil"])
+        log.warning("Troca da própria senha recusada: senha atual incorreta.")
+        raise ErroContas("A senha atual está incorreta.", 400, "senha_errada", "senha_atual")
+    _senha_tentativa_certa(ator["id"])
+    cfg = load_config()
+    carga = _carga_completa(request.cookies.get(COOKIE_SESSAO), cfg)   # ANTES de gravar (o sv muda)
+    if carga is None or carga["conta"] is None or carga["conta"]["id"] != ator["id"]:
+        raise ErroContas("Entre com seu usuário e senha para continuar.", 401, "login_requerido")
+    try:
+        conta = alterar_conta(ator["id"], {"senha": nova}, ator["versao"], ator, propria=True)
+    except ErroContas as exc:
+        _auditar_conta("conta_senha", _resultado_auditoria(exc), ator["perfil"])
+        raise
+    _auditar_conta("conta_senha", "ok", conta["perfil"])
+    log.info("Conta trocou a própria senha (%s); as outras sessões da conta foram encerradas.",
+             "local" if carga["local"] else "remoto")
+    resp = jsonify({"ok": True})
+    token, vida = _emitir_token(cfg, iat=carga["iat"], conta=conta, local=carga["local"])
+    _definir_cookie_sessao(resp, token, vida)
+    return resp
 
 
 def listas_ler() -> dict:
