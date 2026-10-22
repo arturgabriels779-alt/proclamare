@@ -465,7 +465,9 @@ o aviso sai **nas caixas da loja** (não no celular) e a música não abaixa.
 
 **A voz é da loja inteira.** O motor (Auto, Online ou Offline), a voz (Francisca ou Antonio), a velocidade e o aviso
 valem para **todos os aparelhos**: o que você escolhe no celular muda também no computador da loja. Antes, cada
-aparelho guardava a sua voz; agora o painel do computador da loja aproveita a escolha antiga uma única vez.
+aparelho guardava a sua voz. Se a loja ainda não tinha uma voz salva, o computador da loja passa a usar a escolha
+que ele guardava antes (motor, voz e velocidade), uma única vez. Se outro aparelho já escolheu a voz da loja, a escolha
+antiga é descartada.
 Por enquanto qualquer aparelho com acesso (PC da loja ou PIN) pode mudar; numa versão futura só o gerente poderá.
 
 Os sons do aviso são criados pelo próprio Proclamare: não usam música nem áudio de terceiros, então não há
