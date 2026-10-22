@@ -120,8 +120,11 @@ class TesteCriar(BaseRotas):
                 r = self.como("adm", "post", "/api/contas", json=dict(NOVO_FUNC, usuario=f"rui.caixa{i}"))
                 self.assertEqual(r.status_code, 201, r.get_data(as_text=True))
             self.assertEqual(hs.call_count, 20)
-            r = self.como("adm", "post", "/api/contas", json=dict(NOVO_FUNC, usuario="rui.caixa99"))
-            self.assertEqual(r.status_code, 429)
+            with self.assertLogs(server.auditoria, level="INFO") as trilha:
+                r = self.como("adm", "post", "/api/contas", json=dict(NOVO_FUNC, usuario="rui.caixa99"))
+            self.assert_codigo(r, 429, "limite")
+            self.assertIn("acao=contas_criar", trilha.output[-1])
+            self.assertIn("resultado=limite", trilha.output[-1])
             self.assertEqual(hs.call_count, 20)
             # trocar de IP não zera: o limite também é por conta
             r = self.como("adm", "post", "/api/contas", ip=71, json=dict(NOVO_FUNC, usuario="rui.caixa98"))
@@ -209,7 +212,25 @@ class TestePermissoes(BaseRotas):
         self.assertEqual(self.como("adm", "get", "/api/mensagens").status_code, 200)   # sessão continua
 
     def test_ultimo_adm_409(self) -> None:
-        """Dois ADMs rebaixando um ao outro ao mesmo tempo: o segundo pedido é 409 "ultimo_adm"."""
+        """Sem nenhum ADM ativo depois = 409 "ultimo_adm" (a rota repassa o erro de alterar_conta e nada muda).
+        Pela rota a situação só nasceria numa corrida, que o ator relido sob o lock já barra (veja
+        test_ator_rebaixado_no_meio_da_requisicao_403); aqui a regra é forçada para conferir o caminho da rota."""
+        bia = self.criar("bia.adm", "adm", SENHA_OUTRA)
+        with mock.patch.object(contas, "restaria_adm", return_value=False):
+            r = self.alterar("adm", bia["id"], perfil="gerente")
+        self.assert_codigo(r, 409, "ultimo_adm")
+        self.assertEqual(server.conta_por_id(bia["id"])["perfil"], "adm")
+        # sem a rota: o único ADM ativo não se rebaixa nem pela CLI
+        server.alterar_conta(bia["id"], {"ativa": False}, self.versao_de(bia["id"]),
+                             server.conta_por_id(self.adm["id"]))
+        with self.assertRaises(server.ErroContas) as e:
+            server.alterar_conta(self.adm["id"], {"perfil": "gerente"}, self.versao_de(self.adm["id"]), None,
+                                 sistema=True)
+        self.assertEqual((e.exception.status, e.exception.codigo), (409, "ultimo_adm"))
+
+    def test_ator_rebaixado_no_meio_da_requisicao_403(self) -> None:
+        """Dois ADMs rebaixando um ao outro ao mesmo tempo: o pedido de quem já foi rebaixado é 403 (o ator é relido
+        sob o lock) e continua havendo um ADM ativo."""
         bia = self.criar("bia.adm", "adm", SENHA_OUTRA)
         original = server.alterar_conta
         feito: list[bool] = []
@@ -223,10 +244,62 @@ class TestePermissoes(BaseRotas):
 
         with mock.patch.object(server, "alterar_conta", corrida):
             r = self.alterar("adm", bia["id"], perfil="gerente")
-        self.assert_codigo(r, 409, "ultimo_adm")
+        self.assert_codigo(r, 403, "sem_permissao")
         self.assertEqual(server.conta_por_id(bia["id"])["perfil"], "adm")
         ativos = [c for c in server._contas_arquivo.ler()["contas"] if c["perfil"] == "adm" and c["ativa"]]
-        self.assertEqual(len(ativos), 1)
+        self.assertEqual([c["id"] for c in ativos], [bia["id"]])
+
+    def test_ator_velho_recusado_em_criar_e_alterar(self) -> None:
+        """Cópia do ator lida no começo da requisição: rebaixado, desativado, senha trocada ou sumido = 403."""
+        casos = {
+            "rebaixado": {"perfil": "funcionario"},
+            "desativado": {"ativa": False},
+            "senha_trocada": {"senha": SENHA_NOVA},
+            "sumido": None,
+        }
+        for nome, mudanca in casos.items():
+            with self.subTest(caso=nome):
+                self._gerente_como_no_inicio()
+                velho = server.conta_por_id(self.ger["id"])
+                if mudanca is None:
+                    velho["id"] = "0000beef"     # conta que não existe no arquivo
+                else:
+                    server.alterar_conta(self.ger["id"], mudanca, velho["versao"], None, sistema=True)
+                func = server.conta_por_id(self.func["id"])
+                with self.assertRaises(server.ErroContas) as e:
+                    server.alterar_conta(func["id"], {"nome": "Outro"}, func["versao"], velho)
+                self.assertEqual((e.exception.status, e.exception.codigo), (403, "sem_permissao"))
+                with self.assertRaises(server.ErroContas) as e:
+                    server.criar_conta(dict(NOVO_FUNC, usuario="novo." + nome), velho)
+                self.assertEqual((e.exception.status, e.exception.codigo), (403, "sem_permissao"))
+                self.assertEqual(server.conta_por_id(self.func["id"]), func)
+                self.assertIsNone(server.conta_por_usuario("novo." + nome))
+
+    def _gerente_como_no_inicio(self) -> None:
+        """Gerente ativo e com perfil gerente (volta ao estado inicial entre os subtestes)."""
+        atual = server.conta_por_id(self.ger["id"])
+        if atual["perfil"] != "gerente" or not atual["ativa"]:
+            server.alterar_conta(self.ger["id"], {"perfil": "gerente", "ativa": True}, atual["versao"], None,
+                                 sistema=True)
+
+    def test_gerente_promovendo_recusado_antes_do_pbkdf2(self) -> None:
+        with mock.patch.object(contas, "hash_senha", wraps=contas.hash_senha) as hs:
+            for perfil in ("gerente", "adm"):
+                with self.subTest(perfil=perfil):
+                    r = self.alterar("gerente", self.func["id"], perfil=perfil, senha=SENHA_NOVA)
+                    self.assert_codigo(r, 403, "sem_permissao")
+            # valor torto (lista: não "hasheável") no perfil: 400 da validação, nunca 500
+            r = self.alterar("gerente", self.func["id"], perfil=["adm"], senha=SENHA_NOVA)
+            self.assert_codigo(r, 400, "invalido", "perfil")
+            hs.assert_not_called()
+        conta = server.conta_por_id(self.func["id"])
+        self.assertEqual((conta["perfil"], conta["sessao_v"]), ("funcionario", self.func["sessao_v"]))
+
+    def test_get_contas_tem_segunda_trava(self) -> None:
+        """Mesmo sem a camada de PERMISSOES_ROTAS, o funcionário não lê a lista de contas."""
+        with mock.patch.object(server, "_exigir_permissao", lambda: None):
+            self.assert_codigo(self.como("funcionario", "get", "/api/contas"), 403, "sem_permissao")
+            self.assertEqual(self.como("gerente", "get", "/api/contas").status_code, 200)
 
     def test_edicao_concorrente_409_versao_mudou(self) -> None:
         versao = self.versao_de(self.func["id"])
@@ -309,8 +382,49 @@ class TesteMinhaSenha(BaseRotas):
 
     def test_minha_senha_limite_de_taxa(self) -> None:
         tok = self.tok["gerente"]
-        codigos = [self.trocar(tok, "", SENHA_NOVA).status_code for _ in range(11)]
-        self.assertEqual(codigos, [400] * 10 + [429])
+        codigos = [self.trocar(tok, "", SENHA_NOVA).status_code for _ in range(10)]
+        self.assertEqual(codigos, [400] * 10)
+        with self.assertLogs(server.auditoria, level="INFO") as trilha:
+            self.assert_codigo(self.trocar(tok, "", SENHA_NOVA), 429, "limite")
+        self.assertIn("acao=conta_senha", trilha.output[-1])
+        self.assertIn("resultado=limite", trilha.output[-1])
+
+    def test_alterar_limite_de_taxa(self) -> None:
+        with mock.patch.object(contas, "hash_senha", wraps=contas.hash_senha) as hs:
+            for _ in range(20):
+                self.alterar("gerente", self.func["id"], funcao="Caixa")
+            with self.assertLogs(server.auditoria, level="INFO") as trilha:
+                r = self.alterar("gerente", self.func["id"], senha=SENHA_NOVA)
+            self.assert_codigo(r, 429, "limite")
+            hs.assert_not_called()
+        self.assertIn("acao=contas_alterar", trilha.output[-1])
+        self.assertIn("resultado=limite", trilha.output[-1])
+
+    def test_guarda_propria_em_alterar_conta(self) -> None:
+        """propria=True só troca a senha da PRÓPRIA conta do ator; qualquer outro uso = 403 e nada muda."""
+        ger = server.conta_por_id(self.ger["id"])
+        antes = {c["id"]: server.conta_por_id(c["id"]) for c in (self.adm, self.ger, self.func)}
+        casos = (
+            ("senha de outra conta", (self.func["id"], {"senha": SENHA_NOVA}, self.func["versao"], ger)),
+            ("perfil da própria", (ger["id"], {"perfil": "adm"}, ger["versao"], ger)),
+            ("senha + nome da própria", (ger["id"], {"senha": SENHA_NOVA, "nome": "Outro"}, ger["versao"], ger)),
+            ("ativa da própria", (ger["id"], {"ativa": False}, ger["versao"], ger)),
+        )
+        for nome, args in casos:
+            with self.subTest(caso=nome):
+                with self.assertRaises(server.ErroContas) as e:
+                    server.alterar_conta(*args, propria=True)
+                self.assertEqual((e.exception.status, e.exception.codigo), (403, "sem_permissao"))
+        for kw in ({"sistema": True, "propria": True}, {"propria": True}):
+            with self.subTest(ator=None, **kw):
+                with self.assertRaises(server.ErroContas) as e:
+                    server.alterar_conta(self.func["id"], {"senha": SENHA_NOVA}, self.func["versao"], None, **kw)
+                self.assertEqual((e.exception.status, e.exception.codigo), (403, "sem_permissao"))
+        for conta_id, conta in antes.items():
+            self.assertEqual(server.conta_por_id(conta_id), conta)   # nenhuma conta mudou (nem versão nem hash)
+        # o uso certo: a própria senha, só ela
+        novo = server.alterar_conta(ger["id"], {"senha": SENHA_NOVA}, ger["versao"], ger, propria=True)
+        self.assertEqual((novo["sessao_v"], novo["alterada_por"]), (ger["sessao_v"] + 1, ger["id"]))
 
     def test_minha_senha_derruba_outras_sessoes(self) -> None:
         outra = self.sessao("fia.func", SENHA_FUNC, 63)            # o mesmo funcionário noutro aparelho

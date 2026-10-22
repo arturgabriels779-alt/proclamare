@@ -223,6 +223,8 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
                      sessao_v + 1 (TODAS as outras sessões da conta caem) e o cookie DESTA sessão é reemitido com o
                      mesmo iat (teto de 90 dias desde o login) e a mesma origem (PC das caixas: "l": 1, 5 min; rede:
                      14 dias).
+  Limites de taxa das três rotas POST: 429 {"codigo":"limite"} (auditado com resultado=limite). criar_conta e
+  alterar_conta RELEEM o ator sob o lock (existe, ativo, mesma sessao_v; senão 403) e usam o perfil relido.
   Auditoria das rotas de contas: contas_criar / contas_alterar / conta_senha com resultado (ok, sem_permissao,
   propria_conta, versao_mudou, ultimo_adm, usuario_repetido, limite_contas, nao_encontrada, senha_errada, limite,
   invalido), perfil (da conta criada/alterada; o da própria em conta_senha), conta=c<10 hex> (quem agiu) e, em
@@ -8119,6 +8121,18 @@ def _erro_validacao_conta(campo: str | None, motivo: str | None) -> ErroContas:
     return ErroContas(f"Valor inválido em '{campo}'.", 400, motivo, campo)
 
 
+def _ator_no_documento(doc: dict, ator: dict) -> dict:
+    """
+    (sob o lock) O ator RELIDO do documento: a conta precisa existir, estar ativa e ter a MESMA sessao_v da cópia
+    recebida (a sessão foi validada com ela). Senão 403 "sem_permissao": quem foi rebaixado, desativado ou teve a
+    senha trocada entre o início da requisição e a gravação não age mais. A hierarquia usa o perfil RELIDO.
+    """
+    atual = next((c for c in doc["contas"] if c["id"] == ator.get("id")), None)
+    if atual is None or not atual["ativa"] or atual["sessao_v"] != ator.get("sessao_v"):
+        raise ErroContas("Seu perfil não pode alterar essa conta.", 403, "sem_permissao")
+    return atual
+
+
 def criar_conta(dados: Any, ator: dict | None, *, primeiro_adm: bool = False) -> dict:
     """
     Cria uma conta e devolve a cópia interna dela. `ator` = conta que cria. Sem ator SÓ com `primeiro_adm=True`
@@ -8142,6 +8156,8 @@ def criar_conta(dados: Any, ator: dict | None, *, primeiro_adm: bool = False) ->
     with _contas_arquivo.lock:
         doc = copy.deepcopy(_contas_arquivo.ler())
         if ator is None and doc["contas"]:
+            raise ErroContas("Seu perfil não pode criar esse tipo de conta.", 403, "sem_permissao", "perfil")
+        if ator is not None and not contas.pode_gerenciar(_ator_no_documento(doc, ator)["perfil"], limpa["perfil"]):
             raise ErroContas("Seu perfil não pode criar esse tipo de conta.", 403, "sem_permissao", "perfil")
         _, campo, motivo = contas.validar_conta_nova(dados, doc["contas"])
         if motivo:
@@ -8171,6 +8187,7 @@ def alterar_conta(conta_id: Any, mudancas: Any, versao: Any, ator: dict | None, 
     "sem_permissao". Trocar senha, perfil ou ativa faz `sessao_v += 1` (derruba as sessões abertas da conta).
     `propria=True` (B5, POST /api/conta/senha): o ator troca a PRÓPRIA senha - sem hierarquia (o gerente não
     gerencia gerentes, mas troca a própria senha), e só vale com ator, conta_id == ator["id"] e só a chave "senha".
+    Com ator, ele é RELIDO sob o lock (_ator_no_documento: existe, ativo, mesma sessao_v; perfil relido).
     """
     if (ator is None) != sistema or (propria and (ator is None or conta_id != ator.get("id"))):
         raise ErroContas("Seu perfil não pode alterar essa conta.", 403, "sem_permissao")
@@ -8187,8 +8204,8 @@ def alterar_conta(conta_id: Any, mudancas: Any, versao: Any, ator: dict | None, 
         alvo = next((c for c in doc["contas"] if c["id"] == conta_id), None)
         if alvo is None:
             raise ErroContas("Conta não encontrada.", 404, "nao_encontrada")
-        if ator is not None and not propria:
-            papel = ator.get("perfil", "")
+        papel = _ator_no_documento(doc, ator)["perfil"] if ator is not None else None
+        if papel is not None and not propria:
             if not contas.pode_gerenciar(papel, alvo["perfil"]) or (
                     "perfil" in limpa and not contas.pode_gerenciar(papel, limpa["perfil"])):
                 raise ErroContas("Seu perfil não pode alterar essa conta.", 403, "sem_permissao")
@@ -8267,10 +8284,12 @@ def _auditar_conta(acao: str, resultado: str, perfil: Any = None, **campos: Any)
 
 
 @app.get("/api/contas")
-def contas_listar() -> Response:
+def contas_listar() -> Any:
     """{ok, versao, contas: [pública + pode_editar]}: o gerente vê TODAS (edita só funcionários); o ADM edita todas
     menos a própria."""
     ator = _exigir_ator_de_conta()
+    if not _perfil_pode("contas"):   # segunda trava (a primeira é PERMISSOES_ROTAS): a lista tem nomes e logins
+        return _resp_sem_permissao("contas")
     doc = _contas_arquivo.ler()
     return jsonify({"ok": True, "versao": doc["versao"], "contas": [_conta_vista(c, ator) for c in doc["contas"]]})
 
@@ -8281,7 +8300,8 @@ def contas_criar() -> Any:
     se o ator não gerencia o perfil pedido (gerente só cria funcionário); 409 usuario_repetido/limite_contas."""
     ator = _exigir_ator_de_conta()
     if _excedeu_limite_ip_e_conta("contas_criar:", CONTAS_GRAVAR_MAX_POR_MIN, 60.0):
-        raise ErroApi(MSG_MUITOS_PEDIDOS, 429)
+        _auditar_conta("contas_criar", "limite")
+        raise ErroContas(MSG_MUITOS_PEDIDOS, 429, "limite")
     dados = corpo_json()
     exigir_chaves(dados, ("usuario", "nome", "funcao", "perfil", "senha"))
     try:
@@ -8304,7 +8324,8 @@ def contas_alterar(conta_id: str) -> Response:
     """
     ator = _exigir_ator_de_conta()
     if _excedeu_limite_ip_e_conta("contas_alterar:", CONTAS_GRAVAR_MAX_POR_MIN, 60.0):
-        raise ErroApi(MSG_MUITOS_PEDIDOS, 429)
+        _auditar_conta("contas_alterar", "limite")
+        raise ErroContas(MSG_MUITOS_PEDIDOS, 429, "limite")
     dados = corpo_json()
     exigir_chaves(dados, ("versao", "nome", "funcao", "perfil", "ativa", "senha"))
     alvo = conta_por_id(conta_id) if _CONTA_ID_RE.fullmatch(conta_id) else None
@@ -8316,8 +8337,12 @@ def contas_alterar(conta_id: str) -> Response:
         if alvo["id"] == ator["id"]:
             raise ErroContas("A sua própria conta não muda por aqui (para a sua senha, use \"Trocar minha senha\").",
                              409, "propria_conta")
-        if not contas.pode_gerenciar(ator["perfil"], perfil_alvo):
-            # pré-checagem barata (alterar_conta confere de novo sob o lock): recusa sem calcular o PBKDF2
+        perfil_novo = dados.get("perfil")
+        if not contas.pode_gerenciar(ator["perfil"], perfil_alvo) or (
+                isinstance(perfil_novo, str) and perfil_novo in contas.PERFIS
+                and not contas.pode_gerenciar(ator["perfil"], perfil_novo)):
+            # pré-checagem barata (alterar_conta confere de novo sob o lock): recusa sem calcular o PBKDF2, também
+            # quando o perfil NOVO está fora da hierarquia (gerente promovendo). Valor torto = 400 da validação.
             raise ErroContas("Seu perfil não pode alterar essa conta.", 403, "sem_permissao")
         conta = alterar_conta(conta_id, mudancas, dados.get("versao"), ator)
     except ErroContas as exc:
@@ -8363,7 +8388,8 @@ def conta_trocar_senha() -> Any:
     """
     ator = _exigir_ator_de_conta()
     if _excedeu_limite_ip_e_conta("conta_senha:", CONTA_SENHA_MAX_POR_MIN, 60.0):
-        raise ErroApi(MSG_MUITOS_PEDIDOS, 429)
+        _auditar_conta("conta_senha", "limite", ator["perfil"])
+        raise ErroContas(MSG_MUITOS_PEDIDOS, 429, "limite")
     dados = corpo_json()
     exigir_chaves(dados, ("senha_atual", "senha_nova"))
     atual, nova = dados.get("senha_atual"), dados.get("senha_nova")
