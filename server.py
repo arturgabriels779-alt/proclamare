@@ -21,7 +21,9 @@ da loja. Serve a interface (static/) e cuida de três coisas:
                                logout, definir/trocar/remover o PIN e revogar
                                sessões. O computador da loja (loopback) nunca
                                pede PIN; sem PIN definido o acesso remoto à API
-                               fica desligado.
+                               fica desligado. v2.8: com contas, entra-se por
+                               usuário e senha (o PC das caixas também) e o PIN
+                               deixa de valer; veja "Contrato v2.8 (Parte B)".
 
   /api/youtube/*             — o YouTube não tem um protocolo equivalente ao
                                Spotify Connect, então uma aba precisa ficar
@@ -38,16 +40,19 @@ Inventário de rotas (v2.8)
   aparelho com sessão (PIN); "local" = SÓ o PC da loja (403 para qualquer aparelho remoto, mesmo com PIN). Toda rota
   nova nasce "pin" (before_request); só /api/status e /api/auth/* (e o callback do OAuth) são públicas. O teste
   tests/test_higiene.py compara esta tabela com app.url_map: rota sem linha aqui (ou linha sem rota) quebra a suíte.
+  v2.8 (modo contas, veja "Contrato v2.8 (Parte B)"): "pin" passa a ser "sessão de uma conta" - o PC das caixas
+  TAMBÉM precisa entrar -, e "local" continua exigindo o PC das caixas por cima da sessão.
   GET  /                                   publica | - | -
   GET  /static/<path:filename>             publica | - | -
   GET  /api/status                         publica | - | -
   GET  /api/auth/status                    publica | - | - (campos de ataque/segurança só para o PC local)
-  POST /api/auth/login                     publica | 5 erros/5 min por IP (dobra até 24 h), 20 por /24, 300/dia no total; 10 acertos/min; local 30/5 min | {"pin"}
+  POST /api/auth/login                     publica | 5 erros/5 min por IP (dobra até 24 h), 20 por /24, 300/dia no total; 10 acertos/min; local 30/5 min; v2.8: 10 erros/15 min por usuário | {"pin"} | modo contas: {"usuario","senha"}
   POST /api/auth/logout                    publica | - | {}
-  POST /api/auth/pin                       local | - | {"pin": str|null, + opções de revisão}
-  POST /api/auth/revogar                   local | - | {opções de revisão}
-  POST /api/auth/liberar                   local | - | {}
-  POST /api/auth/alertas/visto             local | - | {}
+  POST /api/auth/pin                       local | - | {"pin": str|null, + opções de revisão} (modo contas: 409 "modo_contas")
+  POST /api/auth/revogar                   local | - | {opções de revisão} (modo contas: só ADM logado)
+  POST /api/auth/liberar                   local | - | {} (modo contas: só ADM logado)
+  POST /api/auth/alertas/visto             local | - | {} (modo contas: só ADM logado)
+  POST /api/auth/primeiro-adm              local | 10/min | {"usuario","nome","funcao","senha"} (só sem nenhuma conta; senão 409)
   GET  /api/seguranca/remotos              local | - | -
   POST /api/seguranca/remotos/aprovar      local | - | {"tipo","id"} | {"todos":true}
   POST /api/sistema/desligar               local | - | {}
@@ -109,6 +114,54 @@ Inventário de rotas (v2.8)
   GET  /api/spotify/atual-contexto         pin | 20/10 s | -
   GET  /spotify/login                      pin | 5/min | - (redireciona; nunca devolve texto)
   GET  /spotify/callback                   publica | - | ?code=&state= (state de uso único)
+
+Contrato v2.8 (Parte B: contas e perfis - B3, login e sessão)
+-------------------------------------------------------------
+  Modos. Sem nenhuma conta em contas.json (ao lado do config.json) vale o MODO PIN exatamente como na v2.7.1 (o PC
+  da loja é livre; a sessão de PIN vale como perfil "gerente"). Com pelo menos uma conta vale o MODO CONTAS:
+  login por usuário e senha; o PC das caixas também precisa entrar (rotas "só local" continuam por cima). As rotas
+  do Tocador sem login no PC das caixas e as permissões por perfil (403) vêm na B4.
+  Token (cookie proclamare_sessao, HttpOnly, SameSite=Strict, assinado com a acesso_chave): {exp, iat, v} + em modo
+  contas "c" (id da conta), "sv" (sessao_v da conta) e "l": 1 se foi emitido para o PC das caixas. É recusado:
+  token sem "c" (de PIN) em modo contas; conta inexistente ou desativada; "sv" diferente (senha/perfil/ativa
+  mudaram); "l" que não bate com a origem da requisição (token do PC não vale pela rede e vice-versa). A conta é
+  RELIDA do contas.json a cada requisição (conta_da_requisicao(), guardada em flask.g; perfil_da_requisicao():
+  perfil da conta, "gerente" em modo PIN para o PC/sessão de PIN, None sem sessão).
+  Vida: rede = 14 dias deslizantes (renova se faltar < 7 dias) e teto de 90 dias desde o login, como sempre. PC das
+  caixas = SESSAO_LOCAL_OCIOSA_S (300 s): só é renovado (mesmo iat e conta) em requisição /api/* com sucesso
+  (< 400) e com o cabeçalho "X-Proclamare-Atividade: 1" (o painel manda quando houve clique/tecla no último
+  minuto); sondagens sem o cabeçalho deixam a sessão vencer em 5 min. Sem sessão: 401 {"auth":"pin_requerido",
+  "codigo":"login_requerido"} (o MESMO "auth" de sempre: o painel trava e escolhe a tela pelo "modo_contas").
+  POST /api/auth/primeiro-adm {"usuario","nome","funcao","senha"} (estrito; perfil é sempre "adm") - SÓ LOCAL
+                     (403), 10/min, só enquanto não existe NENHUMA conta (senão 409 "ja_existe"; sem sessão o
+                     before_request já responde 401, porque a rota não é pública). 201 {ok, conta,
+                     permissoes} + cookie de sessão do PC (5 min) para o novo ADM. Apaga o acesso_pin_hash, gira a
+                     acesso_chave e sobe a acesso_versao (todas as sessões de PIN e cookies de aparelho caem) e zera
+                     os bloqueios de login. Erros de validação: 400/409 com "codigo"/"campo" (como as contas).
+  POST /api/auth/login (modo contas) {"usuario","senha"} (estrito; {"pin"} = 400 "codigo":"modo_contas"; tipo/
+                     tamanho errado = 400). Usuário em minúsculas sem espaços nas pontas. Ordem: bloqueio por usuário
+                     -> limite do PC (30/5 min) ou reserva por IP/faixa/trava (rede, cookie de aparelho como sempre)
+                     -> UM PBKDF2 (usuário inexistente confere contra contas.HASH_FICTICIO). Usuário inexistente,
+                     senha errada e conta desativada = o MESMO 401 {"ok":false,"error":"Usuário ou senha
+                     incorretos.","tentativas_restantes"}. Bloqueio por usuário (vale também para o PC das caixas
+                     e para usuários que não existem): CONTA_MAX_ERROS 10 em CONTA_JANELA_S 900 s -> CONTA_BLOQUEIO_S
+                     900 s, respondido com o MESMO 429 do bloqueio por IP ("Muitas tentativas. Tente novamente em
+                     N min."); acerto zera o contador do usuário; "liberar" e revogar também. Sucesso: {ok, conta,
+                     permissoes} + cookie (rede 14 d; PC 5 min) + cookie de aparelho (só rede).
+  GET  /api/auth/status ganha "modo_contas", "precisa_criar_adm" (PC da loja e nenhuma conta), "conta" (pública:
+                     sem senha_hash/sessao_v; null sem sessão), "permissoes" (capacidades do perfil efetivo, em ordem;
+                     [] sem sessão) e, em modo contas, "pode_desligar" = PC das caixas E perfil com "desligar"
+                     (gerente/ADM). "autenticado" em modo contas = há conta logada válida. "pin_configurado" = false
+                     em modo contas. O bloco "seguranca" (falhas, IPs, túneis) em modo contas só para o ADM no PC.
+  POST /api/auth/pin (modo contas) -> 409 "codigo":"modo_contas". POST /api/auth/revogar, /api/auth/liberar e
+                     /api/auth/alertas/visto (modo contas) -> SÓ LOCAL e só ADM logado (403 "sem_permissao" para
+                     gerente/funcionário/sem sessão); revogar encerra TODAS as sessões (acesso_versao + 1), inclusive
+                     a de quem revogou, e mantém as opções de revisão.
+  CLI python server.py --redefinir-senha <usuario>: só com o servidor desligado; lê a senha nova duas vezes (sem
+                     eco; uma linha cada com stdin em pipe), mesmas regras do painel, sessao_v + 1 (derruba as sessões
+                     da conta). Em modo contas --definir-pin/--remover-pin recusam (código 1).
+  Auditoria: login com resultado (ok, senha_errada, usuario_inexistente, conta_inativa, limite) e perfil no
+  sucesso; primeiro_adm. NUNCA usuário, nome, senha ou id de conta no log ou na auditoria.
 
 Contrato v2.8 (Parte A: voz da loja)
 ------------------------------------
@@ -885,7 +938,7 @@ import json
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from flask import Flask, Response, has_request_context, jsonify, redirect, request, send_file, send_from_directory
+from flask import Flask, Response, g, has_request_context, jsonify, redirect, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 from werkzeug.http import parse_cookie
 
@@ -1674,11 +1727,17 @@ def update_config(**changes: Any) -> dict:
 # config.json guarda: acesso_pin_hash, acesso_chave (segredo HMAC) e
 # acesso_versao (incrementa ao trocar/remover o PIN ou ao revogar; derruba todas
 # as sessões). Esses campos NUNCA são devolvidos em respostas nem vão para o log.
+# v2.8 (B3): com pelo menos uma conta em contas.json vale o MODO CONTAS: login por usuário e senha, o token leva a
+# conta ("c"), a versão de sessão dela ("sv") e "l": 1 quando foi emitido para o PC das caixas; o PC das caixas
+# deixa de ser livre e a sessão dele vence em 5 min sem uso (SESSAO_LOCAL_OCIOSA_S). A mesma acesso_chave assina
+# os tokens; o acesso_pin_hash é apagado ao criar o primeiro ADM.
 # ---------------------------------------------------------------------------
 COOKIE_SESSAO = "proclamare_sessao"
 SESSAO_DURACAO_S = 14 * 24 * 3600  # 14 dias
 SESSAO_TETO_S = 90 * 24 * 3600  # teto absoluto desde o login (a renovação não passa disso)
 SESSAO_RENOVAR_ABAIXO_S = 7 * 24 * 3600  # renovação deslizante: reemite se faltar menos que isto
+SESSAO_LOCAL_OCIOSA_S = 300  # v2.8: sessão do PC das caixas (modo contas): 5 min, renovada só com atividade
+CABECALHO_ATIVIDADE = "X-Proclamare-Atividade"  # "1" = houve clique/tecla no painel no último minuto
 PBKDF2_ITERACOES = 200_000
 RE_PIN = re.compile(r"[0-9]{6,8}")
 MSG_PIN_FORMATO = "PIN inválido: use de 6 a 8 números."
@@ -1723,6 +1782,14 @@ LOGIN_OK_MAX_POR_MIN = 10
 LOGIN_LOCAL_MAX = 30  # tentativas de login por 5 min vindas do "PC da loja" (que nem precisa de PIN)
 LOGIN_IP_MAX_CHAVES = 1024
 FALHAS_JANELA_S = 24 * 3600.0
+# v2.8 (B3): bloqueio POR USUÁRIO digitado (soma-se às camadas acima, vale também para o PC das caixas). A chave é o
+# login normalizado, exista a conta ou não: um usuário inexistente trava do mesmo jeito (não revela quem existe).
+# 10 erros em 15 min -> 15 min fixos; a resposta é o MESMO 429 do bloqueio por IP. Só memória (reiniciar zera).
+CONTA_MAX_ERROS = 10
+CONTA_JANELA_S = 900.0
+CONTA_BLOQUEIO_S = 900.0
+CONTA_MAX_CHAVES = 1024
+_login_usuarios: dict[str, dict[str, Any]] = {}   # login normalizado -> {"t": deque[monotonic], "bloq": monotonic}
 _login_lock = threading.Lock()
 # chave ("ip:<ip>" | "rede:<prefixo>") -> {"t": deque[monotonic], "bloq": monotonic, "nivel": int, "fim": monotonic}
 _login_ips: dict[str, dict[str, Any]] = {}
@@ -1791,32 +1858,75 @@ def _assinar(chave: bytes, parte: str) -> str:
     return _b64u(hmac.new(chave, parte.encode("ascii"), hashlib.sha256).digest())
 
 
-def _emitir_token(cfg: dict, iat: float | None = None) -> tuple[str, int]:
+def _sessoes_possiveis(cfg: dict) -> bool:
+    """
+    Pode existir uma sessão válida? Modo PIN: só com PIN configurado (como sempre). Modo contas (v2.8): basta a
+    chave HMAC (o PIN foi apagado ao criar o primeiro ADM; o login garante a chave com _garantir_chave_acesso).
+    """
+    if modo_contas():
+        return _chave_acesso(cfg) is not None
+    return pin_configurado(cfg)
+
+
+def _garantir_chave_acesso() -> dict:
+    """
+    (modo contas) Cria a acesso_chave se ela faltar (config.json apagado/restaurado depois das contas existirem):
+    sem ela ninguém conseguiria entrar, nem no PC das caixas. Devolve o config atual.
+    """
+    cfg = load_config()
+    if _chave_acesso(cfg) is not None:
+        return cfg
+    with _config_lock:
+        cfg = load_config()
+        if _chave_acesso(cfg) is None:
+            cfg["acesso_chave"] = _b64u(secrets.token_bytes(32))
+            cfg["acesso_versao"] = _versao_acesso(cfg) + 1
+            _gravar_config_atomico(cfg)
+            _marcar_versao_vista(cfg)
+        return cfg
+
+
+def _emitir_token(cfg: dict, iat: float | None = None, conta: dict | None = None,
+                  local: bool = False) -> tuple[str, int]:
     """
     Emite o token e devolve (token, segundos_de_vida). `iat` = momento do login
     original (mantido nas renovações); exp = min(agora + 14 dias, iat + 90 dias).
+    v2.8 (modo contas): `conta` acrescenta "c" (id) e "sv" (sessao_v); `local` acrescenta "l": 1 e a vida passa
+    a ser SESSAO_LOCAL_OCIOSA_S (5 min; o teto de 90 dias continua valendo).
     """
     chave = _chave_acesso(cfg)
     assert chave is not None
     agora = int(time.time())
     iat_i = agora if iat is None else int(iat)
-    exp = min(agora + SESSAO_DURACAO_S, iat_i + SESSAO_TETO_S)
-    carga = json.dumps({"exp": exp, "iat": iat_i, "v": _versao_acesso(cfg)}, separators=(",", ":"))
+    vida = SESSAO_LOCAL_OCIOSA_S if (conta is not None and local) else SESSAO_DURACAO_S
+    exp = min(agora + vida, iat_i + SESSAO_TETO_S)
+    dados: dict[str, Any] = {"exp": exp, "iat": iat_i, "v": _versao_acesso(cfg)}
+    if conta is not None:
+        dados["c"] = conta["id"]
+        dados["sv"] = conta["sessao_v"]
+        if local:
+            dados["l"] = 1
+    carga = json.dumps(dados, separators=(",", ":"))
     parte = _b64u(carga.encode("utf-8"))
     return parte + "." + _assinar(chave, parte), max(0, exp - agora)
 
 
-def _expiracao_token(token: str | None, cfg: dict) -> float | None:
-    carga = _carga_token(token, cfg)
-    return None if carga is None else carga[0]
+def _expiracao_token(token: str | None, cfg: dict, local: bool | None = None) -> float | None:
+    carga = _carga_completa(token, cfg, local)
+    return None if carga is None else carga["exp"]
 
 
-def _carga_token(token: str | None, cfg: dict) -> tuple[float, float] | None:
+def _carga_completa(token: str | None, cfg: dict, local: bool | None = None) -> dict[str, Any] | None:
     """
-    Confere formato, assinatura (tempo constante), expiração, versão e o teto de
-    90 dias; devolve (exp, iat). Tokens sem `iat` são inválidos.
+    Confere formato, assinatura (tempo constante), expiração, versão e o teto de 90 dias; devolve
+    {"exp", "iat", "conta", "local"}. Tokens sem `iat` são inválidos.
+    v2.8, modo contas: o token PRECISA ter "c" (token de PIN = inválido) de uma conta que existe, está ATIVA e tem a
+    mesma "sv"; a conta é RELIDA do contas.json (nunca confiar no que o token diz dela). "l" tem de bater com a
+    origem da requisição (`local`; None = calcula pela requisição atual): token do PC das caixas não vale pela rede,
+    e token da rede (ex.: emitido enquanto um túnel suspendia o loopback) não vale no PC das caixas. Em modo PIN
+    "conta" é sempre None e nada disso se aplica.
     """
-    if not token or len(token) > 400 or not pin_configurado(cfg):
+    if not token or len(token) > 400 or not _sessoes_possiveis(cfg):
         return None
     chave = _chave_acesso(cfg)
     partes = token.split(".")
@@ -1839,15 +1949,73 @@ def _carga_token(token: str | None, cfg: dict) -> tuple[float, float] | None:
         return None
     if not (isinstance(v, int) and not isinstance(v, bool) and v == _versao_acesso(cfg)):
         return None
-    return float(exp), float(iat)
+    conta = None
+    if modo_contas():
+        if local is None:
+            local = _requisicao_local() if has_request_context() else False
+        cid, sv, marca_local = carga.get("c"), carga.get("sv"), carga.get("l", 0)
+        if (not isinstance(cid, str) or isinstance(sv, bool) or not isinstance(sv, int)
+                or isinstance(marca_local, bool) or marca_local not in (0, 1) or bool(marca_local) != local):
+            return None
+        conta = conta_por_id(cid)
+        if conta is None or not conta["ativa"] or conta["sessao_v"] != sv:
+            return None
+    return {"exp": float(exp), "iat": float(iat), "conta": conta, "local": bool(local)}
 
 
-def _token_valido_sessao(token: str | None, cfg: dict) -> bool:
-    return _expiracao_token(token, cfg) is not None
+def _carga_token(token: str | None, cfg: dict, local: bool | None = None) -> tuple[float, float] | None:
+    """(exp, iat) de um token válido (veja _carga_completa) ou None."""
+    carga = _carga_completa(token, cfg, local)
+    return None if carga is None else (carga["exp"], carga["iat"])
+
+
+def _token_valido_sessao(token: str | None, cfg: dict, local: bool | None = None) -> bool:
+    return _expiracao_token(token, cfg, local) is not None
+
+
+_SEM_CACHE = object()
+
+
+def conta_da_requisicao() -> dict | None:
+    """
+    v2.8: a conta logada nesta requisição (cópia interna, com senha_hash: NUNCA devolver ao cliente; use
+    conta_publica) ou None (modo PIN, sem sessão, conta desativada/senha trocada). Relida do contas.json uma vez por
+    requisição e guardada em flask.g (o before_request e a rota usam a mesma leitura).
+    """
+    if not has_request_context() or not modo_contas():
+        return None
+    guardada = g.get("_proclamare_conta", _SEM_CACHE)
+    if guardada is _SEM_CACHE:
+        carga = _carga_completa(request.cookies.get(COOKIE_SESSAO), load_config())
+        guardada = None if carga is None else carga["conta"]
+        g._proclamare_conta = guardada
+    return guardada
+
+
+def perfil_da_requisicao() -> str | None:
+    """
+    v2.8: perfil efetivo de quem faz a requisição. Modo contas: o da conta logada (None sem sessão). Modo PIN: o PC
+    da loja e toda sessão de PIN valem como "gerente" (como hoje); None sem sessão.
+    """
+    if not has_request_context():
+        return None
+    if modo_contas():
+        conta = conta_da_requisicao()
+        return None if conta is None else conta["perfil"]
+    if _requisicao_local() or _token_valido_sessao(request.cookies.get(COOKIE_SESSAO), load_config()):
+        return "gerente"
+    return None
+
+
+def _permissoes(perfil: str | None) -> list[str]:
+    """Capacidades do perfil efetivo, em ordem (lista vazia sem sessão)."""
+    return sorted(contas.PODE[perfil]) if perfil in contas.PODE else []
 
 
 def _sessao_ok(cfg: dict | None = None) -> bool:
-    """True se o cliente é local OU traz um cookie de sessão válido."""
+    """True se o cliente é local OU traz um cookie de sessão válido. Modo contas: SÓ com sessão (o PC também)."""
+    if modo_contas():
+        return conta_da_requisicao() is not None
     if _requisicao_local():
         return True
     cfg = load_config() if cfg is None else cfg
@@ -1855,9 +2023,16 @@ def _sessao_ok(cfg: dict | None = None) -> bool:
 
 
 def _exigir_sessao() -> tuple[Response, int] | None:
-    """Chamado no before_request: bloqueia /api/* protegidas para remotos sem sessão."""
+    """
+    Chamado no before_request: bloqueia /api/* protegidas para remotos sem sessão. v2.8 (modo contas): o PC das
+    caixas também precisa de sessão (as checagens "só local" das rotas continuam por cima).
+    """
     if not request.path.startswith("/api/") or request.path in API_PUBLICAS:
         return None
+    if modo_contas():
+        if conta_da_requisicao() is not None:
+            return None
+        return _resp_sem_sessao(load_config())
     if _requisicao_local():
         return None
     cfg = load_config()
@@ -1876,6 +2051,12 @@ MSG_LOOPBACK_SUSPENSO = (
 
 
 def _resp_sem_sessao(cfg: dict) -> tuple[Response, int]:
+    if modo_contas():
+        # v2.8: o MESMO "auth": "pin_requerido" de sempre (o painel trava e mostra a tela de entrar; ele decide entre
+        # PIN e usuário/senha pelo "modo_contas" do /api/auth/status). Sem "pin_nao_configurado": com contas o acesso
+        # pela rede está ligado.
+        return jsonify({"ok": False, "auth": "pin_requerido", "codigo": "login_requerido",
+                        "error": "Entre com seu usuário e senha para continuar."}), 401
     if not pin_configurado(cfg):
         if _tunel_suspende_loopback() and _local_por(
                 request.remote_addr or "", request.host,
@@ -1901,13 +2082,33 @@ def _renovar_sessao(resp: Response) -> Response:
     """
     Renovação deslizante: numa requisição /api/ remota com sessão válida, se faltar
     menos de 7 dias para expirar, reemite o cookie (mesmos atributos) por mais 14 dias.
+    v2.8 (modo contas): a conta é RELIDA (a requisição pode tê-la mudado) e o token renovado leva a mesma conta e o
+    mesmo iat. No PC das caixas o token (5 min) só é renovado em requisição com o cabeçalho
+    X-Proclamare-Atividade: 1 (clique/tecla no painel no último minuto): sondagens sozinhas deixam a sessão vencer.
     """
     if (
-        request.path.startswith("/api/")
-        and request.path not in ("/api/auth/login", "/api/auth/logout")
-        and resp.status_code < 400
-        and not _requisicao_local()
+        not request.path.startswith("/api/")
+        or request.path in ("/api/auth/login", "/api/auth/logout", "/api/auth/primeiro-adm")
+        or resp.status_code >= 400
+        or any(c.startswith(COOKIE_SESSAO + "=") for c in resp.headers.getlist("Set-Cookie"))   # a rota já emitiu
     ):
+        return resp
+    if modo_contas():
+        local = _requisicao_local()
+        if local and request.headers.get(CABECALHO_ATIVIDADE) != "1":
+            return resp
+        cfg = load_config()
+        dados = _carga_completa(request.cookies.get(COOKIE_SESSAO), cfg, local)
+        if dados is None or dados["conta"] is None:
+            return resp
+        restante = dados["exp"] - time.time()
+        if not local and restante >= SESSAO_RENOVAR_ABAIXO_S:
+            return resp
+        novo, vida = _emitir_token(cfg, iat=dados["iat"], conta=dados["conta"], local=local)
+        if vida > restante + (0 if local else 60):   # no teto de 90 dias não há o que renovar
+            _definir_cookie_sessao(resp, novo, vida)
+        return resp
+    if not _requisicao_local():
         cfg = load_config()
         carga = _carga_token(request.cookies.get(COOKIE_SESSAO), cfg)
         if carga is not None and carga[0] - time.time() < SESSAO_RENOVAR_ABAIXO_S:
@@ -2035,7 +2236,7 @@ def _aparelho_valido(token: str | None, cfg: dict) -> str | None:
 
 def _aparelho_info(token: str | None, cfg: dict) -> tuple[str, float] | None:
     """(id, exp) do cookie de aparelho legítimo (assinatura, validade, versão de acesso); senão None."""
-    if not token or len(token) > 300 or not pin_configurado(cfg):
+    if not token or len(token) > 300 or not _sessoes_possiveis(cfg):
         return None
     chave = _chave_aparelho(cfg)
     partes = token.split(".")
@@ -2087,6 +2288,7 @@ def _login_resetar_global() -> None:
         _login_trava_manual = False
         _login_trava_orcamento.clear()
         _login_travas.clear()
+        _login_usuarios.clear()
     _seg_marcar_liberado(zerar_niveis=True, zerar_travas=True)
 
 
@@ -2109,6 +2311,7 @@ def _login_liberar(zerar_escalada: bool = False) -> None:
         _login_trava_ate = 0.0
         _login_trava_manual = False
         _login_trava_orcamento.clear()
+        _login_usuarios.clear()   # v2.8: "liberar" também tira os bloqueios por usuário
     _seg_marcar_liberado(zerar_niveis=zerar_escalada)
 
 
@@ -2295,6 +2498,70 @@ def _login_sucesso(ip: str, aparelho: str | None = None) -> None:
         rede = _login_ips.get(chave_rede) if chave_rede else None
         if rede is not None and rede["t"]:
             rede["t"].pop()
+
+
+# --- v2.8 (B3): bloqueio por usuário digitado ------------------------------------------------------------------
+def _usuario_chave(usuario: Any) -> str:
+    """Chave do bloqueio por usuário: o login normalizado; formato impossível vira uma chave própria (curta)."""
+    normal = contas.normalizar_usuario(usuario)
+    if normal is not None:
+        return "u:" + normal
+    return "x:" + hashlib.sha256(str(usuario).strip().lower().encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _usuario_limpar(agora: float) -> None:
+    """(com _login_lock) Descarta tentativas fora da janela e registros vazios; limita o tamanho."""
+    for chave in list(_login_usuarios):
+        reg = _login_usuarios[chave]
+        while reg["t"] and agora - reg["t"][0] > CONTA_JANELA_S:
+            reg["t"].popleft()
+        if not reg["t"] and agora >= reg["bloq"]:
+            del _login_usuarios[chave]
+    while len(_login_usuarios) >= CONTA_MAX_CHAVES:   # só sob ataque de muitos usuários
+        del _login_usuarios[min(_login_usuarios, key=lambda k: _login_usuarios[k]["bloq"])]
+
+
+def _usuario_reservar(chave: str) -> int:
+    """
+    RESERVA uma tentativa para o usuário ANTES do PBKDF2 (rajada paralela não passa de CONTA_MAX_ERROS). Devolve 0
+    se pode tentar, senão os segundos até o fim do bloqueio.
+    """
+    agora = time.monotonic()
+    with _login_lock:
+        _usuario_limpar(agora)
+        reg = _login_usuarios.setdefault(chave, {"t": deque(), "bloq": 0.0})
+        if agora < reg["bloq"]:
+            return _segundos(reg["bloq"] - agora)
+        if len(reg["t"]) >= CONTA_MAX_ERROS:   # tentativas pendentes já esgotaram o limite
+            return _segundos(CONTA_BLOQUEIO_S)
+        reg["t"].append(agora)
+        return 0
+
+
+def _usuario_falhou(chave: str) -> int:
+    """Erro (a tentativa já foi reservada). Se completou CONTA_MAX_ERROS na janela, bloqueia e devolve os segundos."""
+    agora = time.monotonic()
+    with _login_lock:
+        reg = _login_usuarios.setdefault(chave, {"t": deque(), "bloq": 0.0})
+        if len(reg["t"]) >= CONTA_MAX_ERROS and agora >= reg["bloq"]:
+            reg["bloq"] = agora + CONTA_BLOQUEIO_S
+            reg["t"].clear()
+            return int(CONTA_BLOQUEIO_S)
+        return 0
+
+
+def _usuario_sucesso(chave: str) -> None:
+    """Acerto: zera o contador daquele usuário."""
+    with _login_lock:
+        _login_usuarios.pop(chave, None)
+
+
+def _usuario_desfazer(chave: str) -> None:
+    """Devolve a tentativa reservada que nem chegou a ser conferida (o IP/PC estava bloqueado)."""
+    with _login_lock:
+        reg = _login_usuarios.get(chave)
+        if reg is not None and reg["t"]:
+            reg["t"].pop()
 
 
 def _login_niveis_para_disco() -> dict[str, dict[str, Any]]:
@@ -2637,12 +2904,23 @@ def auth_status() -> Response:
     cfg = load_config()
     _sincronizar_versao(cfg)
     local = _requisicao_local()
+    modo = modo_contas()
+    conta = conta_da_requisicao() if modo else None
+    perfil = perfil_da_requisicao()
     resp: dict[str, Any] = {
         "local": local,
-        "pin_configurado": pin_configurado(cfg),
-        "autenticado": local or _token_valido_sessao(request.cookies.get(COOKIE_SESSAO), cfg),
+        "pin_configurado": pin_configurado(cfg) and not modo,   # em modo contas o PIN não vale mais
+        "autenticado": (conta is not None) if modo else (
+            local or _token_valido_sessao(request.cookies.get(COOKIE_SESSAO), cfg)),
         # v2.5: o botão "Desligar o Proclamare" só existe no PC da loja (a rota é somente local).
-        "pode_desligar": local,
+        # v2.8 (modo contas): e só para quem pode desligar (gerente/ADM logados no PC das caixas).
+        "pode_desligar": (local and perfil is not None and contas.pode(perfil, "desligar")) if modo else local,
+        # v2.8 (B3): contas e perfis. "conta" nunca traz senha_hash/sessao_v; "permissoes" = capacidades do perfil
+        # efetivo (modo PIN: as do gerente para o PC da loja e para sessões de PIN; [] sem sessão).
+        "modo_contas": modo,
+        "precisa_criar_adm": local and not modo,
+        "conta": conta_publica(conta) if conta is not None else None,
+        "permissoes": _permissoes(perfil),
         # v2.7.1: True quando o endereço E o Host são de loopback mas o painel NÃO é tratado como o PC da loja
         # porque a vigia achou um encaminhamento de rede para a porta (com PIN configurado). Só o booleano:
         # nenhum nome de processo sai numa rota pública.
@@ -2651,7 +2929,9 @@ def auth_status() -> Response:
             and _local_por(request.remote_addr or "", request.host,
                            any(h in request.headers for h in CABECALHOS_DE_PROXY), ignorar_tunel=True)),
     }
-    if local:  # só o PC da loja vê sinais de ataque
+    # Só o PC da loja vê sinais de ataque; v2.8 (modo contas): e só com a capacidade "seguranca" (ADM) - os
+    # últimos logins trazem IPs (dado pessoal) e o painel de segurança/rede é do ADM.
+    if local and (not modo or (perfil is not None and contas.pode(perfil, "seguranca"))):
         agora = time.monotonic()
         with _login_lock:
             _login_limpar(agora)
@@ -2672,9 +2952,96 @@ def auth_status() -> Response:
     return resposta
 
 
+MSG_LOGIN_ERRADO = "Usuário ou senha incorretos."
+LOGIN_USUARIO_MAX_CHARS = 200   # corpo absurdo = 400 (o formato válido tem no máximo 30)
+
+
+def _login_por_conta(dados: dict) -> Any:
+    """
+    v2.8 (B3) - POST /api/auth/login em modo contas: {"usuario", "senha"} (esquema estrito; {"pin"} = 400
+    "modo_contas"). Ordem: bloqueio por usuário (reserva) -> limite do PC (local) ou reserva por IP/faixa/trava
+    (rede) -> UM PBKDF2 (usuário inexistente confere contra contas.HASH_FICTICIO: mesmo custo) -> resultado.
+    Usuário inexistente, senha errada e conta desativada dão a MESMA resposta 401 (MSG_LOGIN_ERRADO +
+    tentativas_restantes). Nunca loga nem audita o usuário ou a senha.
+    """
+    if "pin" in dados:
+        raise ErroContas("O Proclamare agora usa usuário e senha.", 400, "modo_contas", "pin")
+    exigir_chaves(dados, ("usuario", "senha"))
+    usuario, senha = dados.get("usuario"), dados.get("senha")
+    if (not isinstance(usuario, str) or not isinstance(senha, str) or not usuario.strip() or not senha
+            or len(usuario) > LOGIN_USUARIO_MAX_CHARS or len(senha) > contas.SENHA_MAX):
+        raise ErroApi("Informe o usuário e a senha.")
+    cfg = load_config()
+    _sincronizar_versao(cfg)
+    ip = request.remote_addr or "?"
+    local = _requisicao_local()
+    restantes = LOGIN_IP_MAX_ERROS
+    aparelho = _aparelho_valido(request.cookies.get(COOKIE_APARELHO), cfg) if not local else None
+    suspenso = (not local and _tunel_suspende_loopback() and _local_por(
+        ip, request.host, any(h in request.headers for h in CABECALHOS_DE_PROXY), ignorar_tunel=True))
+    chave = _usuario_chave(usuario)
+    espera = _usuario_reservar(chave)
+    if espera:
+        # MESMO 429 do bloqueio por IP: não diz que é o usuário (nem se ele existe)
+        return _resp_429(espera, suspenso=suspenso)
+    if local:
+        if excedeu_limite("login-local", LOGIN_LOCAL_MAX, 300.0):
+            _usuario_desfazer(chave)
+            return _resp_429(300)
+    else:
+        permitida, bloqueado_s, motivo = _login_reservar(ip, aparelho)
+        if not permitida:
+            _usuario_desfazer(chave)
+            return _resp_429(bloqueado_s, motivo == "travado", motivo, suspenso, _login_trava_e_manual())
+    conta = conta_por_usuario(usuario)
+    # Um PBKDF2 sempre (o hash fictício tem o mesmo custo); compare_digest dentro de conferir_senha.
+    certo = contas.conferir_senha(senha, conta["senha_hash"] if conta is not None else contas.HASH_FICTICIO)
+    if not (certo and conta is not None and conta["ativa"]):
+        resultado = ("usuario_inexistente" if conta is None else
+                     "conta_inativa" if not conta["ativa"] else "senha_errada")
+        bloqueio_usuario = _usuario_falhou(chave)
+        if not local:
+            bloqueado_s, restantes, motivo = _login_falhou(ip, aparelho)
+            _seg_registrar_falha()
+            auditar("login", resultado=resultado, bloqueado_s=(bloqueado_s or bloqueio_usuario) or None,
+                    motivo=motivo or ("usuario" if bloqueio_usuario else None))
+            if bloqueado_s:
+                if motivo == "ip":
+                    _seg_persistir_niveis()   # o nível de escalada sobrevive a reinício
+                return _resp_429(bloqueado_s, motivo == "travado", motivo, suspenso, _login_trava_e_manual())
+        else:
+            auditar("login", resultado=resultado, bloqueado_s=bloqueio_usuario or None,
+                    motivo="usuario" if bloqueio_usuario else None)
+        log.warning("Login com usuário ou senha incorretos (origem %s).", "local" if local else "remoto")
+        if bloqueio_usuario:
+            return _resp_429(bloqueio_usuario, suspenso=suspenso)
+        return jsonify({"ok": False, "error": MSG_LOGIN_ERRADO, "tentativas_restantes": restantes}), 401
+    _usuario_sucesso(chave)
+    novo = False
+    if not local:
+        _login_sucesso(ip, aparelho)
+        if excedeu_limite("login-ok:" + ip, LOGIN_OK_MAX_POR_MIN, 60.0):   # logins CERTOS em rajada também têm teto
+            auditar("login", resultado="limite")
+            return _resp_429(60, suspenso=suspenso)
+        novo = _seg_registrar_login(ip)
+    cfg = _garantir_chave_acesso()
+    auditar("login", resultado="ok", perfil=conta["perfil"], ip_novo=int(novo) if not local else None)
+    log.info("Login por conta bem-sucedido (%s)%s.", "local" if local else "remoto",
+             " - aparelho NOVO" if novo else "")
+    resp = jsonify({"ok": True, "conta": conta_publica(conta), "permissoes": _permissoes(conta["perfil"])})
+    token, vida = _emitir_token(cfg, conta=conta, local=local)
+    _definir_cookie_sessao(resp, token, vida)
+    if not local:   # o aparelho passa a ser "conhecido" (só afeta o limite de tentativas de login; não dá acesso)
+        _definir_cookie_aparelho(resp, _emitir_cookie_aparelho(cfg, aparelho))
+    return resp
+
+
 @app.post("/api/auth/login")
 def auth_login() -> Any:
-    pin = corpo_json().get("pin")
+    dados = corpo_json()
+    if modo_contas():
+        return _login_por_conta(dados)
+    pin = dados.get("pin")
     if not isinstance(pin, str) or not RE_PIN.fullmatch(pin):
         raise ErroApi(MSG_PIN_FORMATO)
     cfg = load_config()
@@ -2771,7 +3138,10 @@ def auth_pin() -> Response:
     Define/troca (str) ou remove (null) o PIN. Somente no computador da loja. v2.7.1: aceita as opções de
     revisão (desativar_remotos, remover_remotos, restaurar_mensagens, limpar_fila) para desfazer o que
     aparelhos remotos deixaram (horários, mensagens, listas, atalhos), e responde com o que foi feito.
+    v2.8: em modo contas o PIN não existe mais: 409 "modo_contas" (para todos, antes de qualquer outra checagem).
     """
+    if modo_contas():
+        raise ErroContas("O Proclamare agora usa contas: o PIN não vale mais.", 409, "modo_contas")
     if not _requisicao_local():
         raise ErroApi("Defina o PIN no computador da loja.", 403)
     dados = corpo_json()
@@ -2794,9 +3164,10 @@ def auth_revogar() -> Response:
     """
     Derruba todas as sessões (acesso_versao + 1) sem trocar o PIN. Somente local. v2.7.1: as mesmas opções
     de revisão de /api/auth/pin (padrão: desativar os horários criados/alterados por aparelhos remotos).
+    v2.8 (modo contas): só um ADM logado NO PC das caixas (a rota é pública para devolver o próprio 403); encerra
+    TODAS as sessões de todas as contas, inclusive a de quem revogou.
     """
-    if not _requisicao_local():
-        raise ErroApi("Revogue as sessões no computador da loja.", 403)
+    _exigir_adm_local("Revogue as sessões no computador da loja.")
     opcoes = _opcoes_de_revisao(corpo_json())
     with _config_lock:
         cfg = load_config()
@@ -2815,9 +3186,9 @@ def auth_liberar() -> Response:
     """
     "Liberar login pela rede" (v2.7.1, P07). Somente local. Zera os bloqueios de login (por IP e global) SEM
     derrubar as sessões nem trocar o PIN: quem foi barrado por um ataque espalhado volta a poder entrar.
+    v2.8 (modo contas): só ADM no PC das caixas; também tira os bloqueios por usuário.
     """
-    if not _requisicao_local():
-        raise ErroApi("Libere o login no computador da loja.", 403)
+    _exigir_adm_local("Libere o login no computador da loja.")
     corpo = corpo_json()
     exigir_chaves(corpo, ("zerar_escalada",))
     zerar = corpo.get("zerar_escalada", False)
@@ -2831,15 +3202,68 @@ def auth_liberar() -> Response:
 
 @app.post("/api/auth/alertas/visto")
 def auth_alertas_visto() -> Response:
-    """Marca os alertas de segurança como vistos (o aviso do painel some até haver novidade). Só local."""
-    if not _requisicao_local():
-        raise ErroApi("Disponível só no PC do Proclamare.", 403)
+    """Marca os alertas de segurança como vistos (o aviso do painel some até haver novidade). Só local.
+    v2.8 (modo contas): só ADM no PC das caixas."""
+    _exigir_adm_local("Disponível só no PC do Proclamare.")
     if corpo_json():
         raise ErroApi("Campo desconhecido.")
     agora = time.time()
     _seg_mutar(lambda seg: seg.update(visto_ate=agora, novos=[]))
     auditar("alertas_visto")
     return jsonify({"ok": True})
+
+
+def _exigir_adm_local(msg_so_local: str) -> None:
+    """
+    Rotas de segurança do PC das caixas: sempre SÓ LOCAL (403 `msg_so_local`); v2.8, em modo contas, também só para
+    um ADM logado (a conta é relida do contas.json nesta requisição; gerente/funcionário/sem sessão = 403).
+    """
+    if not _requisicao_local():
+        raise ErroApi(msg_so_local, 403)
+    if modo_contas() and perfil_da_requisicao() != "adm":
+        raise ErroContas("Só um administrador pode fazer isso.", 403, "sem_permissao")
+
+
+PRIMEIRO_ADM_MAX_POR_MIN = 10
+
+
+@app.post("/api/auth/primeiro-adm")
+def auth_primeiro_adm() -> Any:
+    """
+    v2.8 (B3/B6): cria a PRIMEIRA conta (sempre ADM) - só no PC das caixas e só enquanto não existe nenhuma conta
+    (senão 409 "ja_existe"). Corpo estrito {"usuario","nome","funcao","senha"} (perfil não é do cliente). Depois:
+    apaga o acesso_pin_hash, gira a acesso_chave e sobe a acesso_versao (TODAS as sessões de PIN caem, também os
+    cookies de aparelho), zera os bloqueios de login e já abre a sessão do PC (5 min sem uso) para o novo ADM.
+    Auditoria: só "primeiro_adm" (sem nome nem usuário).
+    """
+    if not _requisicao_local():
+        raise ErroApi("Crie a conta de administrador no PC das caixas.", 403)
+    if excedeu_limite("primeiro-adm", PRIMEIRO_ADM_MAX_POR_MIN, 60.0):
+        return _resp_429(60)
+    dados = corpo_json()
+    exigir_chaves(dados, ("usuario", "nome", "funcao", "senha"))
+    if modo_contas():
+        raise ErroContas("Já existe uma conta de administrador.", 409, "ja_existe")
+    try:
+        conta = criar_conta(dict(dados, perfil="adm"), None)
+    except ErroContas as exc:
+        if exc.status == 403:   # outra aba criou o ADM no meio (criar_conta confere de novo sob o lock)
+            raise ErroContas("Já existe uma conta de administrador.", 409, "ja_existe") from None
+        raise
+    with _config_lock:
+        cfg = load_config()
+        cfg.pop("acesso_pin_hash", None)
+        cfg["acesso_chave"] = _b64u(secrets.token_bytes(32))
+        cfg["acesso_versao"] = _versao_acesso(cfg) + 1
+        _gravar_config_atomico(cfg)
+        _marcar_versao_vista(cfg)
+    _login_resetar_global()
+    auditar("primeiro_adm", resultado="ok")
+    log.info("Primeira conta de administrador criada no PC das caixas: o PIN deixou de valer.")
+    resp = jsonify({"ok": True, "conta": conta_publica(conta), "permissoes": _permissoes("adm")})
+    token, vida = _emitir_token(cfg, conta=conta, local=True)
+    _definir_cookie_sessao(resp, token, vida)
+    return resp, 201
 
 
 # ---------------------------------------------------------------------------
@@ -6502,14 +6926,15 @@ def _corpo_grande_permitido(metodo: str, caminho: str, cabecalhos: Any, origem: 
         return False
     try:
         # chaves do waitress: maiúsculas, "-" vira "_" (CABECALHOS_DE_PROXY no mesmo formato)
-        if _local_por(origem, cabecalhos.get("HOST", ""),
-                      any(h.upper().replace("-", "_") in cabecalhos for h in CABECALHOS_DE_PROXY)):
+        local = _local_por(origem, cabecalhos.get("HOST", ""),
+                           any(h.upper().replace("-", "_") in cabecalhos for h in CABECALHOS_DE_PROXY))
+        if local and not modo_contas():   # v2.8: em modo contas o PC das caixas também precisa de sessão
             return True
         bruto = cabecalhos.get("COOKIE", "")
         if not bruto or len(bruto) > 4096:
             return False
         token = parse_cookie(bruto).get(COOKIE_SESSAO)
-        return _token_valido_sessao(token, load_config())
+        return _token_valido_sessao(token, load_config(), local)
     except Exception:  # noqa: BLE001 - cabeçalho torto: sem permissão, nunca erro
         return False
 
@@ -10253,6 +10678,10 @@ def _cli_pin(remover: bool) -> int:
         print("Desligue o Proclamare antes (Menu Iniciar → Desligar Proclamare) ou use as "
               "Configurações no PC da loja.")
         return 1
+    if modo_contas():   # v2.8: com contas o PIN não vale mais (remover também apagaria a chave das sessões)
+        print("O Proclamare agora usa contas: o PIN nao vale mais. Para recuperar uma conta use "
+              "python server.py --redefinir-senha <usuario>")
+        return 1
     try:
         if remover:
             aplicar_pin(None)
@@ -10274,11 +10703,66 @@ def _cli_pin(remover: bool) -> int:
         return 1
 
 
+def _ler_senha(pergunta: str) -> str:
+    """Como _ler_pin, mas sem strip (espaços fazem parte da senha): só tira a quebra de linha do stdin em pipe."""
+    if sys.stdin is not None and sys.stdin.isatty():
+        return getpass.getpass(pergunta)
+    linha = sys.stdin.readline() if sys.stdin is not None else ""
+    if not linha:
+        raise EOFError
+    return linha.rstrip("\r\n")
+
+
+_MSG_SENHA_CLI = {
+    "tamanho": f"A senha precisa ter de {contas.SENHA_MIN} a {contas.SENHA_MAX} caracteres.",
+    "caractere": "A senha tem um caractere que nao pode ser usado.",
+    "tipo": "Senha invalida.",
+}
+
+
+def _cli_redefinir_senha(usuario: str) -> int:
+    """
+    v2.8 (B3): `python server.py --redefinir-senha <usuario>` - recuperação da conta no PC das caixas (ex.: o último
+    ADM esqueceu a senha). Só com o servidor DESLIGADO; lê a senha nova duas vezes (sem eco no terminal; uma linha
+    cada com stdin em pipe) e grava com as MESMAS regras do painel (alterar_conta: sessao_v + 1 derruba as sessões
+    abertas da conta). Nunca imprime a senha nem o usuário; mensagens só em ASCII/cp1252 (console do Windows).
+    """
+    if _servidor_no_ar():
+        print("Desligue o Proclamare antes (Menu Iniciar, \"Desligar Proclamare\") e rode de novo.")
+        return 1
+    try:
+        conta = conta_por_usuario(usuario)
+        if conta is None:
+            print("Usuario nao encontrado. Nada foi alterado.")
+            return 1
+        senha = _ler_senha(f"Nova senha ({contas.SENHA_MIN} a {contas.SENHA_MAX} caracteres): ")
+        _limpa, _campo, motivo = contas.validar_alteracao({"senha": senha})
+        if motivo:
+            print(_MSG_SENHA_CLI.get(motivo, "Senha invalida.") + " Nada foi alterado.")
+            return 1
+        if _ler_senha("Repita a senha: ") != senha:
+            print("As duas senhas nao sao iguais. Nada foi alterado.")
+            return 1
+        alterar_conta(conta["id"], {"senha": senha}, conta["versao"], None)
+        print("Senha redefinida. As sessoes abertas dessa conta foram encerradas.")
+        return 0
+    except ErroContas as exc:
+        print("Nao foi possivel redefinir a senha" + (" (a senha nao pode ser igual ao usuario)."
+                                                       if exc.codigo == "igual_usuario" else f" ({exc.codigo})."))
+        return 1
+    except (OSError, EOFError, KeyboardInterrupt) as exc:
+        print(f"Nao foi possivel concluir ({type(exc).__name__}). Nada foi alterado.")
+        return 1
+
+
 if __name__ == "__main__":
     _args = sys.argv[1:]
     if _args == ["--definir-pin"] or _args == ["--remover-pin"]:
         sys.exit(_cli_pin(remover=_args[0] == "--remover-pin"))
+    if len(_args) == 2 and _args[0] == "--redefinir-senha":
+        sys.exit(_cli_redefinir_senha(_args[1]))
     if _args:
-        print("Uso: python server.py [--definir-pin | --remover-pin]   (sem argumentos: inicia o servidor)")
+        print("Uso: python server.py [--definir-pin | --remover-pin | --redefinir-senha <usuario>]   "
+              "(sem argumentos: inicia o servidor)")
         sys.exit(2)
     main()
