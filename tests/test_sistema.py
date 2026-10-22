@@ -437,7 +437,7 @@ class TesteDesligarIntegracao(unittest.TestCase):
             raise unittest.SkipTest("nenhuma porta livre entre 8900 e 8940")
         cls.base = Path(tempfile.mkdtemp(prefix="proclamare-desligar-"))
         # Cópia mínima: sem config.json, sem .venv, sem logs do projeto.
-        for nome in ("server.py", "musicas.py", "programacao.py", "waitress_limites.py", "Proclamare.pyw"):
+        for nome in ("server.py", "musicas.py", "programacao.py", "contas.py", "waitress_limites.py", "Proclamare.pyw"):
             shutil.copy2(RAIZ / nome, cls.base / nome)
         shutil.copytree(RAIZ / "som", cls.base / "som", ignore=shutil.ignore_patterns("__pycache__"))
         (cls.base / "musicas").mkdir()

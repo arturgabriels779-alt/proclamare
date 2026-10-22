@@ -74,6 +74,11 @@ def sandbox_de_dados(server: object) -> Path:
     server.CONFIG_PATH = base / "config.json"        # type: ignore[attr-defined]
     server._config_cache = {}                        # type: ignore[attr-defined]
     server._config_assinatura = None                 # type: ignore[attr-defined]
-    server.AUDIO_DIR = base / "audios_temp"          # type: ignore[attr-defined]
+    # B2: o contas.json acompanha o CONFIG_PATH; falha FECHADO se ainda assim apontasse para fora do temporário
+    # (e zera o cache do armazém, que pode ter lido o arquivo de outra pasta).
+    if not dentro_do_temporario(server._contas_path()):   # type: ignore[attr-defined]
+        raise RuntimeError("ABORTADO: o contas.json dos testes não está na pasta temporária isolada.")
+    server._contas_arquivo.resetar()                 # type: ignore[attr-defined]
+    server.AUDIO_DIR = base / "audios_temp"         # type: ignore[attr-defined]
     server.AUDIO_DIR.mkdir(parents=True, exist_ok=True)   # type: ignore[attr-defined]
     return base

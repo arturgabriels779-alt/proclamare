@@ -102,4 +102,4 @@ jobs:
         continue-on-error: true
         timeout-minutes: 5
         run: |
-          & "$env:RUNNER_TEMP\ferramentas\Scripts\python.exe" -I -m bandit -r server.py musicas.py programacao.py waitress_limites.py Proclamare.pyw som -ll --exit-zero
+          & "$env:RUNNER_TEMP\ferramentas\Scripts\python.exe" -I -m bandit -r server.py musicas.py programacao.py contas.py waitress_limites.py Proclamare.pyw som -ll --exit-zero

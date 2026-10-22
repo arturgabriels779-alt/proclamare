@@ -18,6 +18,12 @@ def _dados(**kw):
     return base
 
 
+class SurrogateTests(unittest.TestCase):
+    def test_senha_com_surrogate_solto_recusada(self):
+        self.assertEqual(contas.validar_conta_nova(_dados(senha="abcdefgh\ud800x"), [])[1:], ("senha", "caractere"))
+        self.assertEqual(contas.validar_alteracao({"senha": "abcdefgh\udc00x"})[1:], ("senha", "caractere"))
+
+
 class MatrizTests(unittest.TestCase):
     def test_matriz_funcionario_so_anuncia(self):
         for cap in contas.CAPACIDADES:

@@ -899,6 +899,7 @@ from som.motor import frase_de_teste, gerar_bipe, texto_para_sapi
 # Acervo "Minhas músicas" (contrato v2.4). O módulo só usa stdlib na carga (mutagen entra
 # de forma tardia); nada toca o disco até a primeira consulta ou o main().
 import musicas
+import contas
 import programacao
 import waitress_limites
 
@@ -7211,6 +7212,209 @@ _listas_arquivo = programacao.ArquivoJson(
     _listas_path, lambda: {"versao": 0, "listas": [], "spotify": [], "spotify_versao": 0},
     lambda bruto: _sanear_listas(bruto),
     lambda caminho: _restringir_acl_windows(caminho), rotulo=LISTAS_ARQUIVO, prefixo=".listas.")
+
+
+# ---------------------------------------------------------------------------
+# Contas (v2.8 B2): armazenamento em contas.json ao lado do config.json
+# ---------------------------------------------------------------------------
+# Sem o arquivo (ou sem nenhuma conta) vale o modo PIN de sempre. Nunca se guarda nem se devolve a senha em
+# texto: só `senha_hash` (PBKDF2, mesmo formato do PIN). Contas nunca são apagadas, só desativadas.
+CONTAS_ARQUIVO = "contas.json"
+_CONTA_ID_RE = re.compile(r"^[0-9a-f]{8}$")
+
+
+class ErroContas(ErroApi):
+    """Erro de contas: além de "error" leva "codigo" (estável) e "campo" (do corpo), se houver."""
+
+    def __init__(self, mensagem: str, status: int = 400, codigo: str | None = None,
+                 campo: str | None = None) -> None:
+        super().__init__(mensagem, status)
+        self.codigo = codigo
+        self.campo = campo
+
+
+@app.errorhandler(ErroContas)
+def _tratar_erro_contas(e: ErroContas) -> tuple[Response, int]:
+    corpo: dict[str, Any] = {"ok": False, "error": e.mensagem}
+    for chave, valor in (("codigo", e.codigo), ("campo", e.campo)):
+        if valor is not None:
+            corpo[chave] = valor
+    return jsonify(corpo), e.status
+
+
+def _contas_path() -> Path:
+    """contas.json na pasta do config.json (os testes trocam CONFIG_PATH e levam este junto)."""
+    return CONFIG_PATH.with_name(CONTAS_ARQUIVO)
+
+
+def _agora_iso() -> str:
+    """Instante atual ISO com fuso (como os demais carimbos do servidor)."""
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _int_nao_negativo(v: Any, padrao: int = 0) -> int:
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else padrao
+
+
+def _id_de_conta_ou_none(v: Any) -> str | None:
+    return v if isinstance(v, str) and _CONTA_ID_RE.fullmatch(v) else None
+
+
+def _sanear_conta(c: Any) -> dict | None:
+    """Uma conta do arquivo, no formato exato, ou None (conta torta é descartada, como na Programação)."""
+    if not isinstance(c, dict):
+        return None
+    cid, usuario = c.get("id"), contas.normalizar_usuario(c.get("usuario"))
+    nome, _ = programacao.validar_texto(c.get("nome"), contas.NOME_MAX, multilinha=False)
+    funcao, _ = programacao.validar_texto(c.get("funcao"), contas.FUNCAO_MAX, multilinha=False)
+    hash_ = c.get("senha_hash")
+    if (not isinstance(cid, str) or not _CONTA_ID_RE.fullmatch(cid) or usuario is None or not nome
+            or not funcao or c.get("perfil") not in contas.PERFIS or not isinstance(c.get("ativa"), bool)
+            or not isinstance(hash_, str) or len(hash_.split("$")) != 4):
+        return None
+    return {"id": cid, "usuario": usuario, "nome": nome, "funcao": funcao, "perfil": c["perfil"],
+            "ativa": c["ativa"], "senha_hash": hash_, "sessao_v": _int_nao_negativo(c.get("sessao_v")),
+            "versao": max(1, _int_nao_negativo(c.get("versao"), 1)),
+            "criada_em": str(c.get("criada_em", ""))[:40], "criada_por": _id_de_conta_ou_none(c.get("criada_por")),
+            "alterada_em": str(c.get("alterada_em", ""))[:40],
+            "alterada_por": _id_de_conta_ou_none(c.get("alterada_por"))}
+
+
+def _sanear_contas(bruto: Any) -> dict:
+    doc: dict[str, Any] = {"versao": 0, "contas": []}
+    if not isinstance(bruto, dict):
+        return doc
+    doc["versao"] = _int_nao_negativo(bruto.get("versao"))
+    lista = bruto.get("contas")
+    ids, usuarios = set(), set()
+    for c in (lista if isinstance(lista, list) else []):
+        conta = _sanear_conta(c)
+        if conta is None or conta["id"] in ids or conta["usuario"] in usuarios:
+            continue
+        ids.add(conta["id"])
+        usuarios.add(conta["usuario"])
+        doc["contas"].append(conta)
+        if len(doc["contas"]) >= contas.CONTAS_MAX:
+            break
+    return doc
+
+
+# Armazém: o MESMO das listas/programação (cache por os.stat, gravação atômica com ACL, cópia do corrompido).
+_contas_arquivo = programacao.ArquivoJson(
+    _contas_path, lambda: {"versao": 0, "contas": []}, lambda bruto: _sanear_contas(bruto),
+    lambda caminho: _restringir_acl_windows(caminho), rotulo=CONTAS_ARQUIVO, prefixo=".contas.")
+
+
+def modo_contas() -> bool:
+    """Existe pelo menos uma conta (ativa ou não)? Senão vale o modo PIN."""
+    return bool(_contas_arquivo.ler()["contas"])
+
+
+def conta_por_id(conta_id: Any) -> dict | None:
+    """Cópia da conta (com senha_hash e sessao_v: uso interno, nunca devolver ao cliente) ou None."""
+    for c in _contas_arquivo.ler()["contas"]:
+        if c["id"] == conta_id:
+            return copy.deepcopy(c)
+    return None
+
+
+def conta_por_usuario(usuario: Any) -> dict | None:
+    """Cópia da conta pelo login (strip + minúsculas) ou None."""
+    u = contas.normalizar_usuario(usuario)
+    if u is None:
+        return None
+    for c in _contas_arquivo.ler()["contas"]:
+        if c["usuario"] == u:
+            return copy.deepcopy(c)
+    return None
+
+
+def conta_publica(conta: dict) -> dict:
+    """A conta como o cliente pode ver: sem senha_hash nem sessao_v."""
+    return {k: v for k, v in conta.items() if k not in ("senha_hash", "sessao_v")}
+
+
+def _erro_validacao_conta(campo: str | None, motivo: str | None) -> ErroContas:
+    if campo == "usuario" and motivo == "duplicado":
+        return ErroContas("Esse usuário já existe.", 409, "usuario_repetido", "usuario")
+    if motivo == "limite":
+        return ErroContas(f"Limite de {contas.CONTAS_MAX} contas atingido.", 409, "limite_contas", campo)
+    return ErroContas(f"Valor inválido em '{campo}'.", 400, motivo, campo)
+
+
+def criar_conta(dados: Any, ator: dict | None) -> dict:
+    """
+    Cria uma conta e devolve a cópia interna dela. `ator` = conta que cria; None SÓ para o primeiro ADM
+    (B3, pelo PC das caixas). Com ator, o perfil criado tem de estar na hierarquia dele (senão 403).
+    """
+    with _contas_arquivo.lock:
+        doc = copy.deepcopy(_contas_arquivo.ler())
+        limpa, campo, motivo = contas.validar_conta_nova(dados, doc["contas"])
+        if limpa is None:
+            raise _erro_validacao_conta(campo, motivo)
+        if ator is not None and not contas.pode_gerenciar(ator.get("perfil", ""), limpa["perfil"]):
+            raise ErroContas("Seu perfil não pode criar esse tipo de conta.", 403, "sem_permissao", "perfil")
+        agora = _agora_iso()
+        usados = {c["id"] for c in doc["contas"]}
+        novo_id = secrets.token_hex(4)
+        while novo_id in usados:
+            novo_id = secrets.token_hex(4)
+        por = ator.get("id") if ator else None
+        conta = {"id": novo_id, "usuario": limpa["usuario"], "nome": limpa["nome"], "funcao": limpa["funcao"],
+                 "perfil": limpa["perfil"], "ativa": True, "senha_hash": contas.hash_senha(limpa["senha"]),
+                 "sessao_v": 0, "versao": 1, "criada_em": agora, "criada_por": por,
+                 "alterada_em": agora, "alterada_por": por}
+        doc["contas"].append(conta)
+        doc["versao"] += 1
+        _contas_arquivo.gravar(doc)
+        return copy.deepcopy(conta)
+
+
+def alterar_conta(conta_id: Any, mudancas: Any, versao: Any, ator: dict | None) -> dict:
+    """
+    Altera nome/função/perfil/ativa/senha de uma conta (o login não muda) e devolve a cópia interna.
+    `versao` = a que o cliente viu (409 `versao_mudou` se outro aparelho salvou antes). `ator` None = sistema/CLI
+    (sem hierarquia). Trocar senha, perfil ou ativa faz `sessao_v += 1` (derruba as sessões abertas da conta).
+    """
+    limpa, campo, motivo = contas.validar_alteracao(mudancas)
+    if limpa is None:
+        raise _erro_validacao_conta(campo, motivo)
+    if not isinstance(versao, int) or isinstance(versao, bool):
+        raise ErroContas("Informe a versão da conta.", 400, "ausente", "versao")
+    with _contas_arquivo.lock:
+        doc = copy.deepcopy(_contas_arquivo.ler())
+        alvo = next((c for c in doc["contas"] if c["id"] == conta_id), None)
+        if alvo is None:
+            raise ErroContas("Conta não encontrada.", 404, "nao_encontrada")
+        if ator is not None:
+            papel = ator.get("perfil", "")
+            if not contas.pode_gerenciar(papel, alvo["perfil"]) or (
+                    "perfil" in limpa and not contas.pode_gerenciar(papel, limpa["perfil"])):
+                raise ErroContas("Seu perfil não pode alterar essa conta.", 403, "sem_permissao")
+        if versao != alvo["versao"]:
+            raise ErroContas("A conta mudou em outro aparelho; recarregue.", 409, "versao_mudou")
+        if "senha" in limpa and limpa["senha"].strip().lower() == alvo["usuario"]:
+            raise ErroContas("A senha não pode ser igual ao usuário.", 400, "igual_usuario", "senha")
+        if not contas.restaria_adm(doc["contas"], alvo["id"], limpa.get("perfil"), limpa.get("ativa")):
+            raise ErroContas("Precisa haver pelo menos um administrador ativo.", 409, "ultimo_adm")
+        derruba = False
+        for chave, valor in limpa.items():
+            if chave == "senha":
+                alvo["senha_hash"] = contas.hash_senha(valor)
+                derruba = True
+            elif chave in ("perfil", "ativa"):
+                derruba = derruba or valor != alvo[chave]
+                alvo[chave] = valor
+            else:
+                alvo[chave] = valor
+        if derruba:
+            alvo["sessao_v"] += 1
+        alvo["versao"] += 1
+        alvo["alterada_em"] = _agora_iso()
+        alvo["alterada_por"] = ator.get("id") if ator else None
+        doc["versao"] += 1
+        _contas_arquivo.gravar(doc)
+        return copy.deepcopy(alvo)
 
 
 def listas_ler() -> dict:

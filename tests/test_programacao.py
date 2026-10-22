@@ -2322,7 +2322,7 @@ class TesteIntegracaoServidorReal(unittest.TestCase):
         if cls.porta is None:
             raise unittest.SkipTest("nenhuma porta livre entre 8950 e 8990")
         cls.base = Path(tempfile.mkdtemp(prefix="proclamare-prog-"))
-        for nome in ("server.py", "musicas.py", "programacao.py", "waitress_limites.py", "Proclamare.pyw"):
+        for nome in ("server.py", "musicas.py", "programacao.py", "contas.py", "waitress_limites.py", "Proclamare.pyw"):
             shutil.copy2(RAIZ / nome, cls.base / nome)
         shutil.copytree(RAIZ / "som", cls.base / "som", ignore=shutil.ignore_patterns("__pycache__"))
         (cls.base / "musicas").mkdir()

@@ -10,6 +10,9 @@ config.json*
 # listas de músicas da loja (dados locais; cópias de um listas.json ilegível também)
 listas.json*
 **/listas.json*
+# contas de usuário (hash das senhas; também cópias de um contas.json ilegível)
+contas.json*
+**/contas.json*
 # programação de horários (dados da loja e o instante em que o servidor foi visto pela última vez)
 programacao*.json*
 **/programacao*.json*

@@ -83,6 +83,10 @@ def _validar_senha(senha: Any, usuario: str | None) -> str | None:
         return "tipo"
     if not SENHA_MIN <= len(senha) <= SENHA_MAX:
         return "tamanho"
+    try:
+        senha.encode("utf-8")
+    except UnicodeEncodeError:   # surrogate solto: o hash não conseguiria codificar a senha
+        return "caractere"
     if usuario is not None and senha.strip().lower() == usuario:
         return "igual_usuario"
     return None
