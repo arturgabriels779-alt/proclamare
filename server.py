@@ -41,7 +41,8 @@ Inventário de rotas (v2.8)
   nova nasce "pin" (before_request); só /api/status e /api/auth/* (e o callback do OAuth) são públicas. O teste
   tests/test_higiene.py compara esta tabela com app.url_map: rota sem linha aqui (ou linha sem rota) quebra a suíte.
   v2.8 (modo contas, veja "Contrato v2.8 (Parte B)"): "pin" passa a ser "sessão de uma conta" - o PC das caixas
-  TAMBÉM precisa entrar -, e "local" continua exigindo o PC das caixas por cima da sessão.
+  TAMBÉM precisa entrar -, e "local" continua exigindo o PC das caixas por cima da sessão. Além disso, toda rota
+  não pública tem a capacidade exigida em PERMISSOES_ROTAS (B4; nova rota = nova linha lá também).
   GET  /                                   publica | - | -
   GET  /static/<path:filename>             publica | - | -
   GET  /api/status                         publica | - | -
@@ -115,12 +116,37 @@ Inventário de rotas (v2.8)
   GET  /spotify/login                      pin | 5/min | - (redireciona; nunca devolve texto)
   GET  /spotify/callback                   publica | - | ?code=&state= (state de uso único)
 
-Contrato v2.8 (Parte B: contas e perfis - B3, login e sessão)
--------------------------------------------------------------
+Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por rota)
+-----------------------------------------------------------------------------------
   Modos. Sem nenhuma conta em contas.json (ao lado do config.json) vale o MODO PIN exatamente como na v2.7.1 (o PC
   da loja é livre; a sessão de PIN vale como perfil "gerente"). Com pelo menos uma conta vale o MODO CONTAS:
-  login por usuário e senha; o PC das caixas também precisa entrar (rotas "só local" continuam por cima). As rotas
-  do Tocador sem login no PC das caixas e as permissões por perfil (403) vêm na B4.
+  login por usuário e senha; o PC das caixas também precisa entrar (rotas "só local" continuam por cima).
+  Permissões (B4, SÓ em modo contas; modo PIN = nenhum 403 novo). before_request: _exigir_sessao() e, logo depois,
+  _exigir_permissao(): PERMISSOES_ROTAS[(método, regra do url_map)] = capacidade de contas.CAPACIDADES (None = basta
+  estar logado). Perfil sem a capacidade = 403 {"ok":false,"codigo":"sem_permissao","error"} (vale chamando a API
+  direto: a tela esconder não basta). Rota sem linha = 403 para todos menos o ADM (falha fechado; o
+  tests/test_higiene.py exige linha para toda rota não pública e confere que toda linha é uma rota). Perfil
+  desconhecido = 403. Fora da camada: ROTAS_PUBLICAS (API_PUBLICAS, "/", "/static/...", "/spotify/callback") e
+  requisição sem regra (404). As checagens "só local" (somente_local, _exigir_adm_local, campos do PC) continuam POR
+  CIMA, nas rotas. Mapa (matriz B1): anunciar = POST /api/announce; None = GET /api/mensagens, GET /api/voz, GET
+  /api/voices (só local), POST /api/auth/primeiro-adm (a rota decide: 409 em modo contas); mensagens_editar = POST
+  /api/mensagens e /restaurar; voz = POST /api/voz e /api/voz/ouvir; musica = /api/youtube/*, /api/musicas/*
+  (remover/abrir-pasta seguem só locais), /api/listas*, Spotify de tocar/buscar/aparelhos/atalhos/atual-contexto e
+  GET /api/som/estado|saidas; programacao = /api/programacao*; som = POST /api/som/*; seguranca = /api/seguranca/*
+  e /api/auth/pin|revogar|liberar|alertas/visto; spotify_config = GET/POST /api/spotify/config, POST
+  /api/spotify/desconectar e GET /spotify/login; desligar = POST /api/sistema/desligar (só local). Funcionário =
+  só anunciar; gerente = tudo menos som/seguranca/spotify_config; ADM = tudo.
+  Tocador da loja sem login (B6b): em modo contas, requisição do PC das caixas (_requisicao_local) passa SEM sessão
+  (ou com a de 5 min vencida) só em ROTAS_TOCADOR_LOCAL = GET|POST /api/youtube/state (heartbeat), GET
+  /api/youtube/commands (long-poll), POST /api/youtube/queue SÓ com {"op":"pop"} (exatamente essa chave; outra op =
+  401 "login_requerido"), GET /api/musicas, GET /api/musicas/<id>/audio, GET /api/musicas/<id>/capa e GET
+  /api/voices: o que a aba ytMode "player" do app.js chama sozinha. Nenhuma anuncia nem muda configuração; pela rede
+  nunca valem sem sessão. No PC, as mesmas rotas/op valem também com a sessão de um perfil sem "musica" (o cookie é
+  do navegador inteiro: um funcionário logado não pode parar a aba Tocador; ele não ganha nada além do PC sem login).
+  /api/announce em modo contas: "teste": true só vale para quem tem "voz" (os outros: ignorado, o aviso toca).
+  Limites de taxa de /api/announce (rede), /api/voz e /api/voz/ouvir (rede) valem por IP E por conta
+  ("<prefixo>conta:<id>", mesmo teto). Auditoria de anuncio/voz_salvar/voz_ouvir ganha conta=c<10 hex> (HMAC do id
+  com a acesso_chave: a mesma conta tem o mesmo token; nunca id, usuário ou nome).
   Token (cookie proclamare_sessao, HttpOnly, SameSite=Strict, assinado com a acesso_chave): {exp, iat, v} + em modo
   contas "c" (id da conta), "sv" (sessao_v da conta) e "l": 1 se foi emitido para o PC das caixas. É recusado:
   token sem "c" (de PIN) em modo contas; conta inexistente ou desativada; "sv" diferente (senha/perfil/ativa
@@ -1543,7 +1569,11 @@ def _verificar_requisicao() -> tuple[Response, int] | None:
             return _resp_erro("Content-Type deve ser application/json.", 415)
     # v2.2: depois de todas as checagens acima, /api/* (exceto as públicas)
     # exige PIN quando o cliente não está no próprio computador.
-    return _exigir_sessao()
+    erro = _exigir_sessao()
+    if erro is not None:
+        return erro
+    # v2.8 (B4): em modo contas, o perfil precisa ter a capacidade da rota (PERMISSOES_ROTAS; falha fechado).
+    return _exigir_permissao()
 
 
 @app.after_request
@@ -2042,6 +2072,10 @@ def _exigir_sessao() -> tuple[Response, int] | None:
     if modo_contas():
         if conta_da_requisicao() is not None:
             return None
+        if _tocador_local_liberado():
+            # v2.8 (B4/B6b): a aba "Tocador da loja" no PC das caixas segue tocando sem ninguém logado (ou com a
+            # sessão de 5 min vencida), mas SÓ nas rotas de ROTAS_TOCADOR_LOCAL.
+            return None
         return _resp_sem_sessao(load_config())
     if _requisicao_local():
         return None
@@ -2049,6 +2083,218 @@ def _exigir_sessao() -> tuple[Response, int] | None:
     if _token_valido_sessao(request.cookies.get(COOKIE_SESSAO), cfg):
         return None
     return _resp_sem_sessao(cfg)
+
+
+# --- v2.8 (B4): permissões por rota --------------------------------------------------------------------------
+# Regras do url_map que a camada de permissão NÃO confere: as públicas (sem sessão) e o callback do OAuth (o cookie
+# Strict não chega nele; o state de uso único é a proteção). /api/auth/pin e /api/auth/revogar estão em API_PUBLICAS
+# só para devolver o próprio 403/409; elas ainda assim têm linha em PERMISSOES_ROTAS (documentação).
+ROTAS_PUBLICAS = frozenset(API_PUBLICAS | {"/", "/static/<path:filename>", "/spotify/callback"})
+
+# (método, regra do url_map) -> capacidade de contas.CAPACIDADES; None = basta estar logado (qualquer perfil).
+# Só vale em MODO CONTAS (modo PIN: nenhum 403 novo). Rota sem linha = 403 para todos menos o ADM (falha fechado);
+# tests/test_higiene.py exige uma linha para toda rota não pública. As checagens "só local" (somente_local,
+# _exigir_adm_local, campos do PC) continuam POR CIMA, nas próprias rotas.
+PERMISSOES_ROTAS: dict[tuple[str, str], str | None] = {
+    # Anúncio e o que o funcionário usa
+    ("POST", "/api/announce"): "anunciar",
+    ("GET", "/api/mensagens"): None,                  # mensagens prontas: todo perfil anuncia com elas
+    ("POST", "/api/mensagens"): "mensagens_editar",
+    ("POST", "/api/mensagens/restaurar"): "mensagens_editar",
+    ("GET", "/api/voz"): None,                        # leitura da voz da loja (o painel mostra qual é)
+    ("POST", "/api/voz"): "voz",
+    ("POST", "/api/voz/ouvir"): "voz",
+    ("GET", "/api/voices"): None,                     # diagnóstico; continua SÓ LOCAL (somente_local)
+    # Acesso / segurança do PC das caixas (as rotas também exigem ADM no PC: _exigir_adm_local)
+    ("POST", "/api/auth/pin"): "seguranca",           # pública na camada: em modo contas a rota responde 409
+    ("POST", "/api/auth/revogar"): "seguranca",       # pública na camada: a rota exige ADM logado no PC
+    ("POST", "/api/auth/liberar"): "seguranca",
+    ("POST", "/api/auth/alertas/visto"): "seguranca",
+    ("POST", "/api/auth/primeiro-adm"): None,         # a PRÓPRIA rota decide: só local e só sem conta (senão 409)
+    ("GET", "/api/seguranca/remotos"): "seguranca",
+    ("POST", "/api/seguranca/remotos/aprovar"): "seguranca",
+    ("POST", "/api/sistema/desligar"): "desligar",    # continua SÓ LOCAL
+    # Saídas de som: ler os blocos = quem mexe na música; mudar = só ADM
+    ("GET", "/api/som/estado"): "musica",
+    ("GET", "/api/som/saidas"): "musica",
+    ("POST", "/api/som/descobrir"): "som",
+    ("POST", "/api/som/saida"): "som",
+    ("POST", "/api/som/testar"): "som",
+    ("POST", "/api/som/preferencias"): "som",
+    # YouTube (relé do Tocador da loja)
+    ("GET", "/api/youtube/state"): "musica",
+    ("POST", "/api/youtube/state"): "musica",
+    ("GET", "/api/youtube/commands"): "musica",
+    ("POST", "/api/youtube/command"): "musica",
+    ("POST", "/api/youtube/queue"): "musica",
+    # Minhas músicas (remover/abrir-pasta continuam SÓ LOCAL)
+    ("GET", "/api/musicas"): "musica",
+    ("GET", "/api/musicas/<music_id>/audio"): "musica",
+    ("GET", "/api/musicas/<music_id>/capa"): "musica",
+    ("POST", "/api/musicas/enviar"): "musica",
+    ("POST", "/api/musicas/remover"): "musica",
+    ("POST", "/api/musicas/abrir-pasta"): "musica",
+    ("POST", "/api/musicas/atualizar"): "musica",
+    # Listas
+    ("GET", "/api/listas"): "musica",
+    ("POST", "/api/listas"): "musica",
+    ("POST", "/api/listas/da-fila"): "musica",
+    ("GET", "/api/listas/<lista_id>"): "musica",
+    ("POST", "/api/listas/<lista_id>"): "musica",
+    ("POST", "/api/listas/<lista_id>/apagar"): "musica",
+    ("POST", "/api/listas/<lista_id>/tocar"): "musica",
+    # Programação de horários
+    ("GET", "/api/programacao"): "programacao",
+    ("POST", "/api/programacao"): "programacao",
+    ("POST", "/api/programacao/<item_id>/testar"): "programacao",
+    ("POST", "/api/programacao/parar"): "programacao",
+    # Spotify: tocar/buscar/aparelhos/atalhos = música; credenciais e conexão = só ADM (e só no PC, por cima)
+    ("GET", "/api/spotify/status"): "musica",
+    ("GET", "/api/spotify/devices"): "musica",
+    ("GET", "/api/spotify/search"): "musica",
+    ("GET", "/api/spotify/now-playing"): "musica",
+    ("POST", "/api/spotify/activate"): "musica",
+    ("POST", "/api/spotify/play"): "musica",
+    ("POST", "/api/spotify/pause"): "musica",
+    ("POST", "/api/spotify/next"): "musica",
+    ("POST", "/api/spotify/previous"): "musica",
+    ("POST", "/api/spotify/volume"): "musica",
+    ("GET", "/api/spotify/atalhos"): "musica",
+    ("POST", "/api/spotify/atalhos"): "musica",
+    ("POST", "/api/spotify/atalhos/<atalho_id>"): "musica",
+    ("POST", "/api/spotify/atalhos/<atalho_id>/apagar"): "musica",
+    ("POST", "/api/spotify/atalhos/<atalho_id>/tocar"): "musica",
+    ("GET", "/api/spotify/atual-contexto"): "musica",
+    ("GET", "/api/spotify/config"): "spotify_config",
+    ("POST", "/api/spotify/config"): "spotify_config",
+    ("POST", "/api/spotify/desconectar"): "spotify_config",
+    ("GET", "/spotify/login"): "spotify_config",
+}
+_PERMISSOES_INVALIDAS = sorted(
+    f"{m} {r}" for (m, r), cap in PERMISSOES_ROTAS.items() if cap is not None and cap not in contas.CAPACIDADES)
+if _PERMISSOES_INVALIDAS:   # erro de digitação numa capacidade: o servidor nem sobe (nunca vira permissão)
+    raise RuntimeError("PERMISSOES_ROTAS com capacidade desconhecida: " + ", ".join(_PERMISSOES_INVALIDAS))
+
+# v2.8 (B6b): o que a aba "Tocador da loja" (ytMode "player" do app.js) chama SOZINHA, sem ninguém mexer: heartbeat
+# (POST /api/youtube/state), estado (GET; título da música), long-poll de comandos, o "pop" da fila (avanço para o
+# próximo item), a lista/áudio/capa das músicas do <audio> e /api/voices (diagnóstico, já só local). Só vale para o
+# PC das caixas (_requisicao_local) em modo contas; nada aqui anuncia nem muda configuração. Toda outra op da fila
+# (add, clear, move...) é de uma pessoa: precisa de sessão.
+ROTAS_TOCADOR_LOCAL = frozenset({
+    ("GET", "/api/youtube/state"), ("POST", "/api/youtube/state"), ("GET", "/api/youtube/commands"),
+    ("POST", "/api/youtube/queue"), ("GET", "/api/musicas"), ("GET", "/api/musicas/<music_id>/audio"),
+    ("GET", "/api/musicas/<music_id>/capa"), ("GET", "/api/voices"),
+})
+ROTA_FILA_YOUTUBE = "/api/youtube/queue"
+
+
+def rota_do_tocador(metodo: str, regra: str, corpo: Any) -> bool:
+    """A chamada é uma das que o Tocador da loja faz sozinho? Na fila, SÓ {"op": "pop"} (exatamente essa chave)."""
+    metodo = "GET" if metodo == "HEAD" else metodo
+    if (metodo, regra) not in ROTAS_TOCADOR_LOCAL:
+        return False
+    if regra == ROTA_FILA_YOUTUBE:
+        return isinstance(corpo, dict) and set(corpo) == {"op"} and corpo.get("op") == "pop"
+    return True
+
+
+def _tocador_local_liberado() -> bool:
+    """Modo contas + PC das caixas + rota/op do Tocador (ROTAS_TOCADOR_LOCAL). Pela rede: nunca."""
+    regra = request.url_rule
+    if regra is None or not modo_contas() or not _requisicao_local():
+        return False
+    corpo: Any = None
+    if regra.rule == ROTA_FILA_YOUTUBE:
+        try:
+            corpo = request.get_json(silent=True)
+        except RecursionError:   # JSON aninhado demais: não é o "pop" do Tocador
+            return False
+    return rota_do_tocador(request.method, regra.rule, corpo)
+
+
+def _resp_sem_permissao() -> tuple[Response, int]:
+    return jsonify({"ok": False, "codigo": "sem_permissao",
+                    "error": "Seu perfil não tem acesso a isso. Peça a um gerente."}), 403
+
+
+def _exigir_permissao() -> tuple[Response, int] | None:
+    """
+    v2.8 (B4), chamado no before_request logo depois de _exigir_sessao: em MODO CONTAS o perfil precisa ter a
+    capacidade de PERMISSOES_ROTAS[(método, regra)] (403 "sem_permissao"). Modo PIN: nada (o comportamento de
+    sempre). Sem url_rule (404) e regras públicas: passa. Rota sem linha: só o ADM (falha fechado). Perfil
+    desconhecido (contas.json editado à mão): 403, nunca 500. As rotas do Tocador no PC das caixas valem com ou
+    sem sessão (com a sessão de um funcionário a aba Tocador do mesmo navegador não pode parar; ele não ganha nada
+    que o PC sem login já não tenha).
+    """
+    if not modo_contas():
+        return None
+    regra = request.url_rule
+    if regra is None or regra.rule in ROTAS_PUBLICAS:
+        return None
+    if request.method == "OPTIONS" and regra.provide_automatic_options:
+        return None   # resposta automática do Flask (só o cabeçalho Allow): o handler não roda
+    if _tocador_local_liberado():
+        return None
+    perfil = perfil_da_requisicao()
+    if perfil is None:
+        if regra.rule == "/spotify/login":
+            return None   # fora de /api/: a própria rota manda quem não entrou de volta ao painel
+        return _resp_sem_sessao(load_config())
+    metodo = "GET" if request.method == "HEAD" else request.method
+    chave = (metodo, regra.rule)
+    if chave not in PERMISSOES_ROTAS:
+        if perfil == "adm":
+            return None
+        log.warning("Rota sem entrada em PERMISSOES_ROTAS recusada (%s %s).", metodo, regra.rule)
+        return _resp_sem_permissao()
+    capacidade = PERMISSOES_ROTAS[chave]
+    if capacidade is None:
+        return None
+    try:
+        permitido = contas.pode(perfil, capacidade)
+    except (KeyError, ValueError):
+        permitido = False
+    return None if permitido else _resp_sem_permissao()
+
+
+def _chave_limite_conta() -> str | None:
+    """v2.8 (B4): "conta:<id>" da conta logada (limites de taxa também por conta, além do IP) ou None (modo PIN)."""
+    conta = conta_da_requisicao()
+    return None if conta is None else "conta:" + conta["id"]
+
+
+def _perfil_pode(capacidade: str) -> bool:
+    """O perfil efetivo desta requisição tem a capacidade? (sem sessão ou perfil desconhecido = False)"""
+    perfil = perfil_da_requisicao()
+    try:
+        return perfil is not None and contas.pode(perfil, capacidade)
+    except KeyError:
+        return False
+
+
+def _excedeu_limite_ip_e_conta(prefixo: str, maximo: int, janela_s: float) -> bool:
+    """
+    excedeu_limite(prefixo + IP) como sempre e, em modo contas, TAMBÉM excedeu_limite(prefixo + "conta:<id>") com o
+    mesmo teto: quem troca de aparelho/IP continua no mesmo limite. Bloqueado pelo IP não gasta a cota da conta.
+    """
+    if excedeu_limite(prefixo + (request.remote_addr or "?"), maximo, janela_s):
+        return True
+    chave = _chave_limite_conta()
+    return chave is not None and excedeu_limite(prefixo + chave, maximo, janela_s)
+
+
+def _conta_auditoria() -> str | None:
+    """
+    v2.8 (B4): token OPACO e estável da conta logada para a auditoria ("c" + 10 hex do HMAC do id com a chave de
+    acesso): permite ver que foi a MESMA conta sem gravar id, usuário nem nome. None em modo PIN / sem sessão.
+    """
+    conta = conta_da_requisicao()
+    if conta is None:
+        return None
+    chave = _chave_acesso(load_config())
+    if chave is None:
+        return None
+    return "c" + hmac.new(chave, b"auditoria-conta:" + conta["id"].encode("ascii"), hashlib.sha256).hexdigest()[:10]
 
 
 MSG_LOOPBACK_SUSPENSO = (
@@ -6066,7 +6312,7 @@ def voz_salvar() -> Response:
     for campo, valor in corpo.items():
         if not _voz_loja_campo_ok(campo, valor):
             raise ErroVozLoja(f"Campo '{campo}' inválido.", campo)
-    if excedeu_limite("voz:" + (request.remote_addr or "?"), VOZ_LOJA_ESCRITA_MAX_POR_MIN, 60.0):
+    if _excedeu_limite_ip_e_conta("voz:", VOZ_LOJA_ESCRITA_MAX_POR_MIN, 60.0):   # v2.8: IP e conta
         raise ErroApi("Muitas alterações seguidas. Aguarde um minuto.", 429)
     with _config_lock:
         cfg = load_config()
@@ -6075,7 +6321,7 @@ def voz_salvar() -> Response:
         atual.update(corpo)
         cfg["voz_loja"] = atual
         _gravar_config_atomico(cfg)
-    auditar("voz_salvar", campos=len(corpo))   # só quantos campos; nunca os valores
+    auditar("voz_salvar", campos=len(corpo), conta=_conta_auditoria())   # só quantos campos; nunca os valores
     return _resposta_voz_loja()
 
 
@@ -6096,13 +6342,14 @@ def voz_ouvir() -> Response | tuple[Response, int]:
     nome = corpo.get("aviso")
     if not isinstance(nome, str) or nome not in AVISOS or nome == "nenhum":
         raise ErroVozLoja("Campo 'aviso' inválido.", "aviso")
+    conta_audit = _conta_auditoria()
     if ((not _requisicao_local()
-         and excedeu_limite("voz_ouvir:" + (request.remote_addr or "?"), VOZ_OUVIR_MAX_POR_MIN, 60.0))
+         and _excedeu_limite_ip_e_conta("voz_ouvir:", VOZ_OUVIR_MAX_POR_MIN, 60.0))   # v2.8: IP e conta
             or excedeu_limite("voz_ouvir:global", VOZ_OUVIR_GLOBAL_MAX, VOZ_OUVIR_GLOBAL_JANELA_S)):
-        auditar("voz_ouvir", resultado="limite")
+        auditar("voz_ouvir", resultado="limite", conta=conta_audit)
         raise ErroApi("Muitos pedidos seguidos. Aguarde um minuto.", 429)
     if not _anuncio_lock.acquire(blocking=False):   # nunca espera: 409 como o /api/announce
-        auditar("voz_ouvir", resultado="ocupado")
+        auditar("voz_ouvir", resultado="ocupado", conta=conta_audit)
         return _resp_erro(_msg_ocupado("Já existe um anúncio tocando. Aguarde terminar."), 409)
     resultado = "erro"
     try:
@@ -6126,7 +6373,7 @@ def voz_ouvir() -> Response | tuple[Response, int]:
         return jsonify({"ok": True})
     finally:
         _anuncio_lock.release()
-        auditar("voz_ouvir", resultado=resultado)   # só o resultado; nunca o nome do aviso
+        auditar("voz_ouvir", resultado=resultado, conta=conta_audit)   # só o resultado; nunca o nome do aviso
 
 
 _anuncio_lock = threading.Lock()  # um anúncio por vez (não bloqueante -> 409)
@@ -6267,18 +6514,23 @@ def announce() -> Response | tuple[Response, int]:
     teste = data.get("teste", False)
     if not isinstance(teste, bool):
         raise ErroApi("Campo 'teste' inválido.")
+    if teste and modo_contas() and not _perfil_pode("voz"):
+        # v2.8 (B4): "Testar caixas" (sem o aviso sonoro) é de quem mexe na voz; para os outros perfis o campo é
+        # ignorado e o anúncio sai como qualquer outro (com o aviso da loja).
+        teste = False
     loja = voz_loja()
     modo, chave_voz, velocidade = loja["motor"], loja["voz"], loja["velocidade"]
     aviso_sonoro = "nenhum" if teste else loja["aviso"]
+    conta_audit = _conta_auditoria()
     # v2.7.1 (P05): um aparelho com PIN não emenda anúncios sem limite (o PC da loja é livre).
-    if not _requisicao_local() and excedeu_limite(
-            "anuncio:" + (request.remote_addr or "?"), ANUNCIO_REMOTO_MAX_POR_MIN, 60.0):
-        auditar("anuncio", caracteres=len(texto), resultado="limite")
+    # v2.8 (B4): em modo contas o mesmo teto vale também POR CONTA (trocar de IP não dá anúncios a mais).
+    if not _requisicao_local() and _excedeu_limite_ip_e_conta("anuncio:", ANUNCIO_REMOTO_MAX_POR_MIN, 60.0):
+        auditar("anuncio", caracteres=len(texto), resultado="limite", conta=conta_audit)
         raise ErroApi("Muitos anúncios seguidos. Aguarde um instante.", 429)
 
     # Não enfileira: se já há um anúncio tocando, responde 409 imediatamente.
     if not _anuncio_lock.acquire(blocking=False):
-        auditar("anuncio", caracteres=len(texto), resultado="ocupado")
+        auditar("anuncio", caracteres=len(texto), resultado="ocupado", conta=conta_audit)
         return _resp_erro(_msg_ocupado("Já existe um anúncio tocando. Aguarde terminar."), 409)
     resultado_audit = "erro"
     _avisos_musica_iniciar()   # v2.4.2: duck/restore do Spotify anotam aqui o que deu errado
@@ -6328,7 +6580,8 @@ def announce() -> Response | tuple[Response, int]:
     finally:
         _avisos_musica_coletar()   # descarta o que sobrou se o anúncio falhou
         _anuncio_lock.release()
-        auditar("anuncio", caracteres=len(texto), resultado=resultado_audit)   # só o tamanho, nunca o texto
+        auditar("anuncio", caracteres=len(texto), resultado=resultado_audit,
+                conta=conta_audit)   # só o tamanho e o token opaco da conta, nunca o texto
 
 
 # ---------------------------------------------------------------------------

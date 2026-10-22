@@ -93,6 +93,29 @@ class TesteInventarioDeRotas(unittest.TestCase):
                      "/api/auth/liberar", "/api/seguranca/remotos"):
             self.assertEqual(tabela.get(("POST", rota)) or tabela.get(("GET", rota)), "local", rota)
 
+    def test_toda_rota_protegida_esta_em_PERMISSOES_ROTAS(self) -> None:
+        """v2.8 (B4): toda rota não pública (os dois métodos) tem capacidade em PERMISSOES_ROTAS, e toda linha da
+        tabela é uma rota de verdade (um erro de digitação na regra deixaria a rota de fora = só ADM)."""
+        import contas
+
+        real = set()
+        for regra in server.app.url_map.iter_rules():
+            if regra.rule in server.ROTAS_PUBLICAS:
+                continue
+            for metodo in regra.methods - {"HEAD", "OPTIONS"}:
+                real.add((metodo, regra.rule))
+        todas = {(m, r.rule) for r in server.app.url_map.iter_rules() for m in r.methods - {"HEAD", "OPTIONS"}}
+        self.assertEqual(sorted(real - set(server.PERMISSOES_ROTAS)), [], "rota sem linha em PERMISSOES_ROTAS")
+        self.assertEqual(sorted(set(server.PERMISSOES_ROTAS) - todas), [], "linha de PERMISSOES_ROTAS sem rota")
+        for chave, cap in server.PERMISSOES_ROTAS.items():
+            self.assertTrue(cap is None or cap in contas.CAPACIDADES, chave)
+        # as do Tocador sem login são rotas de verdade e todas têm linha na tabela
+        self.assertLessEqual(set(server.ROTAS_TOCADOR_LOCAL), set(server.PERMISSOES_ROTAS))
+        # públicas de verdade (sem sessão) nunca entram na camada de permissão
+        for publica in ("/api/status", "/api/auth/status", "/api/auth/login", "/api/auth/logout", "/",
+                        "/static/<path:filename>", "/spotify/callback"):
+            self.assertIn(publica, server.ROTAS_PUBLICAS)
+
 
 class TesteCodigoSemInvisiveis(unittest.TestCase):
     def test_nenhum_caractere_de_formato_literal_no_codigo(self) -> None:
