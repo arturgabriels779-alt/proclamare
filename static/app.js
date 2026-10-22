@@ -1,4 +1,4 @@
-/* Proclamare — interface do painel de controle (contrato v2.6 "Listas e Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2: Spotify; v2.4.1: tempo da música)
+/* Proclamare — interface do painel de controle (contrato v2.8 "Aviso sonoro e voz da loja"; v2.7 "Salvar playlists"; v2.6 "Listas e Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2: Spotify; v2.4.1: tempo da música)
    -----------------------------------------------------------------------
    Sem frameworks e sem build: um único IIFE.
 
@@ -73,6 +73,13 @@
    /api/spotify/desconectar; /api/announce com 429 (10/min por aparelho remoto) e texto sem caracteres invisíveis.
    O "Sair" de um aparelho remoto apaga o histórico de anúncios e tudo o que o painel guardou no navegador
    (fica só o tema).
+
+   Voz da loja e aviso sonoro (v2.8): motor, voz, velocidade e o aviso antes do anúncio são da LOJA (GET/POST
+   /api/voz; "Vale para todos os aparelhos"). O painel relê a cada minuto pelo agendador (pausa com a aba oculta e
+   enquanto há mudança a gravar), não reaplica um campo com mudança pendente, mantém os controles desligados até a 1ª
+   leitura e, se ela falhar, avisa e tenta de novo. /api/announce leva só {text} ou {text, teste:true} (o "Testar
+   caixas" não toca o aviso); "Ouvir" = POST /api/voz/ouvir {aviso} (409 mostra o "error" do servidor; 429 = 6/min por
+   aparelho remoto ou 20/10 min na loja toda). /api/voices não é mais usada (ficou só local).
 
    Regras de segurança deste arquivo (CSP do servidor):
    - nada de innerHTML/eval com dados de API ou do usuário (só textContent
@@ -894,20 +901,49 @@
   // 11. Anúncio: motor, voz, velocidade, mensagens, contador
   // ======================================================================
   // Voz da loja (v2.8): vale para TODOS os aparelhos e mora no servidor (GET/POST /api/voz).
-  // O painel só espelha o estado salvo; cada mudança grava com debounce de 400 ms.
+  // O painel só espelha o estado salvo; cada mudança grava com debounce de 400 ms. Relê a cada minuto (outro
+  // aparelho pode ter mudado) pelo agendador único, que pausa com a aba oculta e relê ao voltar para ela; a
+  // releitura fica desligada enquanto houver mudança pendente ou gravando. Até a 1ª leitura dar certo os controles
+  // ficam desabilitados (nada de gravar em cima de um estado que o painel ainda não conhece).
   const avisoSelect = $("aviso-select");
   const btnAvisoOuvir = $("btn-aviso-ouvir");
+  const VOZ_POLL_MS = 60000;
+  const VOZ_RETRY_MS = 5000; // leitura falhou: tenta de novo logo
+  const VOZ_OUVIR_TIMEOUT_MS = 45000; // > espera do servidor pela thread de áudio (aviso de até 3 s + fila)
+  const VOZ_CAMPOS = ["motor", "voz", "velocidade", "aviso"];
   const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "aeroporto", definida: true, carregada: false };
-  let vozTimer = null;
-  let vozPend = {};
+  let vozTimer = null; // debounce da gravação
+  let vozPend = {}; // mudanças do usuário ainda não enviadas
+  let vozEnviando = null; // corpo do POST em andamento (null = nenhum)
+  let vozSeq = 0; // sobe a cada gravação: uma leitura iniciada antes dela é descartada
+  let vozFalhou = false; // o toast de leitura falha aparece uma vez por sequência de erros
+  let vozRetry = 0;
+  let vozOuvindo = false;
+
+  /** Gravação a caminho (debounce, pendente ou POST em andamento): a releitura periódica espera. */
+  const vozOcupada = () => vozTimer !== null || vozEnviando !== null || Object.keys(vozPend).length > 0;
+  /** O campo tem mudança do usuário que o servidor ainda não confirmou: nenhuma resposta o sobrescreve. */
+  const vozCampoPendente = (c) => c in vozPend || (vozEnviando !== null && c in vozEnviando);
 
   const engineGroup = initGroup(engineSwitch, {
     role: "radio",
     onSelect: (engine) => {
-      voiceSelect.disabled = engine === "offline"; // a voz escolhida só vale no motor online
+      voiceSelect.disabled = !voz.carregada || engine === "offline"; // a voz escolhida só vale no motor online
       vozAgendar({ motor: engine });
     },
   });
+  const engineOpts = Array.from(engineSwitch.querySelectorAll("[data-value]"));
+
+  /** Liga/desliga os controles conforme o estado (antes da 1ª leitura: tudo desligado, inclusive o Ouvir). */
+  function vozHabilitar() {
+    const on = voz.carregada;
+    engineOpts.forEach((b) => { b.disabled = !on; });
+    voiceSelect.disabled = !on || engineGroup.value === "offline";
+    speedRange.disabled = !on;
+    avisoSelect.disabled = !on;
+    btnAvisoOuvir.disabled = !on || vozOuvindo || !avisoSelect.value || avisoSelect.value === "nenhum";
+  }
+  vozHabilitar();
 
   function updateSpeedLabel() {
     const v = Number(speedRange.value);
@@ -915,24 +951,29 @@
     paintRange(speedRange, true);
   }
 
-  /** Reconstrói um <select> a partir de [{id,nome}] do servidor (createElement/textContent). */
+  /** Reconstrói um <select> a partir de [{id,nome}] do servidor (createElement/textContent), mantendo a escolha. */
   function vozPreencher(sel, lista) {
     const sig = lista.map((o) => o.id + "\u0001" + o.nome).join("\u0002");
     if (sel.dataset.sig === sig) return; // nada mudou: não re-renderiza
     sel.dataset.sig = sig;
+    const antes = sel.value;
     sel.replaceChildren(...lista.map((o) => {
       const opt = document.createElement("option");
       opt.value = o.id;
       opt.textContent = o.nome;
       return opt;
     }));
+    if (lista.some((o) => o.id === antes)) sel.value = antes; // uma escolha pendente não se perde
   }
 
   function vozListaValida(v) {
     return Array.isArray(v) ? v.filter((o) => o && typeof o.id === "string" && typeof o.nome === "string").slice(0, 20) : [];
   }
 
-  /** Mostra no painel o que o servidor guardou (sem mexer se o valor não mudou). */
+  /**
+   * Mostra no painel o que o servidor guardou (sem mexer se o valor não mudou). Campo com mudança pendente do
+   * usuário (vozPend ou o POST em andamento) NÃO é reaplicado: a resposta antiga não desfaz o que ele acabou de mudar.
+   */
   function vozAplicar(data) {
     const v = data && data.voz_loja;
     if (!v || typeof v !== "object") return false;
@@ -941,35 +982,59 @@
     const avisos = vozListaValida(op.avisos);
     if (vozes.length) vozPreencher(voiceSelect, vozes);
     if (avisos.length) vozPreencher(avisoSelect, avisos);
-    if (ENGINES.includes(v.motor)) {
+    if (ENGINES.includes(v.motor) && !vozCampoPendente("motor")) {
       voz.motor = v.motor;
       if (engineGroup.value !== v.motor) engineGroup.set(v.motor, true);
     }
-    if (typeof v.voz === "string") {
+    if (typeof v.voz === "string" && !vozCampoPendente("voz")) {
       voz.voz = v.voz;
       if (voiceSelect.value !== v.voz) voiceSelect.value = v.voz;
     }
-    if (isNum(v.velocidade)) {
+    if (isNum(v.velocidade) && !vozCampoPendente("velocidade")) {
       voz.velocidade = clamp(Math.round(v.velocidade / 5) * 5, -50, 50);
       if (speedRange.value !== String(voz.velocidade)) speedRange.value = String(voz.velocidade);
     }
-    if (typeof v.aviso === "string") {
+    if (typeof v.aviso === "string" && !vozCampoPendente("aviso")) {
       voz.aviso = v.aviso;
       if (avisoSelect.value !== v.aviso) avisoSelect.value = v.aviso;
     }
     voz.definida = v.definida !== false;
     voz.carregada = true;
-    voiceSelect.disabled = voz.motor === "offline";
-    btnAvisoOuvir.disabled = !avisoSelect.value || avisoSelect.value === "nenhum";
+    vozHabilitar();
     updateSpeedLabel();
     return true;
   }
 
+  /**
+   * Leitura falhou: avisa (uma vez por sequência de erros) e tenta de novo; a mudança do usuário fica. Antes da 1ª
+   * leitura tenta a cada 5 s (os controles estão desligados); depois, a releitura de cada minuto já é a nova tentativa.
+   */
+  function vozFalhaLeitura() {
+    if (!vozFalhou) {
+      vozFalhou = true;
+      toast("Não consegui ler a voz da loja; tentando de novo", "warn", { silent: true });
+    }
+    if (voz.carregada) return;
+    clearTimeout(vozRetry);
+    vozRetry = setTimeout(() => { vozRetry = 0; scheduler.kick("voz"); }, VOZ_RETRY_MS);
+  }
+
+  /** Tarefa "voz" do agendador (início, a cada minuto e ao voltar para a aba). */
   async function vozCarregar() {
+    if (authLocked || vozOcupada()) return; // gravando: a resposta do POST já traz o estado novo
+    const seq = vozSeq;
     try {
       const { ok, data } = await getJSON("/api/voz", { timeout: 8000 });
-      if (ok && data.ok && vozAplicar(data)) vozMigrar();
-    } catch (e) { /* sem servidor agora: tenta de novo no próximo carregamento */ }
+      if (seq !== vozSeq) return; // uma gravação começou durante a leitura: vale a resposta dela
+      if (ok && data.ok && vozAplicar(data)) {
+        vozFalhou = false;
+        vozMigrar();
+        return;
+      }
+    } catch (e) {
+      if (e && e.name === "AuthLockedError") return; // porta do PIN fechou: nada de tentar de novo
+    }
+    vozFalhaLeitura();
   }
 
   /** Migração única (v2.8): as preferências antigas deste navegador viram a voz da loja, só no PC da loja. */
@@ -980,6 +1045,7 @@
     const apagar = () => { try { window.localStorage.removeItem(LS.prefs); } catch (e) { /* ignora */ } };
     if (voz.definida) { apagar(); return; } // a loja já tem voz: a chave antiga não serve mais
     if (!(auth.supported && auth.local)) return; // aparelho remoto nunca define a voz por migração
+    if (vozOcupada()) return; // o usuário já está mudando a voz: a escolha dele vale mais que a antiga
     try {
       const p = JSON.parse(raw);
       const corpo = {};
@@ -987,9 +1053,12 @@
       if (p && VOICES.includes(p.voice)) corpo.voz = p.voice;
       if (p && isNum(p.speed)) corpo.velocidade = clamp(Math.round(p.speed / 5) * 5, -50, 50);
       if (Object.keys(corpo).length) {
-        const { ok, data } = await postJSON("/api/voz", corpo, { timeout: 8000 });
-        if (!(ok && data.ok)) return; // tenta de novo no próximo carregamento
-        vozAplicar(data);
+        vozSeq++;
+        vozEnviando = corpo;
+        let resp = null;
+        try { resp = await postJSON("/api/voz", corpo, { timeout: 8000 }); } finally { vozEnviando = null; }
+        if (!(resp.ok && resp.data.ok)) return; // tenta de novo no próximo carregamento
+        vozAplicar(resp.data);
       }
       apagar();
     } catch (e) { /* preferências corrompidas ou sem rede: não migra */ }
@@ -1005,46 +1074,65 @@
 
   async function vozGravar() {
     vozTimer = null;
+    if (vozEnviando !== null) { // um POST ainda não voltou: grava depois dele (um por vez, na ordem)
+      vozTimer = setTimeout(vozGravar, 400);
+      return;
+    }
     const corpo = vozPend;
     vozPend = {};
     if (!Object.keys(corpo).length) return;
+    vozSeq++;
+    vozEnviando = corpo;
+    let resp = null;
+    let erroRede = false;
     try {
-      const { ok, status, data } = await postJSON("/api/voz", corpo, { timeout: 8000 });
-      if (ok && data.ok && vozAplicar(data)) return;
-      const msg = status === 429
-        ? "Muitas mudanças seguidas. Espere um minuto e tente de novo."
-        : typeof data.error === "string" && data.error ? data.error : "Não foi possível salvar a voz da loja.";
-      toast(msg, "error", { silent: true });
+      resp = await postJSON("/api/voz", corpo, { timeout: 8000 });
     } catch (e) {
-      toast("Erro de conexão: a voz da loja não foi salva.", "error", { silent: true });
+      erroRede = true;
     }
-    if (!vozTimer) vozCarregar(); // erro: volta ao que o servidor tem (a menos que haja mudança nova a caminho)
+    vozEnviando = null; // antes de aplicar: os campos deste POST podem ser reaplicados com a resposta dele
+    if (resp && resp.ok && resp.data.ok && vozAplicar(resp.data)) return;
+    if (erroRede) {
+      toast("Erro de conexão: a voz da loja não foi salva.", "error", { silent: true });
+    } else {
+      const msg = resp.status === 429
+        ? "Muitas mudanças seguidas. Espere um minuto e tente de novo."
+        : typeof resp.data.error === "string" && resp.data.error ? resp.data.error : "Não foi possível salvar a voz da loja.";
+      toast(msg, "error", { silent: true });
+    }
+    // erro: volta ao que o servidor tem (os campos com mudança NOVA a caminho continuam como o usuário deixou)
+    if (!vozOcupada()) scheduler.kick("voz");
   }
 
   speedRange.addEventListener("input", updateSpeedLabel);
   speedRange.addEventListener("change", () => vozAgendar({ velocidade: clamp(Math.round(Number(speedRange.value) || 0), -50, 50) }));
   voiceSelect.addEventListener("change", () => vozAgendar({ voz: voiceSelect.value }));
   avisoSelect.addEventListener("change", () => {
-    btnAvisoOuvir.disabled = avisoSelect.value === "nenhum";
+    vozHabilitar();
     vozAgendar({ aviso: avisoSelect.value });
   });
 
   btnAvisoOuvir.addEventListener("click", async () => {
     const aviso = avisoSelect.value;
-    if (!aviso || aviso === "nenhum" || btnAvisoOuvir.disabled) return;
-    btnAvisoOuvir.disabled = true;
+    if (!voz.carregada || !aviso || aviso === "nenhum" || vozOuvindo) return;
+    vozOuvindo = true;
+    vozHabilitar();
     try {
-      const { ok, status, data } = await postJSON("/api/voz/ouvir", { aviso }, { timeout: 20000 });
+      const { ok, status, data } = await postJSON("/api/voz/ouvir", { aviso }, { timeout: VOZ_OUVIR_TIMEOUT_MS });
       if (!(ok && data.ok)) {
-        const msg = status === 409 ? "Já existe um anúncio tocando"
+        const erro = typeof data.error === "string" && data.error ? data.error : "";
+        // 409: o servidor diz o quê (anúncio tocando, "Programação tocando: <nome>"...)
+        const msg = status === 409 ? erro || "Já existe um anúncio tocando"
           : status === 429 ? "Muitos testes seguidos. Espere um minuto."
-          : typeof data.error === "string" && data.error ? data.error : "Não foi possível tocar o aviso.";
+          : erro || "Não foi possível tocar o aviso.";
         toast(msg, status === 409 ? "info" : "error", { silent: true });
       }
     } catch (e) {
-      toast("Erro de conexão com o servidor.", "error", { silent: true });
+      toast(e && e.name === "TimeoutError" ? "O aviso demorou demais para tocar." : "Erro de conexão com o servidor.",
+        "error", { silent: true });
     } finally {
-      btnAvisoOuvir.disabled = avisoSelect.value === "nenhum";
+      vozOuvindo = false;
+      vozHabilitar();
     }
   });
 
@@ -11055,7 +11143,7 @@
   // 18. Inicialização
   // ======================================================================
   if (!engineGroup.value) engineGroup.set("auto", true);
-  voiceSelect.disabled = engineGroup.value === "offline";
+  vozHabilitar(); // v2.8: tudo desligado até a 1ª leitura da voz da loja
   updateSpeedLabel();
   updateCounter();
   renderHistory(false);
@@ -11083,7 +11171,6 @@
     const savedMode = store.get(LS.ytMode) === "player" ? "player" : "control";
     applyYoutubeMode(savedMode, false);
     syncPanes();
-    vozCarregar(); // voz da loja (v2.8): o painel mostra o que o servidor guardou
 
     // Tarefas de polling (todas passam pelo agendador único)
     scheduler.add("status", pollStatus, 15000, { immediate: true });
@@ -11104,6 +11191,8 @@
     scheduler.add("yt-heartbeat", pushYoutubeState, 3000, { always: true, immediate: true, enabled: () => ytMode === "player" });
     // Minhas músicas: só confere a pasta enquanto a lista está à vista (a versão muda -> recarrega)
     scheduler.add("lib", libPoll, 15000, { enabled: libActive, immediate: true });
+    // Voz da loja (v2.8): lê agora e relê a cada minuto (pausa com a aba oculta e enquanto há mudança a gravar)
+    scheduler.add("voz", vozCarregar, VOZ_POLL_MS, { immediate: true, enabled: () => !vozOcupada() });
     // Mensagens prontas (v2.5): lê agora e relê a cada minuto, pausado com a aba oculta e com o editor aberto
     scheduler.add("mensagens", refreshMessages, MSG_POLL_MS, { immediate: true, enabled: () => !msgsDialog.open });
     // Listas (v2.6): só com a biblioteca à vista (a versão do arquivo muda quando outro aparelho edita)

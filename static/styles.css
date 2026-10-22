@@ -655,6 +655,8 @@ html[data-announcing="true"] .tile--announce { box-shadow: var(--shadow-tile), 0
   --to: 0%;
 }
 .range:focus-visible { outline: none; }
+/* v2.8: a voz da loja fica desligada até a 1ª leitura do servidor */
+.range:disabled { opacity: 0.45; cursor: not-allowed; }
 .range::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: 2px;
@@ -739,6 +741,7 @@ html[data-theme-pref="auto"] #theme-switch { --idx: 2; }
 @media (hover: hover) { .seg__opt:hover { opacity: 1; } }
 .seg__opt:focus-visible { outline-offset: -2px; border-radius: 8px; }
 .seg:active .seg__opt[aria-checked="true"] { transform: scale(0.97); }
+.seg__opt:disabled, .seg__opt:disabled[aria-checked="true"] { opacity: 0.45; cursor: not-allowed; }
 
 .seg--icons { --h-seg: 36px; }
 .seg--icons .seg__opt { width: 40px; padding: 0; }
