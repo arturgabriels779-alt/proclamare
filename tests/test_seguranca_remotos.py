@@ -554,15 +554,17 @@ class TesteFilaDeExecucao(BaseRemotos):
 
 class TesteTetosDiarios(BaseRemotos):
     def test_estimativa_de_fala_e_soma_com_o_audio(self) -> None:
-        # v2.8 (A3): sem aviso sonoro, a estimativa é só a fala (a soma do aviso: tests/test_aviso_anuncio.py).
+        # v2.8 (A3): a estimativa é a fala + o aviso sonoro no pior caso (AVISO_MAX_S), mesmo com o aviso "nenhum"
+        # (detalhes: tests/test_aviso_anuncio.py).
+        aviso_s = server.AVISO_MAX_S
         server.save_config({**server.load_config(), "voz_loja": {"aviso": "nenhum"}})
         item = {"tipo": "anuncio", "alvo": "a" * 70, "ativo": True, "dias": [1]}
-        self.assertAlmostEqual(server._prog_segundos_fala(item), 10.0)
+        self.assertAlmostEqual(server._prog_segundos_fala(item), 10.0 + aviso_s)
         item["alvo"] = "a" * 500
-        self.assertAlmostEqual(server._prog_segundos_fala(item), 500 / 7)
+        self.assertAlmostEqual(server._prog_segundos_fala(item), 500 / 7 + aviso_s)
         item["alvo"] = "a" * 700                       # (texto acima do teto só para provar o limite de 80 s)
-        self.assertEqual(server._prog_segundos_fala(item), server.PROG_FALA_MAX_S)
-        self.assertEqual(server._prog_som_por_dia([item])[1], 80.0)
+        self.assertEqual(server._prog_segundos_fala(item), server.PROG_FALA_MAX_S + aviso_s)
+        self.assertEqual(server._prog_som_por_dia([item])[1], 80.0 + aviso_s)
         self.assertEqual(server._prog_audio_por_dia([item]), [0.0] * 7)         # o de ÁUDIO continua só áudio
         self.assertEqual(server._prog_som_por_dia([{**item, "ativo": False}]), [0.0] * 7)
 

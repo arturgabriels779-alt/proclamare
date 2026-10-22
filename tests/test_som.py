@@ -1877,7 +1877,8 @@ class BaseSom(BaseRotas):
         return {a["codigo"] for a in server.SOM.estado_publico()["alertas"]}
 
     def anunciar(self, quem: str = "local", **corpo: Any) -> Any:
-        base = {"text": "Atenção, senhores clientes", "engine": "offline"}
+        # v2.8 (A3): o motor é o da voz da loja (config.json["voz_loja"]); "engine" no corpo é ignorado.
+        base = {"text": "Atenção, senhores clientes"}
         base.update(corpo)
         return getattr(self, quem)("post", "/api/announce", json=base)
 
@@ -2389,6 +2390,12 @@ class TestAnnounceSom(BaseSom):
         return mock.patch.object(
             server, "_falar_offline", lambda texto, wpm, voz: self.cen.eventos.append("falar_legacy"))
 
+    def motor_da_loja(self, motor: str) -> None:
+        """Grava o motor na voz da loja do config temporário (o /api/announce não lê mais "engine")."""
+        cfg = server.load_config()
+        cfg["voz_loja"] = {**cfg.get("voz_loja", {}), "motor": motor}
+        server.save_config(cfg)
+
     # -- regressão: sem a chave "som" nada muda
     def test_sem_a_chave_som_e_identico_ao_de_hoje(self) -> None:
         with self.falar_legado():
@@ -2402,8 +2409,9 @@ class TestAnnounceSom(BaseSom):
 
     def test_sem_a_chave_som_o_caminho_online_e_o_antigo(self) -> None:
         self.internet = True
+        self.motor_da_loja("online")
         with mock.patch.object(server, "_tocar_mp3", lambda c: self.cen.eventos.append("tocar_legacy")):
-            r = self.anunciar(engine="online")
+            r = self.anunciar()
         self.assertEqual(r.get_json(), {"ok": True, "engine_used": "online"})
         self.assertEqual(self.cen.eventos, ["duck_spotify", ("yt", "duck"), "tocar_legacy",
                                             ("restore_spotify", 30), ("yt", "restore")])
@@ -2449,7 +2457,8 @@ class TestAnnounceSom(BaseSom):
     def test_online_toca_o_mp3_na_saida(self) -> None:
         self.configurar()
         self.internet = True
-        r = self.anunciar(engine="online")
+        self.motor_da_loja("online")
+        r = self.anunciar()
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.get_json()["engine_used"], "online")
         self.assertEqual(self.cen.tocados, [".mp3"])
@@ -2463,8 +2472,9 @@ class TestAnnounceSom(BaseSom):
         def quebra(*_: Any) -> Path:
             raise RuntimeError("sem rede")
 
+        self.motor_da_loja("auto")
         with mock.patch.object(server, "gerar_audio_online", quebra):
-            r = self.anunciar(engine="auto")
+            r = self.anunciar()
         corpo = r.get_json()
         self.assertEqual((r.status_code, corpo["engine_used"]), (200, "offline_fallback"))
         self.assertIn("motor offline", corpo["warning"])
@@ -2702,9 +2712,10 @@ class TestCorrecoesFinaisF1(BaseSom):
         self.assertEqual(self.fazer_teste(self.hdmi.sid).status_code, 200)
         self.assertIsNone(self.cen.pygame.mixer.aberto)          # nada ficou aberto no HDMI
         self.internet = True
+        server.save_config({**server.load_config(), "voz_loja": {"motor": "online"}})   # o motor é o da loja
         with self.pygame_falso(), mock.patch.object(
                 server, "_tocar_mp3", lambda c: (server._garantir_mixer(), server.apagar_audio(c))):
-            r = self.anunciar(engine="online")
+            r = self.anunciar()
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self.inits()[-1], ("init", None))       # dispositivo padrão, como na v2.2.1
 

@@ -1726,7 +1726,7 @@ class TesteExecucaoAnuncio(BaseProg):
     def test_anuncio_manual_continua_abaixando_a_musica(self) -> None:
         """O anúncio digitado no painel NÃO mudou: duck/restore, sem pausar."""
         self.tocador(True)
-        r = self.c.post("/api/announce", json={"text": "Olá", "engine": "online"})
+        r = self.c.post("/api/announce", json={"text": "Olá"})   # motor: o da loja ("auto")
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIn("yt-duck", self.cen.eventos)
         self.assertIn("yt-restore", self.cen.eventos)

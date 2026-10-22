@@ -25,6 +25,7 @@ os.environ.setdefault("PROCLAMARE_NO_BROWSER", "1")
 
 import programacao  # noqa: E402
 import server  # noqa: E402
+import som as som_pkg  # noqa: E402
 from som import aviso as aviso_mod  # noqa: E402
 from tests import test_programacao as tp  # noqa: E402  (módulo: as classes de lá não rodam de novo aqui)
 from tests import test_som as ts  # noqa: E402
@@ -183,8 +184,9 @@ class TestAvisoNoAnuncio(BaseAviso):
         def quebra(caminho: Path, parar: Any = None) -> None:
             raise RuntimeError("mixer")
 
-        with self.falar_legado(), mock.patch.object(server, "_tocar_aviso", quebra):
+        with self.falar_legado(), mock.patch.object(server, "_tocar_aviso", quebra),                 self.assertLogs(server.log.name, level="WARNING") as cap:
             r = self.anunciar()
+        self.assertTrue(any("seguindo com a fala" in linha for linha in cap.output))
         self.assertEqual(r.status_code, 200)
         self.assertIn("falar_legacy", self.cen.eventos)
         self.assertEqual(self.cen.eventos[-2:], [("restore_spotify", 30), ("yt", "restore")])
@@ -195,7 +197,8 @@ class TestAvisoNoAnuncio(BaseAviso):
             self.assertIsNotNone(parar)
             parar.parar()                              # "parar" chegou durante o aviso
 
-        with mock.patch.object(server, "_tocar_aviso", aviso_cortado), self.falar_legado(),                 self.tocar_mp3_legado():
+        with mock.patch.object(server, "_tocar_aviso", aviso_cortado), self.falar_legado(), \
+                self.tocar_mp3_legado():
             for online in (False, True):
                 with self.subTest(online=online):
                     self.cen.eventos.clear()
@@ -222,6 +225,89 @@ class TestAvisoNoAnuncio(BaseAviso):
                                       contexto=contextlib.nullcontext, parar=sinal, aviso="suave")
         self.assertEqual(self.cen.tocados, [".wav"])                   # a fala não chegou a tocar
 
+    def test_saida_falha_do_aviso_nao_impede_a_fala(self) -> None:
+        # Final (I-1): ErroReproducao no aviso (saída fixada) é só um aviso no log; a fala toca e o anúncio dá 200.
+        self.configurar()
+        self.voz(aviso="sino")
+        tocar_original = server.SOM.motor.tocar
+        prazos: list[Any] = []
+
+        def tocar(caminho: Path, **kw: Any) -> float:
+            prazos.append(kw.get("prazo"))
+            if caminho.name.startswith("aviso_"):
+                raise som_pkg.ErroReproducao("A saída de som parou de responder; a reprodução foi encerrada.")
+            return tocar_original(caminho, **kw)
+
+        with mock.patch.object(server.SOM.motor, "tocar", tocar), \
+                self.assertLogs(server.log.name, level="WARNING") as cap:
+            r = self.anunciar()
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(self.cen.tocados, [".wav"])                   # só a fala chegou ao motor
+        self.assertEqual(len(prazos), 2)
+        self.assertEqual(prazos[0], prazos[1])                         # um prazo só para aviso + fala
+        self.assertTrue(any("aviso sonoro" in linha and "ErroReproducao" in linha for linha in cap.output))
+        self.assertFalse(any("Traceback" in linha for linha in cap.output))
+        self.assertEqual(self.cen.eventos[-2:], [("restore_spotify", 30), ("yt", "restore")])
+
+    def test_saida_parar_entre_aviso_que_falhou_e_a_fala(self) -> None:
+        self.configurar()
+        som = self.config_som()
+        sinal = programacao.SinalParada()
+
+        def tocar(caminho: Path, **kw: Any) -> float:
+            sinal.parar()
+            raise som_pkg.ErroReproducao("x")
+
+        with mock.patch.object(server.SOM.motor, "tocar", tocar), self.assertLogs(server.log.name, "WARNING"):
+            server._anunciar_na_saida(TEXTO, "offline", "pt-BR-FranciscaNeural", 0, None, False, som,
+                                      contexto=contextlib.nullcontext, parar=sinal, aviso="sino")
+        self.assertEqual(self.cen.tocados, [])                         # o aviso falhou e a fala nem começou
+
+    def test_legado_parar_ja_setado_nao_toca_o_aviso(self) -> None:
+        # Final (M-2): "parar" chegou antes do aviso -> nem o aviso toca, e a fala também não.
+        sinal = programacao.SinalParada()
+        sinal.parar()
+        c = server.caminho_do_aviso("sino")
+        self.assertFalse(server._tocar_aviso_legado(c, sinal))
+        self.assertEqual(self.cen.eventos, [])
+
+    def test_legado_aviso_tem_timeout_proprio(self) -> None:
+        # Final (M-1): o aviso no caminho legado espera no máximo AVISO_MAX_S + 15 s pela thread de áudio.
+        timeouts: list[Any] = []
+
+        def executar(func: Any, *args: Any, timeout: float = server.TIMEOUT_AUDIO_S) -> Any:
+            timeouts.append((func, timeout))
+
+        with mock.patch.object(server, "executar_no_audio", executar):
+            self.assertTrue(server._tocar_aviso_legado(server.caminho_do_aviso("sino"), None))
+        self.assertEqual(timeouts, [(server._tocar_aviso, aviso_mod.AVISO_MAX_S + 15.0)])
+
+    def test_campo_desconhecido_no_anuncio_400(self) -> None:
+        # Final (LOW-6): os campos antigos passam (ignorados); qualquer outro = 400 antes de qualquer som.
+        with self.falar_legado():
+            r = self.anunciar(volume=100)
+        self.assertEqual((r.status_code, r.get_json()["error"]), (400, "Campo desconhecido."))
+        self.assertEqual(self.cen.eventos, [])
+
+    def test_online_sem_internet_503_explica_a_voz_da_loja(self) -> None:
+        # Final (LOW-1/M-6): voz da loja em "online" e sem internet -> 503 que diz o porquê e o que fazer.
+        self.voz(motor="online")
+        self.internet = False
+        r = self.anunciar()
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(r.get_json()["error"], "Sem internet — a voz da loja está em 'Online'. "
+                                                "Escolha 'Auto' para usar a voz do computador.")
+        self.assertEqual(self.cen.eventos, [])
+
+
+class TestVozesSoLocal(BaseAviso):
+    def test_api_voices_so_no_pc_da_loja(self) -> None:
+        # Final (LOW-6): o painel não usa mais /api/voices; com PIN, um aparelho remoto recebe 403.
+        self.assertEqual(self.local("get", "/api/voices").status_code, 200)
+        self.definir_pin_e_logar()
+        r = self.remoto("get", "/api/voices")
+        self.assertEqual(r.status_code, 403)
+
 
 class TestAvisoArquivo(BaseAviso):
     def test_caminho_do_aviso(self) -> None:
@@ -235,6 +321,11 @@ class TestAvisoArquivo(BaseAviso):
         c.write_bytes(b"RIFF")                                         # arquivo torto: é regravado
         server.caminho_do_aviso("sino")
         self.assertEqual(c.read_bytes(), aviso_mod.wav_do_aviso("sino"))
+        certo = aviso_mod.wav_do_aviso("sino")
+        c.write_bytes(certo[:-4] + b"\x00\x01\x02\x03")            # MESMO tamanho, conteúdo diferente
+        self.assertEqual(c.stat().st_size, len(certo))
+        server.caminho_do_aviso("sino")
+        self.assertEqual(c.read_bytes(), certo)                        # é regravado (compara o conteúdo)
         with self.assertRaises(ValueError):
             server.caminho_do_aviso("../config")
 
@@ -300,25 +391,52 @@ class TestOuvir(BaseAviso):
         self.definir_pin_e_logar()
         self.assertEqual(self.ouvir("remoto", aviso="sino").status_code, 200)
 
-    def test_ouvir_limite_6_por_minuto(self) -> None:
+    def test_ouvir_limite_6_por_minuto_por_aparelho_remoto(self) -> None:
+        self.definir_pin_e_logar()
         for _ in range(6):
+            self.assertEqual(self.ouvir("remoto", aviso="sino").status_code, 200)
+        with self.assertLogs(server.auditoria.name, level="INFO") as cap:
+            r = self.ouvir("remoto", aviso="sino")
+        self.assertEqual(r.status_code, 429)
+        self.assertTrue(any("acao=voz_ouvir" in linha and "resultado=limite" in linha for linha in cap.output))
+
+    def test_ouvir_pc_local_sem_limite_por_ip_mas_com_teto_global(self) -> None:
+        # Final (LOW-2): o PC da loja não tem o limite por IP (como o announce); o teto da loja toda vale para todos.
+        self.assertEqual(server.VOZ_OUVIR_GLOBAL_MAX, 20)
+        self.assertEqual(server.VOZ_OUVIR_GLOBAL_JANELA_S, 600.0)
+        self.assertIn("voz_ouvir:global", server._TAXA_GLOBAIS)
+        for i in range(server.VOZ_OUVIR_GLOBAL_MAX):
+            self.assertEqual(self.ouvir(aviso="sino").status_code, 200, i)
+        with self.assertLogs(server.auditoria.name, level="INFO") as cap:
+            r = self.ouvir(aviso="sino")
+        self.assertEqual(r.status_code, 429)
+        self.assertTrue(any("acao=voz_ouvir" in linha and "resultado=limite" in linha for linha in cap.output))
+
+    def test_ouvir_teto_global_vale_para_remotos(self) -> None:
+        self.definir_pin_e_logar()
+        for _ in range(server.VOZ_OUVIR_GLOBAL_MAX):
             self.assertEqual(self.ouvir(aviso="sino").status_code, 200)
-        self.assertEqual(self.ouvir(aviso="sino").status_code, 429)
+        self.assertEqual(self.ouvir("remoto", aviso="sino").status_code, 429)
 
     def test_ouvir_falha_ao_gravar_o_aviso_500_sem_vazar(self) -> None:
         def quebra(nome: str) -> Path:
             raise OSError(r"C:\caminho\secreto")
 
-        with mock.patch.object(server, "caminho_do_aviso", quebra):
+        with mock.patch.object(server, "caminho_do_aviso", quebra), \
+                self.assertLogs(server.log.name, level="ERROR") as cap:
             r = self.ouvir(aviso="sino")
         self.assertEqual((r.status_code, r.get_json()["error"]), (500, "Não foi possível tocar o aviso."))
         self.assertNotIn("secreto", r.get_data(as_text=True))
+        self.assertNotIn("secreto", "\n".join(cap.output))            # LOW-5: só o tipo do erro, sem traceback
+        self.assertFalse(any("Traceback" in linha for linha in cap.output))
+        self.assertTrue(any("OSError" in linha for linha in cap.output))
         self.assertFalse(server._anuncio_lock.locked())
 
     def test_ouvir_motor_contaminado_503(self) -> None:
         self.configurar()
-        server._substituir_executor_audio()
-        r = self.ouvir(aviso="sino")
+        with self.assertLogs(server.log.name, level="WARNING"):   # o executor trocado avisa no log (esperado)
+            server._substituir_executor_audio()
+            r = self.ouvir(aviso="sino")
         self.assertEqual((r.status_code, r.get_json()["codigo"]), (503, "motor_contaminado"))
         self.assertFalse(server._anuncio_lock.locked())
 
@@ -353,14 +471,17 @@ class TestAvisoNaProgramacao(tp.BaseProg):
         self.assertIn("audio-play", self.cen.eventos)
         self.assertEqual(self.ordem, [])
 
-    def test_estimativa_de_fala_soma_o_aviso(self) -> None:
+    def test_estimativa_de_fala_soma_o_pior_aviso(self) -> None:
+        # Final (LOW-4/M-4): o aviso conta como AVISO_MAX_S, qualquer que seja o atual, para que trocar o aviso
+        # depois (inclusive de "nenhum" para um) nunca estoure o teto de 60 min/dia de horários já gravados.
         item = {"tipo": "anuncio", "alvo": "x" * 70, "ativo": True, "dias": [1]}
-        self.assertAlmostEqual(server._prog_segundos_fala(item),
-                               10.0 + aviso_mod.duracao_do_aviso("aeroporto"))
-        cfg = server.load_config()
-        cfg["voz_loja"] = {"aviso": "nenhum"}
-        server.save_config(cfg)
-        self.assertAlmostEqual(server._prog_segundos_fala(item), 10.0)
+        for aviso in aviso_mod.AVISOS:
+            with self.subTest(aviso=aviso):
+                cfg = server.load_config()
+                cfg["voz_loja"] = {"aviso": aviso}
+                server.save_config(cfg)
+                self.assertAlmostEqual(server._prog_segundos_fala(item), 10.0 + aviso_mod.AVISO_MAX_S)
+                self.assertAlmostEqual(server._prog_som_por_dia([item])[1], 10.0 + aviso_mod.AVISO_MAX_S)
         self.assertEqual(server._prog_segundos_fala({**item, "tipo": "audio"}), 0.0)
 
 

@@ -461,14 +461,20 @@ as **Mensagens prontas** e para os **anúncios da Programação**. **Não** toca
 
 **Como escolher.** No bloco **Voz da loja** (aba Anúncio) escolha o aviso: **Nenhum**, **Ding-dong**,
 **Aeroporto** (o padrão), **Suave** ou **Sino**. Cada um dura no máximo 3 segundos. Toque em **Ouvir** para escutar:
-o aviso sai **nas caixas da loja** (não no celular) e a música não abaixa.
+o aviso sai **nas caixas da loja** (não no celular) e a música não abaixa. Para ninguém ficar tocando sinetas sem
+parar, o **Ouvir** aceita até 6 toques por minuto em cada celular e 20 a cada 10 minutos na loja toda.
 
-**A voz é da loja inteira.** O motor (Auto, Online ou Offline), a voz (Francisca ou Antonio), a velocidade e o aviso
+**A voz é da loja inteira.** O motor (Auto, Online ou Offline), a voz (Francisca ou Antônio), a velocidade e o aviso
 valem para **todos os aparelhos**: o que você escolhe no celular muda também no computador da loja. Antes, cada
 aparelho guardava a sua voz. Se a loja ainda não tinha uma voz salva, o computador da loja passa a usar a escolha
 que ele guardava antes (motor, voz e velocidade), uma única vez. Se outro aparelho já escolheu a voz da loja, a escolha
 antiga é descartada.
 Por enquanto qualquer aparelho com acesso (PC da loja ou PIN) pode mudar; numa versão futura só o gerente poderá.
+
+Se a voz da loja estiver em **Online** e a internet cair, o anúncio não sai e o painel avisa: escolha **Auto** para
+usar a voz do computador enquanto isso. No limite de 60 minutos de som por dia da **Programação**, cada anúncio
+conta 3 segundos de aviso (o mais longo), mesmo com o aviso em **Nenhum**: assim trocar o aviso depois nunca faz
+os horários já marcados passarem do limite.
 
 Os sons do aviso são criados pelo próprio Proclamare: não usam música nem áudio de terceiros, então não há
 direitos autorais envolvidos.

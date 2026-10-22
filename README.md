@@ -29,9 +29,11 @@ de fundo **abaixa sozinha** durante o anúncio e volta ao volume normal no final
 ## ✨ O que ele faz
 
 ### 📢 Anúncios de voz
-- **Texto vira fala nas caixas da loja** com vozes neurais em português (Francisca ou Antonio, via Microsoft Edge TTS).
+- **Texto vira fala nas caixas da loja** com vozes neurais em português (Francisca ou Antônio, via Microsoft Edge TTS).
 - **Funciona sem internet:** se a conexão cair, usa a voz do próprio sistema operacional (modo *Auto*), ou você escolhe *Online* / *Offline* manualmente.
 - **Velocidade ajustável** da fala (−50% a +50%).
+- **Aviso sonoro antes do anúncio**, como nos aeroportos: *Ding-dong*, *Aeroporto*, *Suave*, *Sino* ou nenhum, com botão **Ouvir** para escutar nas caixas. O som é criado pelo próprio Proclamare (sem direitos autorais).
+- **Voz da loja:** motor, voz, velocidade e aviso valem para todos os aparelhos (escolheu no celular, muda no computador da loja também).
 - **Mensagens prontas** com um clique — e **editáveis**: troque, apague, reordene e crie as da sua loja (até 24; vêm 6 de exemplo, como farol aceso, caixa rápido e loja fechando, e dá para restaurá-las).
 - **Histórico** dos anúncios do dia, com um toque para repetir.
 - Atalho **Ctrl + Enter** para anunciar e **botão de teste** para conferir as caixas.

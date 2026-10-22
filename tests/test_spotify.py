@@ -1092,7 +1092,8 @@ class TesteAnuncio(BaseSpotify):
             self.addCleanup(p.stop)
 
     def anunciar(self) -> Any:
-        return self.post("/api/announce", {"text": "Atenção, clientes", "engine": "offline"})
+        # sem internet (tem_internet falso) a voz da loja "auto" fala offline; "engine" não é mais lido
+        return self.post("/api/announce", {"text": "Atenção, clientes"})
 
     def test_anuncio_normal_sem_aviso(self) -> None:
         j = self.anunciar().get_json()
