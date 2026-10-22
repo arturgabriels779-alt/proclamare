@@ -64,7 +64,7 @@ class ArmazemTests(Base):
         # O arquivo existe e não guarda a senha em texto.
         self.assertNotIn(SENHA, self.arquivo().read_text(encoding="utf-8"))
         with self.assertRaises(server.ErroContas) as e:
-            server.criar_conta(_dados(usuario="ANA.adm"), None)
+            server.criar_conta(_dados(usuario="ANA.adm"), c)
         self.assertEqual((e.exception.status, e.exception.codigo), (409, "usuario_repetido"))
 
     def test_arquivo_corrompido_vira_copia_e_nao_quebra(self):
@@ -134,6 +134,44 @@ class ArmazemTests(Base):
         with self.assertRaises(server.ErroContas) as e:
             server.alterar_conta("00000000", {"nome": "Z"}, 1, adm)
         self.assertEqual(e.exception.status, 404)
+
+    def test_ator_none_so_para_o_primeiro_adm(self):
+        with self.assertRaises(server.ErroContas) as e:
+            server.criar_conta(_dados("bia.func", "funcionario"), None)
+        self.assertEqual(e.exception.status, 403)
+        self.assertFalse(server.modo_contas())
+        server.criar_conta(_dados(), None)
+        with self.assertRaises(server.ErroContas) as e:
+            server.criar_conta(_dados("cris.adm"), None)
+        self.assertEqual((e.exception.status, e.exception.codigo), (403, "sem_permissao"))
+
+    def test_403_antes_de_duplicado(self):
+        adm = server.criar_conta(_dados(), None)
+        ger = server.criar_conta(_dados("gil.ger", "gerente"), adm)
+        with self.assertRaises(server.ErroContas) as e:
+            server.criar_conta(_dados("ana.adm", "gerente"), ger)
+        self.assertEqual(e.exception.status, 403)
+
+    def test_hash_fora_do_lock(self):
+        adm = server.criar_conta(_dados(), None)
+        vistos = []
+        real = contas.hash_senha
+
+        def espiao(s):
+            vistos.append(server._contas_arquivo.lock._is_owned())
+            return real(s)
+        with mock.patch.object(contas, "hash_senha", espiao):
+            f = server.criar_conta(_dados("bia.func", "funcionario"), adm)
+            server.alterar_conta(f["id"], {"senha": SENHA2}, f["versao"], adm)
+        self.assertEqual(vistos, [False, False])
+
+    def test_editar_nome_nao_exige_adm_ativo(self):
+        adm = server.criar_conta(_dados(), None)
+        doc = json.loads(self.arquivo().read_text(encoding="utf-8"))
+        doc["contas"][0]["ativa"] = False
+        self.arquivo().write_text(json.dumps(doc), encoding="utf-8")
+        novo = server.alterar_conta(adm["id"], {"nome": "Ana Maria"}, adm["versao"], None)
+        self.assertEqual(novo["nome"], "Ana Maria")
 
     def test_limite_de_contas(self):
         adm = server.criar_conta(_dados(), None)

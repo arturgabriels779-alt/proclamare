@@ -7345,15 +7345,26 @@ def _erro_validacao_conta(campo: str | None, motivo: str | None) -> ErroContas:
 def criar_conta(dados: Any, ator: dict | None) -> dict:
     """
     Cria uma conta e devolve a cópia interna dela. `ator` = conta que cria; None SÓ para o primeiro ADM
-    (B3, pelo PC das caixas). Com ator, o perfil criado tem de estar na hierarquia dele (senão 403).
+    (B3, pelo PC das caixas): None com contas já existentes, ou com perfil != adm, é 403. A hierarquia é checada
+    ANTES de duplicado/limite (quem não pode criar não descobre quais logins existem). O PBKDF2 roda FORA do lock.
     """
+    perfil_pedido = dados.get("perfil") if isinstance(dados, dict) else None
+    if perfil_pedido in contas.PERFIS:
+        permitido = (perfil_pedido == "adm") if ator is None else contas.pode_gerenciar(ator.get("perfil", ""), perfil_pedido)
+        if not permitido:
+            raise ErroContas("Seu perfil não pode criar esse tipo de conta.", 403, "sem_permissao", "perfil")
+    # Validação completa sem contas existentes (formato, senha); duplicado/limite são conferidos sob o lock.
+    limpa, campo, motivo = contas.validar_conta_nova(dados, [])
+    if limpa is None:
+        raise _erro_validacao_conta(campo, motivo)
+    hash_novo = contas.hash_senha(limpa["senha"])   # caro: fora do lock
     with _contas_arquivo.lock:
         doc = copy.deepcopy(_contas_arquivo.ler())
-        limpa, campo, motivo = contas.validar_conta_nova(dados, doc["contas"])
-        if limpa is None:
-            raise _erro_validacao_conta(campo, motivo)
-        if ator is not None and not contas.pode_gerenciar(ator.get("perfil", ""), limpa["perfil"]):
+        if ator is None and doc["contas"]:
             raise ErroContas("Seu perfil não pode criar esse tipo de conta.", 403, "sem_permissao", "perfil")
+        _, campo, motivo = contas.validar_conta_nova(dados, doc["contas"])
+        if motivo:
+            raise _erro_validacao_conta(campo, motivo)
         agora = _agora_iso()
         usados = {c["id"] for c in doc["contas"]}
         novo_id = secrets.token_hex(4)
@@ -7361,7 +7372,7 @@ def criar_conta(dados: Any, ator: dict | None) -> dict:
             novo_id = secrets.token_hex(4)
         por = ator.get("id") if ator else None
         conta = {"id": novo_id, "usuario": limpa["usuario"], "nome": limpa["nome"], "funcao": limpa["funcao"],
-                 "perfil": limpa["perfil"], "ativa": True, "senha_hash": contas.hash_senha(limpa["senha"]),
+                 "perfil": limpa["perfil"], "ativa": True, "senha_hash": hash_novo,
                  "sessao_v": 0, "versao": 1, "criada_em": agora, "criada_por": por,
                  "alterada_em": agora, "alterada_por": por}
         doc["contas"].append(conta)
@@ -7381,6 +7392,7 @@ def alterar_conta(conta_id: Any, mudancas: Any, versao: Any, ator: dict | None) 
         raise _erro_validacao_conta(campo, motivo)
     if not isinstance(versao, int) or isinstance(versao, bool):
         raise ErroContas("Informe a versão da conta.", 400, "ausente", "versao")
+    hash_novo = contas.hash_senha(limpa["senha"]) if "senha" in limpa else None   # caro: fora do lock
     with _contas_arquivo.lock:
         doc = copy.deepcopy(_contas_arquivo.ler())
         alvo = next((c for c in doc["contas"] if c["id"] == conta_id), None)
@@ -7395,12 +7407,13 @@ def alterar_conta(conta_id: Any, mudancas: Any, versao: Any, ator: dict | None) 
             raise ErroContas("A conta mudou em outro aparelho; recarregue.", 409, "versao_mudou")
         if "senha" in limpa and limpa["senha"].strip().lower() == alvo["usuario"]:
             raise ErroContas("A senha não pode ser igual ao usuário.", 400, "igual_usuario", "senha")
-        if not contas.restaria_adm(doc["contas"], alvo["id"], limpa.get("perfil"), limpa.get("ativa")):
+        if ("perfil" in limpa or "ativa" in limpa) and not contas.restaria_adm(
+                doc["contas"], alvo["id"], limpa.get("perfil"), limpa.get("ativa")):
             raise ErroContas("Precisa haver pelo menos um administrador ativo.", 409, "ultimo_adm")
         derruba = False
         for chave, valor in limpa.items():
             if chave == "senha":
-                alvo["senha_hash"] = contas.hash_senha(valor)
+                alvo["senha_hash"] = hash_novo
                 derruba = True
             elif chave in ("perfil", "ativa"):
                 derruba = derruba or valor != alvo[chave]
