@@ -452,6 +452,27 @@ Detalhes que valem saber:
 
 ---
 
+## 2c. Aviso sonoro e voz da loja
+
+Antes de cada anúncio falado, o Proclamare toca um **aviso sonoro curto** (como o "ding-dong" de aeroporto) para
+chamar a atenção. Ele toca depois de a música abaixar e **antes** da fala. Vale para o anúncio que você digita, para
+as **Mensagens prontas** e para os **anúncios da Programação**. **Não** toca no **Testar caixas**, nem nos áudios
+(músicas) marcados na Programação.
+
+**Como escolher.** No bloco **Voz da loja** (aba Anúncio) escolha o aviso: **Nenhum**, **Ding-dong**,
+**Aeroporto** (o padrão), **Suave** ou **Sino**. Cada um dura no máximo 3 segundos. Toque em **Ouvir** para escutar:
+o aviso sai **nas caixas da loja** (não no celular) e a música não abaixa.
+
+**A voz é da loja inteira.** O motor (Auto, Online ou Offline), a voz (Francisca ou Antonio), a velocidade e o aviso
+valem para **todos os aparelhos**: o que você escolhe no celular muda também no computador da loja. Antes, cada
+aparelho guardava a sua voz; agora o painel do computador da loja aproveita a escolha antiga uma única vez.
+Por enquanto qualquer aparelho com acesso (PC da loja ou PIN) pode mudar; numa versão futura só o gerente poderá.
+
+Os sons do aviso são criados pelo próprio Proclamare: não usam música nem áudio de terceiros, então não há
+direitos autorais envolvidos.
+
+---
+
 ## 3. Conectar o Spotify (passo a passo)
 
 Diferente da v1, a música do Spotify **não toca pelo navegador** — ela toca
