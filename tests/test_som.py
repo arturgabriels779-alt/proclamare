@@ -2377,6 +2377,13 @@ class TestRotaPreferencias(BaseSom):
 # ---------------------------------------------------------------------------
 class TestAnnounceSom(BaseSom):
     EVENTOS_LEGADO = ["duck_spotify", ("yt", "duck"), "falar_legacy", ("restore_spotify", 30), ("yt", "restore")]
+    # v2.8 (A3): estes testes comparam a sequência EXATA de áudio (cen.tocados, arquivos na pasta) de antes do aviso
+    # sonoro; a voz da loja deles fica sem aviso. O aviso em si é testado em tests/test_aviso_anuncio.py.
+    CONFIG_SEM_AVISO = {"voz_loja": {"aviso": "nenhum"}}
+
+    def setUp(self) -> None:
+        super().setUp()
+        server.save_config(dict(self.CONFIG_SEM_AVISO))
 
     def falar_legado(self) -> Any:
         return mock.patch.object(
@@ -2391,7 +2398,7 @@ class TestAnnounceSom(BaseSom):
         self.assertEqual(self.cen.eventos, self.EVENTOS_LEGADO)
         self.assertFalse(server.SOM.motor_em_uso)                                  # o motor novo nem acordou
         self.assertIsNone(server.SOM.config_som())
-        self.assertFalse(server.CONFIG_PATH.exists())                              # e nada foi gravado
+        self.assertEqual(server.load_config(), self.CONFIG_SEM_AVISO)              # e nada foi gravado
 
     def test_sem_a_chave_som_o_caminho_online_e_o_antigo(self) -> None:
         self.internet = True
@@ -2575,7 +2582,8 @@ class TestAnnounceSom(BaseSom):
 
     def test_validacao_do_corpo_continua(self) -> None:
         self.configurar()
-        self.assertEqual(self.anunciar(engine="xyz").status_code, 400)
+        # v2.8 (A3): "engine" é ignorado (a voz é a da loja); o que ainda é validado é "text" e "teste".
+        self.assertEqual(self.anunciar(teste="xyz").status_code, 400)
         self.assertEqual(self.anunciar(text="").status_code, 400)
         self.assertEqual(self.cen.eventos, [])
 

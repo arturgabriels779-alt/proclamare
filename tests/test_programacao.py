@@ -1772,7 +1772,7 @@ class TesteExecucaoAnuncio(BaseProg):
         chamado: dict[str, Any] = {}
 
         def na_saida(texto: str, modo: str, voz: str, vel: int, voz_off: Any, usar_online: bool, som_: dict, *,
-                     contexto: Any = None, parar: Any = None) -> tuple:
+                     contexto: Any = None, parar: Any = None, aviso: str = "nenhum") -> tuple:   # v2.8: + aviso
             chamado.update(contexto=contexto, parar=parar)
             with contexto():
                 self.cen.eventos.append("tocando-na-saida")

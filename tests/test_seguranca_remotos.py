@@ -554,6 +554,8 @@ class TesteFilaDeExecucao(BaseRemotos):
 
 class TesteTetosDiarios(BaseRemotos):
     def test_estimativa_de_fala_e_soma_com_o_audio(self) -> None:
+        # v2.8 (A3): sem aviso sonoro, a estimativa é só a fala (a soma do aviso: tests/test_aviso_anuncio.py).
+        server.save_config({**server.load_config(), "voz_loja": {"aviso": "nenhum"}})
         item = {"tipo": "anuncio", "alvo": "a" * 70, "ativo": True, "dias": [1]}
         self.assertAlmostEqual(server._prog_segundos_fala(item), 10.0)
         item["alvo"] = "a" * 500

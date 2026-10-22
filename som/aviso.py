@@ -6,6 +6,7 @@ Mono, 16 bits, pico <= 0,5 da escala e ataque/fade de pelo menos 10 ms (sem esta
 """
 from __future__ import annotations
 
+import functools
 import io
 import math
 import struct
@@ -64,13 +65,19 @@ def _sintetizar(nome: str, taxa: int) -> list[float]:
     return saida
 
 
+@functools.lru_cache(maxsize=16)
+def _amostras(nome: str, taxa: int) -> tuple[float, ...]:
+    """Síntese cacheada (v2.8 A3): o anúncio e a estimativa da Programação pedem o mesmo aviso muitas vezes."""
+    return tuple(_sintetizar(nome, taxa))
+
+
 def wav_do_aviso(nome: str, *, taxa: int = 22050) -> bytes | None:
     """WAV (bytes) do aviso; None para "nenhum"; ValueError se o nome não existe."""
     if nome not in AVISOS:
         raise ValueError(f"Aviso sonoro desconhecido: {nome!r}")
     if nome == "nenhum":
         return None
-    amostras = _sintetizar(nome, taxa)
+    amostras = _amostras(nome, taxa)
     quadros = struct.pack("<%dh" % len(amostras), *(int(32767 * _AMPLITUDE * x) for x in amostras))
     buf = io.BytesIO()
     with wave.open(buf, "wb") as arq:
@@ -88,4 +95,4 @@ def duracao_do_aviso(nome: str) -> float:
     if nome == "nenhum":
         return 0.0
     taxa = 22050
-    return len(_sintetizar(nome, taxa)) / taxa
+    return len(_amostras(nome, taxa)) / taxa
