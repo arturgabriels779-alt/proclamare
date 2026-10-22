@@ -111,6 +111,17 @@ class TesteInventarioDeRotas(unittest.TestCase):
             self.assertTrue(cap is None or cap in contas.CAPACIDADES, chave)
         # as do Tocador sem login são rotas de verdade e todas têm linha na tabela
         self.assertLessEqual(set(server.ROTAS_TOCADOR_LOCAL), set(server.PERMISSOES_ROTAS))
+        # públicas na camada com guarda da própria rota: estão em API_PUBLICAS, fora da tabela (nada de checagem
+        # que parece valer e nunca roda), e o handler tem a guarda (pin: 409 modo_contas; revogar: ADM no PC)
+        import inspect
+
+        guardas = {"/api/auth/pin": "modo_contas()", "/api/auth/revogar": "_exigir_adm_local("}
+        self.assertEqual(set(server.ROTAS_PUBLICAS_COM_GUARDA_PROPRIA), set(guardas))
+        funcoes = {r.rule: server.app.view_functions[r.endpoint] for r in server.app.url_map.iter_rules()}
+        for rota, guarda in guardas.items():
+            self.assertIn(rota, server.API_PUBLICAS)
+            self.assertNotIn(("POST", rota), server.PERMISSOES_ROTAS)
+            self.assertIn(guarda, inspect.getsource(funcoes[rota]), rota)
         # públicas de verdade (sem sessão) nunca entram na camada de permissão
         for publica in ("/api/status", "/api/auth/status", "/api/auth/login", "/api/auth/logout", "/",
                         "/static/<path:filename>", "/spotify/callback"):

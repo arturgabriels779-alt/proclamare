@@ -229,6 +229,67 @@ class TesteMatriz(BasePermissoes):
         # com a entrada de volta, o gerente passa de novo
         self.assertEqual(self.chamar(*chave, self.rede["gerente"], local=False).status_code, 200)
 
+    def test_head_conta_como_get(self) -> None:
+        """HEAD é conferido como o GET da mesma regra (o Flask atende HEAD com o handler do GET)."""
+        r = self.r.head("/api/programacao", base_url=HOST_REMOTO, environ_base=ip_remoto(80),
+                        headers={"Cookie": f"{COOKIE}={self.rede['funcionario']}"})
+        self.assertEqual(r.status_code, 403)
+        r = self.r.head("/api/programacao", base_url=HOST_REMOTO, environ_base=ip_remoto(80),
+                        headers={"Cookie": f"{COOKIE}={self.rede['gerente']}"})
+        self.assertEqual(r.status_code, 200)
+
+    def test_mensagem_do_403_diz_a_quem_pedir(self) -> None:
+        """Capacidade que nem o gerente tem (som/segurança/Spotify) ou rota sem linha: 'administrador'."""
+        casos = (("gerente", "POST", "/api/som/saida", "administrador"),
+                 ("gerente", "GET", "/api/seguranca/remotos", "administrador"),
+                 ("gerente", "POST", "/api/spotify/desconectar", "administrador"),
+                 ("funcionario", "POST", "/api/som/preferencias", "administrador"),
+                 ("funcionario", "GET", "/api/programacao", "gerente"),
+                 ("funcionario", "POST", "/api/voz", "gerente"))
+        for perfil, metodo, regra, quem in casos:
+            with self.subTest(perfil=perfil, regra=regra):
+                r = self.chamar(metodo, regra, self.rede[perfil], local=False)
+                self.assert_negado(r)
+                self.assertTrue(r.get_json()["error"].endswith(f"Peça a um {quem}."), r.get_json()["error"])
+        tabela = dict(server.PERMISSOES_ROTAS)
+        del tabela[("GET", "/api/programacao")]
+        with mock.patch.object(server, "PERMISSOES_ROTAS", tabela):
+            r = self.chamar("GET", "/api/programacao", self.rede["gerente"], local=False)
+            self.assertTrue(r.get_json()["error"].endswith("Peça a um administrador."))
+
+    def test_pin_e_revogar_tem_guarda_propria(self) -> None:
+        """Fora da tabela (públicas na camada), mas a própria rota recusa: pin = 409 modo_contas; revogar = só ADM."""
+        for perfil in PERFIS:
+            for local, tokens in ((True, self.local), (False, self.rede)):
+                with self.subTest(perfil=perfil, local=local):
+                    r = self.chamar("POST", "/api/auth/pin", tokens[perfil], local=local, corpo={"pin": PIN})
+                    self.assertEqual((r.status_code, r.get_json()["codigo"]), (409, "modo_contas"))
+                    if perfil != "adm" or not local:
+                        r = self.chamar("POST", "/api/auth/revogar", tokens[perfil], local=local)
+                        self.assertEqual(r.status_code, 403)
+        for local in (True, False):
+            self.assertEqual(self.chamar("POST", "/api/auth/revogar", None, local=local).status_code, 403)
+
+    def test_corpo_grande_so_para_quem_tem_musica(self) -> None:
+        """Filtro do waitress (antes do corpo): o funcionário não consegue mandar ~100 MB para o disco."""
+        rota = server.ROTA_ENVIO_MUSICAS
+
+        def permitido(local: bool, token: str) -> bool:
+            origem, host = ("127.0.0.1", "127.0.0.1:8502") if local else ("192.168.0.50", "192.168.0.10:8502")
+            return server._corpo_grande_permitido("POST", rota, {"HOST": host, "COOKIE": f"{COOKIE}={token}"}, origem)
+
+        for local, tokens in ((True, self.local), (False, self.rede)):
+            with self.subTest(local=local):
+                self.assertFalse(permitido(local, tokens["funcionario"]))
+                self.assertTrue(permitido(local, tokens["gerente"]))
+                self.assertTrue(permitido(local, tokens["adm"]))
+        with mock.patch.object(server, "conta_por_id", return_value=None):
+            self.assertFalse(permitido(False, self.rede["gerente"]))   # conta sumiu/desativada: nada
+        gerente = server.conta_por_usuario("gil.gerente")
+        torta = dict(gerente, perfil="dono")   # perfil desconhecido (contas.json editado à mão): falha fechado
+        with mock.patch.object(server, "conta_por_id", return_value=torta):
+            self.assertFalse(permitido(False, self.rede["gerente"]))
+
     def test_perfil_desconhecido_falha_fechado(self) -> None:
         """Uma conta com perfil torto (arquivo editado à mão) não vira permissão: 403, nunca 500."""
         with mock.patch.object(server, "perfil_da_requisicao", return_value="dono"):
@@ -359,6 +420,22 @@ class TesteTocador(BasePermissoes):
                 r = self.chamar("POST", "/api/youtube/queue", None, local=True, corpo=corpo)
                 self.assertEqual(r.status_code, 401)
                 self.assertEqual(r.get_json()["codigo"], "login_requerido")
+
+    def test_pop_do_tocador_sem_login_tem_teto(self) -> None:
+        """O 'pop' pela isenção do Tocador: 20/min no total; acima disso 429. Quem tem 'musica' não usa esse teto."""
+        for i in range(server.POP_TOCADOR_MAX_POR_MIN):
+            r = self.chamar("POST", "/api/youtube/queue", None, local=True, corpo={"op": "pop"})
+            self.assertEqual(r.status_code, 200, f"{i} {r.get_data(as_text=True)}")
+        r = self.chamar("POST", "/api/youtube/queue", None, local=True, corpo={"op": "pop"})
+        self.assertEqual(r.status_code, 429)
+        # funcionário logado no PC também entra pela isenção: mesmo teto
+        r = self.chamar("POST", "/api/youtube/queue", self.local["funcionario"], local=True, corpo={"op": "pop"})
+        self.assertEqual(r.status_code, 429)
+        # gerente (tem "musica"): não passa pela isenção, sem esse teto
+        r = self.chamar("POST", "/api/youtube/queue", self.local["gerente"], local=True, corpo={"op": "pop"})
+        self.assertEqual(r.status_code, 200)
+        # o heartbeat do Tocador não é afetado
+        self.assert_passou(self.chamar("GET", "/api/youtube/state", None, local=True))
 
     def test_local_sem_login_nao_anuncia(self) -> None:
         """Sem sessão no PC das caixas: nada além do Tocador (anunciar, voz, programação, configuração = 401)."""

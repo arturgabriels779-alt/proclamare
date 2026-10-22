@@ -133,7 +133,7 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
   /api/mensagens e /restaurar; voz = POST /api/voz e /api/voz/ouvir; musica = /api/youtube/*, /api/musicas/*
   (remover/abrir-pasta seguem só locais), /api/listas*, Spotify de tocar/buscar/aparelhos/atalhos/atual-contexto e
   GET /api/som/estado|saidas; programacao = /api/programacao*; som = POST /api/som/*; seguranca = /api/seguranca/*
-  e /api/auth/pin|revogar|liberar|alertas/visto; spotify_config = GET/POST /api/spotify/config, POST
+  e /api/auth/liberar|alertas/visto; spotify_config = GET/POST /api/spotify/config, POST
   /api/spotify/desconectar e GET /spotify/login; desligar = POST /api/sistema/desligar (só local). Funcionário =
   só anunciar; gerente = tudo menos som/seguranca/spotify_config; ADM = tudo.
   Tocador da loja sem login (B6b): em modo contas, requisição do PC das caixas (_requisicao_local) passa SEM sessão
@@ -143,6 +143,13 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
   /api/voices: o que a aba ytMode "player" do app.js chama sozinha. Nenhuma anuncia nem muda configuração; pela rede
   nunca valem sem sessão. No PC, as mesmas rotas/op valem também com a sessão de um perfil sem "musica" (o cookie é
   do navegador inteiro: um funcionário logado não pode parar a aba Tocador; ele não ganha nada além do PC sem login).
+  O "pop" que entra por essa isenção tem teto próprio: POP_TOCADOR_MAX_POR_MIN (20/min no total, "pop_tocador") ->
+  429. Quem tem "musica" segue sem esse teto.
+  Envio de músicas (filtro de corpo grande do waitress, _corpo_grande_permitido): em modo contas o teto de ~100 MB só
+  vale para a sessão de um perfil com a capacidade da rota ("musica"); funcionário fica em 64 KB (413) antes do 403.
+  Texto do 403: "Peça a um administrador." quando nem o gerente tem a capacidade (som, seguranca, spotify_config) ou
+  a rota não tem linha; senão "Peça a um gerente.". /api/auth/pin e /api/auth/revogar ficam FORA da tabela
+  (API_PUBLICAS; ROTAS_PUBLICAS_COM_GUARDA_PROPRIA): a guarda é da própria rota (409 modo_contas / ADM no PC).
   /api/announce em modo contas: "teste": true só vale para quem tem "voz" (os outros: ignorado, o aviso toca).
   Limites de taxa de /api/announce (rede), /api/voz e /api/voz/ouvir (rede) valem por IP E por conta
   ("<prefixo>conta:<id>", mesmo teto). Auditoria de anuncio/voz_salvar/voz_ouvir ganha conta=c<10 hex> (HMAC do id
@@ -1228,7 +1235,8 @@ _taxa_lock = threading.Lock()
 _taxa_hist: dict[str, deque] = {}
 _taxa_janela: dict[str, float] = {}      # chave -> janela (s) usada por ela
 _TAXA_MAX_CHAVES = 512
-_TAXA_GLOBAIS = frozenset({"testar:global", "oembed", "voz_ouvir:global"})   # tetos da loja toda: nunca são descartados
+# tetos da loja toda: nunca são descartados
+_TAXA_GLOBAIS = frozenset({"testar:global", "oembed", "voz_ouvir:global", "pop_tocador"})
 
 
 def excedeu_limite(chave: str, maximo: int, janela_s: float) -> bool:
@@ -2090,6 +2098,10 @@ def _exigir_sessao() -> tuple[Response, int] | None:
 # Strict não chega nele; o state de uso único é a proteção). /api/auth/pin e /api/auth/revogar estão em API_PUBLICAS
 # só para devolver o próprio 403/409; elas ainda assim têm linha em PERMISSOES_ROTAS (documentação).
 ROTAS_PUBLICAS = frozenset(API_PUBLICAS | {"/", "/static/<path:filename>", "/spotify/callback"})
+# Públicas na camada, mas com guarda PRÓPRIA na rota (tests/test_higiene.py confere as duas coisas):
+#   /api/auth/pin     -> modo contas: 409 "modo_contas" para todos; modo PIN: só local.
+#   /api/auth/revogar -> _exigir_adm_local: só local e, em modo contas, só ADM logado.
+ROTAS_PUBLICAS_COM_GUARDA_PROPRIA = frozenset({"/api/auth/pin", "/api/auth/revogar"})
 
 # (método, regra do url_map) -> capacidade de contas.CAPACIDADES; None = basta estar logado (qualquer perfil).
 # Só vale em MODO CONTAS (modo PIN: nenhum 403 novo). Rota sem linha = 403 para todos menos o ADM (falha fechado);
@@ -2105,9 +2117,9 @@ PERMISSOES_ROTAS: dict[tuple[str, str], str | None] = {
     ("POST", "/api/voz"): "voz",
     ("POST", "/api/voz/ouvir"): "voz",
     ("GET", "/api/voices"): None,                     # diagnóstico; continua SÓ LOCAL (somente_local)
-    # Acesso / segurança do PC das caixas (as rotas também exigem ADM no PC: _exigir_adm_local)
-    ("POST", "/api/auth/pin"): "seguranca",           # pública na camada: em modo contas a rota responde 409
-    ("POST", "/api/auth/revogar"): "seguranca",       # pública na camada: a rota exige ADM logado no PC
+    # Acesso / segurança do PC das caixas (as rotas também exigem ADM no PC: _exigir_adm_local).
+    # /api/auth/pin e /api/auth/revogar NÃO entram aqui: estão em API_PUBLICAS (veja
+    # ROTAS_PUBLICAS_COM_GUARDA_PROPRIA) e a camada nunca as confere; a guarda é da própria rota.
     ("POST", "/api/auth/liberar"): "seguranca",
     ("POST", "/api/auth/alertas/visto"): "seguranca",
     ("POST", "/api/auth/primeiro-adm"): None,         # a PRÓPRIA rota decide: só local e só sem conta (senão 409)
@@ -2212,9 +2224,23 @@ def _tocador_local_liberado() -> bool:
     return rota_do_tocador(request.method, regra.rule, corpo)
 
 
-def _resp_sem_permissao() -> tuple[Response, int]:
+def _resp_sem_permissao(capacidade: str | None = None) -> tuple[Response, int]:
+    """403 "sem_permissao". O pedido vai ao ADM quando nem o gerente tem a capacidade (som, segurança, Spotify) ou
+    a rota não tem linha na tabela (só o ADM passa); senão, ao gerente."""
+    so_adm = capacidade is None or not contas.pode("gerente", capacidade)
+    quem = "um administrador" if so_adm else "um gerente"
     return jsonify({"ok": False, "codigo": "sem_permissao",
-                    "error": "Seu perfil não tem acesso a isso. Peça a um gerente."}), 403
+                    "error": f"Seu perfil não tem acesso a isso. Peça a {quem}."}), 403
+
+
+def _pode_seguro(perfil: Any, capacidade: str | None) -> bool:
+    """contas.pode que nunca levanta: perfil/capacidade desconhecidos = False (falha fechado). None = qualquer um."""
+    if capacidade is None:
+        return True
+    try:
+        return contas.pode(perfil, capacidade)
+    except (KeyError, ValueError, TypeError):
+        return False
 
 
 def _exigir_permissao() -> tuple[Response, int] | None:
@@ -2233,10 +2259,10 @@ def _exigir_permissao() -> tuple[Response, int] | None:
         return None
     if request.method == "OPTIONS" and regra.provide_automatic_options:
         return None   # resposta automática do Flask (só o cabeçalho Allow): o handler não roda
-    if _tocador_local_liberado():
-        return None
     perfil = perfil_da_requisicao()
     if perfil is None:
+        if _tocador_local_liberado():   # PC das caixas sem ninguém logado (o _exigir_sessao já deixou passar)
+            return _limitar_pop_tocador()
         if regra.rule == "/spotify/login":
             return None   # fora de /api/: a própria rota manda quem não entrou de volta ao painel
         return _resp_sem_sessao(load_config())
@@ -2248,13 +2274,24 @@ def _exigir_permissao() -> tuple[Response, int] | None:
         log.warning("Rota sem entrada em PERMISSOES_ROTAS recusada (%s %s).", metodo, regra.rule)
         return _resp_sem_permissao()
     capacidade = PERMISSOES_ROTAS[chave]
-    if capacidade is None:
+    if _pode_seguro(perfil, capacidade):
         return None
-    try:
-        permitido = contas.pode(perfil, capacidade)
-    except (KeyError, ValueError):
-        permitido = False
-    return None if permitido else _resp_sem_permissao()
+    if _tocador_local_liberado():
+        # perfil sem "musica" logado no PC das caixas: o cookie vale para a aba Tocador do mesmo navegador, que não
+        # pode parar; passa só o que o PC sem login já tem (com o mesmo teto do "pop")
+        return _limitar_pop_tocador()
+    return _resp_sem_permissao(capacidade)
+
+
+POP_TOCADOR_MAX_POR_MIN = 20   # "pop" da fila pela isenção do Tocador (o player real tira 1 por fim/erro de faixa)
+
+
+def _limitar_pop_tocador() -> tuple[Response, int] | None:
+    """Teto do {"op":"pop"} que entrou pela isenção do Tocador (sem a capacidade "musica"): 429 acima dele."""
+    if request.url_rule is not None and request.url_rule.rule == ROTA_FILA_YOUTUBE and excedeu_limite(
+            "pop_tocador", POP_TOCADOR_MAX_POR_MIN, 60.0):
+        return _resp_erro("Muitos pedidos seguidos. Aguarde um minuto.", 429)
+    return None
 
 
 def _chave_limite_conta() -> str | None:
@@ -2266,10 +2303,7 @@ def _chave_limite_conta() -> str | None:
 def _perfil_pode(capacidade: str) -> bool:
     """O perfil efetivo desta requisição tem a capacidade? (sem sessão ou perfil desconhecido = False)"""
     perfil = perfil_da_requisicao()
-    try:
-        return perfil is not None and contas.pode(perfil, capacidade)
-    except KeyError:
-        return False
+    return perfil is not None and _pode_seguro(perfil, capacidade)
 
 
 def _excedeu_limite_ip_e_conta(prefixo: str, maximo: int, janela_s: float) -> bool:
@@ -2294,7 +2328,7 @@ def _conta_auditoria() -> str | None:
     chave = _chave_acesso(load_config())
     if chave is None:
         return None
-    return "c" + hmac.new(chave, b"auditoria-conta:" + conta["id"].encode("ascii"), hashlib.sha256).hexdigest()[:10]
+    return "c" + hmac.new(chave, b"auditoria-conta:" + conta["id"].encode("utf-8"), hashlib.sha256).hexdigest()[:10]
 
 
 MSG_LOOPBACK_SUSPENSO = (
@@ -7205,7 +7239,14 @@ def _corpo_grande_permitido(metodo: str, caminho: str, cabecalhos: Any, origem: 
         if not bruto or len(bruto) > 4096:
             return False
         token = parse_cookie(bruto).get(COOKIE_SESSAO)
-        return _token_valido_sessao(token, load_config(), local)
+        carga = _carga_completa(token, load_config(), local)
+        if carga is None:
+            return False
+        if carga["conta"] is None:   # modo PIN: basta a sessão válida (como sempre)
+            return True
+        # v2.8 (B4): em modo contas, a MESMA capacidade da rota (PERMISSOES_ROTAS): um funcionário logado não
+        # consegue mandar o waitress guardar ~100 MB em disco antes de o Flask responder 403.
+        return _pode_seguro(carga["conta"]["perfil"], PERMISSOES_ROTAS[("POST", ROTA_ENVIO_MUSICAS)])
     except Exception:  # noqa: BLE001 - cabeçalho torto: sem permissão, nunca erro
         return False
 
