@@ -836,15 +836,6 @@
     }
   }
 
-  let defaultOfflineVoiceId = null;
-  function loadVoices() {
-    getJSON("/api/voices", { timeout: 8000 })
-      .then(({ data }) => {
-        if (data.ok && typeof data.default === "string") defaultOfflineVoiceId = data.default;
-      })
-      .catch(() => { /* a voz offline padrão é opcional */ });
-  }
-
   // ======================================================================
   // 10. Abas (celular) — Anúncio | Música
   // ======================================================================
@@ -902,11 +893,19 @@
   // ======================================================================
   // 11. Anúncio: motor, voz, velocidade, mensagens, contador
   // ======================================================================
+  // Voz da loja (v2.8): vale para TODOS os aparelhos e mora no servidor (GET/POST /api/voz).
+  // O painel só espelha o estado salvo; cada mudança grava com debounce de 400 ms.
+  const avisoSelect = $("aviso-select");
+  const btnAvisoOuvir = $("btn-aviso-ouvir");
+  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "aeroporto", definida: true, carregada: false };
+  let vozTimer = null;
+  let vozPend = {};
+
   const engineGroup = initGroup(engineSwitch, {
     role: "radio",
     onSelect: (engine) => {
       voiceSelect.disabled = engine === "offline"; // a voz escolhida só vale no motor online
-      savePrefs();
+      vozAgendar({ motor: engine });
     },
   });
 
@@ -916,28 +915,138 @@
     paintRange(speedRange, true);
   }
 
-  function savePrefs() {
-    store.set(LS.prefs, JSON.stringify({
-      engine: engineGroup.value,
-      voice: voiceSelect.value,
-      speed: Number(speedRange.value),
+  /** Reconstrói um <select> a partir de [{id,nome}] do servidor (createElement/textContent). */
+  function vozPreencher(sel, lista) {
+    const sig = lista.map((o) => o.id + "\u0001" + o.nome).join("\u0002");
+    if (sel.dataset.sig === sig) return; // nada mudou: não re-renderiza
+    sel.dataset.sig = sig;
+    sel.replaceChildren(...lista.map((o) => {
+      const opt = document.createElement("option");
+      opt.value = o.id;
+      opt.textContent = o.nome;
+      return opt;
     }));
   }
 
-  function loadPrefs() {
-    const raw = store.get(LS.prefs);
-    if (!raw) return;
+  function vozListaValida(v) {
+    return Array.isArray(v) ? v.filter((o) => o && typeof o.id === "string" && typeof o.nome === "string").slice(0, 20) : [];
+  }
+
+  /** Mostra no painel o que o servidor guardou (sem mexer se o valor não mudou). */
+  function vozAplicar(data) {
+    const v = data && data.voz_loja;
+    if (!v || typeof v !== "object") return false;
+    const op = data.opcoes || {};
+    const vozes = vozListaValida(op.vozes);
+    const avisos = vozListaValida(op.avisos);
+    if (vozes.length) vozPreencher(voiceSelect, vozes);
+    if (avisos.length) vozPreencher(avisoSelect, avisos);
+    if (ENGINES.includes(v.motor)) {
+      voz.motor = v.motor;
+      if (engineGroup.value !== v.motor) engineGroup.set(v.motor, true);
+    }
+    if (typeof v.voz === "string") {
+      voz.voz = v.voz;
+      if (voiceSelect.value !== v.voz) voiceSelect.value = v.voz;
+    }
+    if (isNum(v.velocidade)) {
+      voz.velocidade = clamp(Math.round(v.velocidade / 5) * 5, -50, 50);
+      if (speedRange.value !== String(voz.velocidade)) speedRange.value = String(voz.velocidade);
+    }
+    if (typeof v.aviso === "string") {
+      voz.aviso = v.aviso;
+      if (avisoSelect.value !== v.aviso) avisoSelect.value = v.aviso;
+    }
+    voz.definida = v.definida !== false;
+    voz.carregada = true;
+    voiceSelect.disabled = voz.motor === "offline";
+    btnAvisoOuvir.disabled = !avisoSelect.value || avisoSelect.value === "nenhum";
+    updateSpeedLabel();
+    return true;
+  }
+
+  async function vozCarregar() {
+    try {
+      const { ok, data } = await getJSON("/api/voz", { timeout: 8000 });
+      if (ok && data.ok && vozAplicar(data)) vozMigrar();
+    } catch (e) { /* sem servidor agora: tenta de novo no próximo carregamento */ }
+  }
+
+  /** Migração única (v2.8): as preferências antigas deste navegador viram a voz da loja, só no PC da loja. */
+  async function vozMigrar() {
+    let raw = null;
+    try { raw = window.localStorage.getItem(LS.prefs); } catch (e) { return; }
+    if (raw === null) return;
+    const apagar = () => { try { window.localStorage.removeItem(LS.prefs); } catch (e) { /* ignora */ } };
+    if (voz.definida) { apagar(); return; } // a loja já tem voz: a chave antiga não serve mais
+    if (!(auth.supported && auth.local)) return; // aparelho remoto nunca define a voz por migração
     try {
       const p = JSON.parse(raw);
-      if (p && ENGINES.includes(p.engine)) engineGroup.set(p.engine, true);
-      if (p && VOICES.includes(p.voice)) voiceSelect.value = p.voice;
-      if (p && isNum(p.speed)) speedRange.value = String(clamp(Math.round(p.speed / 5) * 5, -50, 50));
-    } catch (e) { /* preferências corrompidas: ignora */ }
+      const corpo = {};
+      if (p && ENGINES.includes(p.engine)) corpo.motor = p.engine;
+      if (p && VOICES.includes(p.voice)) corpo.voz = p.voice;
+      if (p && isNum(p.speed)) corpo.velocidade = clamp(Math.round(p.speed / 5) * 5, -50, 50);
+      if (Object.keys(corpo).length) {
+        const { ok, data } = await postJSON("/api/voz", corpo, { timeout: 8000 });
+        if (!(ok && data.ok)) return; // tenta de novo no próximo carregamento
+        vozAplicar(data);
+      }
+      apagar();
+    } catch (e) { /* preferências corrompidas ou sem rede: não migra */ }
+  }
+
+  /** Junta as mudanças e grava 400 ms depois da última. */
+  function vozAgendar(campos) {
+    if (!voz.carregada) return;
+    Object.assign(vozPend, campos);
+    clearTimeout(vozTimer);
+    vozTimer = setTimeout(vozGravar, 400);
+  }
+
+  async function vozGravar() {
+    vozTimer = null;
+    const corpo = vozPend;
+    vozPend = {};
+    if (!Object.keys(corpo).length) return;
+    try {
+      const { ok, status, data } = await postJSON("/api/voz", corpo, { timeout: 8000 });
+      if (ok && data.ok && vozAplicar(data)) return;
+      const msg = status === 429
+        ? "Muitas mudanças seguidas. Espere um minuto e tente de novo."
+        : typeof data.error === "string" && data.error ? data.error : "Não foi possível salvar a voz da loja.";
+      toast(msg, "error", { silent: true });
+    } catch (e) {
+      toast("Erro de conexão: a voz da loja não foi salva.", "error", { silent: true });
+    }
+    if (!vozTimer) vozCarregar(); // erro: volta ao que o servidor tem (a menos que haja mudança nova a caminho)
   }
 
   speedRange.addEventListener("input", updateSpeedLabel);
-  speedRange.addEventListener("change", savePrefs);
-  voiceSelect.addEventListener("change", savePrefs);
+  speedRange.addEventListener("change", () => vozAgendar({ velocidade: clamp(Math.round(Number(speedRange.value) || 0), -50, 50) }));
+  voiceSelect.addEventListener("change", () => vozAgendar({ voz: voiceSelect.value }));
+  avisoSelect.addEventListener("change", () => {
+    btnAvisoOuvir.disabled = avisoSelect.value === "nenhum";
+    vozAgendar({ aviso: avisoSelect.value });
+  });
+
+  btnAvisoOuvir.addEventListener("click", async () => {
+    const aviso = avisoSelect.value;
+    if (!aviso || aviso === "nenhum" || btnAvisoOuvir.disabled) return;
+    btnAvisoOuvir.disabled = true;
+    try {
+      const { ok, status, data } = await postJSON("/api/voz/ouvir", { aviso }, { timeout: 20000 });
+      if (!(ok && data.ok)) {
+        const msg = status === 409 ? "Já existe um anúncio tocando"
+          : status === 429 ? "Muitos testes seguidos. Espere um minuto."
+          : typeof data.error === "string" && data.error ? data.error : "Não foi possível tocar o aviso.";
+        toast(msg, status === 409 ? "info" : "error", { silent: true });
+      }
+    } catch (e) {
+      toast("Erro de conexão com o servidor.", "error", { silent: true });
+    } finally {
+      btnAvisoOuvir.disabled = avisoSelect.value === "nenhum";
+    }
+  });
 
   function updateCounter() {
     const len = messageText.value.length;
@@ -1692,14 +1801,8 @@
     setAnnouncing(true, isTest);
     setStatus(isTest ? "Testando as caixas de som…" : "Tocando o anúncio…", "live");
 
-    const voice = VOICES.includes(voiceSelect.value) ? voiceSelect.value : "francisca";
-    const payload = {
-      text,
-      engine: ENGINES.includes(engineGroup.value) ? engineGroup.value : "auto",
-      voice,
-      speed: clamp(Math.round(Number(speedRange.value) || 0), -50, 50),
-      offline_voice_id: defaultOfflineVoiceId,
-    };
+    // v2.8: motor, voz, velocidade e aviso vêm da voz da loja, guardada no servidor
+    const payload = isTest ? { text, teste: true } : { text };
 
     try {
       // O servidor responde quando o áudio termina: timeout generoso.
@@ -8120,10 +8223,11 @@
     // anúncio
     progTexto.value = item && tipo === "anuncio" ? item.alvo : "";
     paintCounter(progTextoCount, progTexto.value.length, MAX_CHARS);
-    const voz = item && item.voz ? item.voz : VOICES.includes(voiceSelect.value) ? voiceSelect.value : "francisca";
-    const motor = item && item.motor ? item.motor : ENGINES.includes(engineGroup.value) ? engineGroup.value : "auto";
-    const vel = item && isNum(item.velocidade) ? item.velocidade : clamp(Math.round(Number(speedRange.value) || 0), -50, 50);
-    progVoz.value = voz;
+    // padrões vêm da voz da loja (v2.8)
+    const vozItem = item && item.voz ? item.voz : VOICES.includes(voz.voz) ? voz.voz : "francisca";
+    const motor = item && item.motor ? item.motor : ENGINES.includes(voz.motor) ? voz.motor : "auto";
+    const vel = item && isNum(item.velocidade) ? item.velocidade : voz.velocidade;
+    progVoz.value = vozItem;
     progMotor.value = motor;
     progVel.value = String(vel);
     setText(progVelOut, (vel > 0 ? "+" : "") + vel + "%");
@@ -10950,7 +11054,6 @@
   // ======================================================================
   // 18. Inicialização
   // ======================================================================
-  loadPrefs();
   if (!engineGroup.value) engineGroup.set("auto", true);
   voiceSelect.disabled = engineGroup.value === "offline";
   updateSpeedLabel();
@@ -10980,7 +11083,7 @@
     const savedMode = store.get(LS.ytMode) === "player" ? "player" : "control";
     applyYoutubeMode(savedMode, false);
     syncPanes();
-    loadVoices();
+    vozCarregar(); // voz da loja (v2.8): o painel mostra o que o servidor guardou
 
     // Tarefas de polling (todas passam pelo agendador único)
     scheduler.add("status", pollStatus, 15000, { immediate: true });

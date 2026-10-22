@@ -852,6 +852,10 @@ html[data-announcing="true"] .onstage::before { display: none; }
 
 /* ---- Voz ---- */
 .voice-fields { display: flex; flex-direction: column; gap: 16px; }
+.voice-note { margin: -4px 0 14px; }
+.field__row { display: flex; align-items: center; gap: 10px; }
+.field__row > .select { flex: 1 1 auto; min-width: 0; }
+.field__row > .btn { flex: 0 0 auto; min-height: 44px; }
 
 /* ---- Histórico ---- */
 .history__list {
@@ -1825,7 +1829,6 @@ html[data-vt="theme"]::view-transition-new(root) { animation: fade-in 280ms var(
 /* Laptop: Motor e Voz lado a lado, Velocidade ocupa a linha de baixo inteira */
 @media (min-width: 1024px) and (max-width: 1199.98px) {
   .voice-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .voice-fields > .field:last-child { grid-column: 1 / -1; }
 }
 
 /* ---- Tablet ---- */

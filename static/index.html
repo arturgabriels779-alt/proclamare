@@ -271,8 +271,9 @@
       <div class="tile tile--voice">
         <div class="tile__head">
           <svg class="icon tile__icon" aria-hidden="true"><use href="#i-wave"/></svg>
-          <h2 class="tile__title" id="title-voice">Voz</h2>
+          <h2 class="tile__title" id="title-voice">Voz da loja</h2>
         </div>
+        <p class="hint voice-note">Vale para todos os aparelhos</p>
         <div class="voice-fields">
           <div class="field">
             <span class="label" id="label-engine">Motor de voz</span>
@@ -287,13 +288,24 @@
             <div class="select">
               <select id="voice-select">
                 <option value="francisca">Francisca (feminina)</option>
-                <option value="antonio">Antonio (masculina)</option>
+                <option value="antonio">Antônio (masculina)</option>
               </select>
             </div>
           </div>
           <div class="field">
             <label class="label label--split" for="speed-range">Velocidade <output class="label__value" id="speed-value" for="speed-range">0%</output></label>
             <input type="range" id="speed-range" class="range range--bipolar" min="-50" max="50" step="5" value="0">
+          </div>
+          <div class="field">
+            <label class="label" for="aviso-select">Aviso antes do anúncio</label>
+            <div class="field__row">
+              <div class="select">
+                <select id="aviso-select">
+                  <option value="nenhum">Nenhum</option>
+                </select>
+              </div>
+              <button type="button" class="btn btn--ghost btn--sm" id="btn-aviso-ouvir" disabled>Ouvir</button>
+            </div>
           </div>
         </div>
       </div>
