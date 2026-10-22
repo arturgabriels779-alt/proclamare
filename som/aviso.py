@@ -65,19 +65,16 @@ def _sintetizar(nome: str, taxa: int) -> list[float]:
     return saida
 
 
+_TAXA_PADRAO = 22050
+
+
 @functools.lru_cache(maxsize=16)
-def _amostras(nome: str, taxa: int) -> tuple[float, ...]:
-    """Síntese cacheada (v2.8 A3): o anúncio e a estimativa da Programação pedem o mesmo aviso muitas vezes."""
-    return tuple(_sintetizar(nome, taxa))
-
-
-def wav_do_aviso(nome: str, *, taxa: int = 22050) -> bytes | None:
-    """WAV (bytes) do aviso; None para "nenhum"; ValueError se o nome não existe."""
-    if nome not in AVISOS:
-        raise ValueError(f"Aviso sonoro desconhecido: {nome!r}")
-    if nome == "nenhum":
-        return None
-    amostras = _amostras(nome, taxa)
+def _wav(nome: str, taxa: int) -> bytes:
+    """
+    WAV pronto, cacheado (v2.8 A3): o anúncio e a estimativa da Programação pedem o mesmo aviso muitas vezes.
+    Guarda os BYTES (~50-90 KB cada), não as amostras em float (mais de 1 MB em objetos Python por aviso).
+    """
+    amostras = _sintetizar(nome, taxa)
     quadros = struct.pack("<%dh" % len(amostras), *(int(32767 * _AMPLITUDE * x) for x in amostras))
     buf = io.BytesIO()
     with wave.open(buf, "wb") as arq:
@@ -88,11 +85,19 @@ def wav_do_aviso(nome: str, *, taxa: int = 22050) -> bytes | None:
     return buf.getvalue()
 
 
-def duracao_do_aviso(nome: str) -> float:
-    """Duração em segundos (0.0 para "nenhum"); ValueError se o nome não existe."""
+def wav_do_aviso(nome: str, *, taxa: int = _TAXA_PADRAO) -> bytes | None:
+    """WAV (bytes) do aviso; None para "nenhum"; ValueError se o nome não existe."""
     if nome not in AVISOS:
         raise ValueError(f"Aviso sonoro desconhecido: {nome!r}")
     if nome == "nenhum":
+        return None
+    return _wav(nome, taxa)
+
+
+def duracao_do_aviso(nome: str) -> float:
+    """Duração em segundos (0.0 para "nenhum"), lida do cabeçalho do próprio WAV; ValueError se o nome não existe."""
+    dados = wav_do_aviso(nome)
+    if dados is None:
         return 0.0
-    taxa = 22050
-    return len(_amostras(nome, taxa)) / taxa
+    with wave.open(io.BytesIO(dados), "rb") as arq:
+        return arq.getnframes() / arq.getframerate()
