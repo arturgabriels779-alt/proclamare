@@ -53,6 +53,8 @@ Inventário de rotas (v2.7.1)
   POST /api/sistema/desligar               local | - | {}
   POST /api/announce                       pin | 10/min por IP remoto | {"text","engine"?,"voice"?,"speed"?,"offline_voice_id"?}
   GET  /api/voices                         pin | - | -
+  GET  /api/voz                            pin | - | -
+  POST /api/voz                            pin | 20/min | {"motor"?,"voz"?,"velocidade"?,"aviso"?}
   GET  /api/youtube/state                  pin | - | -
   POST /api/youtube/state                  pin | 60/10 s | heartbeat da aba Tocador (chaves conhecidas; outra = 400)
   GET  /api/youtube/commands               pin | 4 long-polls simultâneos | -
@@ -106,6 +108,17 @@ Inventário de rotas (v2.7.1)
   GET  /api/spotify/atual-contexto         pin | 20/10 s | -
   GET  /spotify/login                      pin | 5/min | - (redireciona; nunca devolve texto)
   GET  /spotify/callback                   publica | - | ?code=&state= (state de uso único)
+
+Contrato v2.8 (Parte A: voz da loja)
+------------------------------------
+  A voz dos anúncios é da LOJA, não de cada aparelho: mora em config.json["voz_loja"] =
+  {"motor": auto|online|offline, "voz": francisca|antonio, "velocidade": -50..50, "aviso": nenhum|ding_dong|
+  aeroporto|suave|sino}. Padrão (VOZ_LOJA_PADRAO): auto / francisca / 0 / aeroporto. voz_loja() nunca levanta:
+  chave ausente ou campo torto cai no padrão campo a campo; "definida" = a chave existe no config.
+  GET  /api/voz   -> {ok, voz_loja:{motor,voz,velocidade,aviso,definida}, opcoes:{motores,vozes[{id,nome}],avisos[{id,nome}]}}
+  POST /api/voz   -> qualquer subconjunto (>= 1) de motor/voz/velocidade/aviso; o resto é preservado. Chave fora da
+                     lista = 400 "Campo desconhecido."; valor inválido = 400 com "campo". 20 gravações/min por IP.
+                     Auditoria: só quantos campos. Mesma resposta do GET.
 
 Contrato v2.7.1 (correções da auditoria de segurança)
 -----------------------------------------------------
@@ -852,6 +865,7 @@ from werkzeug.http import parse_cookie
 # pycaw/pygame entram de forma tardia e tolerante dentro dele.
 import som as som_pkg
 from som import modelo as som_modelo
+from som.aviso import AVISO_PADRAO, AVISOS, NOMES_AVISO
 from som.motor import frase_de_teste, gerar_bipe, texto_para_sapi
 
 # Acervo "Minhas músicas" (contrato v2.4). O módulo só usa stdlib na carga (mutagen entra
@@ -3158,6 +3172,37 @@ VOZES_ONLINE = {
 }
 MOTORES = frozenset({"auto", "online", "offline"})
 VELOCIDADE_OFFLINE_WPM = 165
+# v2.8 (A2): voz da LOJA, guardada no config.json["voz_loja"]. Campo ausente ou torto cai no padrão, campo a campo.
+VOZ_LOJA_PADRAO: dict[str, Any] = {"motor": "auto", "voz": "francisca", "velocidade": 0, "aviso": AVISO_PADRAO}
+VOZES_LOJA_NOMES = (("francisca", "Francisca (feminina)"), ("antonio", "Antônio (masculina)"))
+VOZ_LOJA_ESCRITA_MAX_POR_MIN = 20   # POST /api/voz, por IP
+
+
+def _voz_loja_campo_ok(campo: str, valor: Any) -> bool:
+    """True se `valor` é válido para `campo` da voz da loja (mesmas regras do POST e da leitura)."""
+    if campo == "motor":
+        return isinstance(valor, str) and valor in MOTORES
+    if campo == "voz":
+        return isinstance(valor, str) and valor in VOZES_ONLINE
+    if campo == "velocidade":
+        return isinstance(valor, int) and not isinstance(valor, bool) and -50 <= valor <= 50
+    if campo == "aviso":
+        return isinstance(valor, str) and valor in AVISOS
+    return False
+
+
+def voz_loja() -> dict[str, Any]:
+    """Voz da loja (motor, voz, velocidade, aviso) + `definida`. Nunca levanta: o que estiver torto vira padrão."""
+    try:
+        cfg = load_config()
+    except Exception:   # config ilegível: a loja segue com o padrão
+        cfg = {}
+    existe = "voz_loja" in cfg
+    bruto = cfg.get("voz_loja") if isinstance(cfg.get("voz_loja"), dict) else {}
+    saida = {c: (bruto[c] if c in bruto and _voz_loja_campo_ok(c, bruto[c]) else padrao)
+             for c, padrao in VOZ_LOJA_PADRAO.items()}
+    saida["definida"] = existe
+    return saida
 
 
 # ---------------------------------------------------------------------------
@@ -5464,6 +5509,60 @@ def home() -> Response:
 @app.get("/api/status")
 def status() -> Response:
     return jsonify({"internet": tem_internet()})
+
+
+class ErroVozLoja(ErroApi):
+    """400 de /api/voz com o nome do campo inválido (o painel destaca o controle certo)."""
+
+    def __init__(self, mensagem: str, campo: str) -> None:
+        super().__init__(mensagem, 400)
+        self.campo = campo
+
+
+@app.errorhandler(ErroVozLoja)
+def _tratar_erro_voz_loja(e: ErroVozLoja) -> tuple[Response, int]:
+    return jsonify({"ok": False, "error": e.mensagem, "campo": e.campo}), e.status
+
+
+def _resposta_voz_loja() -> Response:
+    """Voz atual + as opções para montar os controles (motores, vozes, avisos)."""
+    return jsonify({
+        "ok": True,
+        "voz_loja": voz_loja(),
+        "opcoes": {
+            "motores": ["auto", "online", "offline"],
+            "vozes": [{"id": i, "nome": n} for i, n in VOZES_LOJA_NOMES],
+            "avisos": [{"id": a, "nome": NOMES_AVISO.get(a, a)} for a in AVISOS],
+        },
+    })
+
+
+@app.get("/api/voz")
+def voz_ler() -> Response:
+    return _resposta_voz_loja()
+
+
+@app.post("/api/voz")
+def voz_salvar() -> Response:
+    """Grava qualquer subconjunto de motor/voz/velocidade/aviso; o resto da voz da loja fica como estava."""
+    corpo = corpo_json()
+    exigir_chaves(corpo, VOZ_LOJA_PADRAO)
+    if not corpo:
+        raise ErroApi("Informe ao menos um campo.")
+    for campo, valor in corpo.items():
+        if not _voz_loja_campo_ok(campo, valor):
+            raise ErroVozLoja(f"Campo '{campo}' inválido.", campo)
+    if excedeu_limite("voz:" + (request.remote_addr or "?"), VOZ_LOJA_ESCRITA_MAX_POR_MIN, 60.0):
+        raise ErroApi("Muitas alterações seguidas. Aguarde um minuto.", 429)
+    with _config_lock:
+        cfg = load_config()
+        atual = voz_loja()
+        atual.pop("definida")
+        atual.update(corpo)
+        cfg["voz_loja"] = atual
+        _gravar_config_atomico(cfg)
+    auditar("voz_salvar", campos=len(corpo))   # só quantos campos; nunca os valores
+    return _resposta_voz_loja()
 
 
 @app.get("/api/voices")
