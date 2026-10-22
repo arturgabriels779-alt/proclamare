@@ -219,6 +219,9 @@ def conferir_senha(senha: Any, armazenado: Any) -> bool:
 
 
 # Hash de um valor aleatório descartado: usuário inexistente também paga o PBKDF2 (iguala o tempo de resposta).
+# ATENÇÃO: só iguala o tempo se usar as MESMAS iterações dos hashes guardados (é calculado no import, com o
+# ITERACOES de agora). Se ITERACOES mudar, os hashes antigos continuam com o valor velho até cada senha ser trocada:
+# reavalie então (ex.: calcular o fictício com as iterações mais comuns no contas.json).
 HASH_FICTICIO = hash_senha(secrets.token_urlsafe(24))
 
 

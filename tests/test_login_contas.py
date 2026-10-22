@@ -120,7 +120,7 @@ class TesteModoPin(BaseContas):
         st = self.l.get("/api/auth/status").get_json()
         self.assertEqual((st["modo_contas"], st["precisa_criar_adm"], st["conta"], st["pode_desligar"]),
                          (False, True, None, True))
-        self.assertEqual(st["permissoes"], sorted(contas.PODE["gerente"]))
+        self.assertEqual(st["permissoes"], sorted(contas.CAPACIDADES))   # o PC da loja é livre: pode tudo (adm)
         st = self.remoto("get", "/api/auth/status", headers=self.com_cookie(token)).get_json()
         self.assertEqual((st["autenticado"], st["precisa_criar_adm"], st["pode_desligar"]), (True, False, False))
         self.assertEqual(st["permissoes"], sorted(contas.PODE["gerente"]))
@@ -130,8 +130,13 @@ class TesteModoPin(BaseContas):
         self.assertEqual(self.login_conta("ana.adm", SENHA_ADM).status_code, 400)
         with server.app.test_request_context("/", base_url="http://localhost",
                                              environ_base={"REMOTE_ADDR": "127.0.0.1"}):
-            self.assertEqual(server.perfil_da_requisicao(), "gerente")
+            self.assertEqual(server.perfil_da_requisicao(), "adm")         # PC da loja (livre, como hoje)
             self.assertIsNone(server.conta_da_requisicao())
+        with server.app.test_request_context("/", base_url=HOST_REMOTO, environ_base=ip_remoto(50),
+                                             headers=self.com_cookie(token)):
+            self.assertEqual(server.perfil_da_requisicao(), "gerente")     # sessão de PIN pela rede
+        with server.app.test_request_context("/", base_url=HOST_REMOTO, environ_base=ip_remoto(50)):
+            self.assertIsNone(server.perfil_da_requisicao())               # sem sessão
 
 
 # ---------------------------------------------------------------------------------------------
@@ -182,6 +187,36 @@ class TestePrimeiroAdm(BaseContas):
         self.assertEqual((r.status_code, r.get_json()["codigo"]), (409, "ja_existe"))
         self.assertIsNone(server.conta_por_usuario("outro.adm"))
 
+    def test_primeiro_adm_corrida_409_e_uma_conta_so(self) -> None:
+        self.criar_adm()
+        # outra aba passou da checagem "não há conta" antes de o 1º ADM ser gravado: criar_conta confere sob o lock
+        with mock.patch.object(server, "modo_contas", return_value=False):
+            r = server.app.test_client().post("/api/auth/primeiro-adm", json=dict(ADM, usuario="outro.adm"))
+        self.assertEqual((r.status_code, r.get_json()["codigo"]), (409, "ja_existe"))
+        doc = json.loads(server._contas_path().read_text(encoding="utf-8"))
+        self.assertEqual([c["usuario"] for c in doc["contas"]], ["ana.adm"])
+
+    def test_primeiro_adm_sem_nome_nem_senha_nos_logs(self) -> None:
+        with self.assertLogs(server.log, level="DEBUG") as comum, \
+                self.assertLogs(server.auditoria, level="INFO") as trilha:
+            self.criar_adm()
+        texto = "\n".join(comum.output + trilha.output)
+        self.assertIn("acao=primeiro_adm", texto)
+        for segredo in ("ana.adm", SENHA_ADM, "Dona"):
+            self.assertNotIn(segredo, texto)
+
+    def test_pin_que_correu_com_o_primeiro_adm_nao_regrava(self) -> None:
+        server.aplicar_pin(PIN)
+        self.criar_adm()
+        chave = server.load_config()["acesso_chave"]
+        for pin in ("739104", None):
+            with self.assertRaises(server.ErroContas) as e:
+                server.aplicar_pin(pin)                                   # (a rota já tinha passado da checagem)
+            self.assertEqual((e.exception.status, e.exception.codigo), (409, "modo_contas"))
+        cfg = server.load_config()
+        self.assertNotIn("acesso_pin_hash", cfg)
+        self.assertEqual(cfg["acesso_chave"], chave)
+
     def test_primeiro_adm_sem_pin_cria_a_chave(self) -> None:
         self.assertNotIn("acesso_chave", server.load_config())            # nunca houve PIN
         self.criar_adm()
@@ -219,7 +254,7 @@ class TesteLoginContas(BaseContas):
 
     def test_erro_identico_usuario_inexistente_senha_errada_conta_desativada(self) -> None:
         inativa = self.criar("func.dois", "funcionario", SENHA_FUNC)
-        server.alterar_conta(inativa["id"], {"ativa": False}, inativa["versao"], None)
+        server.alterar_conta(inativa["id"], {"ativa": False}, inativa["versao"], None, sistema=True)
         respostas = [
             self.login_conta("ninguem.aqui", SENHA_FUNC, ip=61),          # usuário inexistente
             self.login_conta("func.um", "senha-errada-ficticia", ip=62),  # senha errada
@@ -285,15 +320,45 @@ class TesteLoginContas(BaseContas):
             codigos = [self.login_local("func.um", "senha-errada").status_code for _ in range(4)]
         self.assertEqual(codigos, [401, 401, 401, 429])
 
+    def test_erros_pela_rede_nao_travam_no_pc_e_vice_versa(self) -> None:
+        self.criar("joao.silva", "funcionario", SENHA_FUNC)
+        with self.relogio():
+            codigos = [self.login_conta("joao.silva", "senha-errada", ip=f"10.5.{i}.5").status_code for i in range(10)]
+            self.assertEqual(codigos, [401] * 9 + [429])
+            self.assertEqual(self.login_local("joao.silva", SENHA_FUNC).status_code, 200)   # no PC: entra
+            self.assertEqual(self.login_conta("joao.silva", SENHA_FUNC, ip="10.6.0.5").status_code, 429)  # rede: não
+            # o PC tem o próprio contador por usuário (10/15 min), que não trava a rede
+            codigos = [self.login_local("func.um", "senha-errada").status_code for _ in range(10)]
+            self.assertEqual(codigos, [401] * 9 + [429])
+            self.assertEqual(self.login_local("func.um", SENHA_FUNC).status_code, 429)
+            self.assertEqual(self.login_conta("func.um", SENHA_FUNC, ip="10.7.0.5").status_code, 200)
+
+    def test_logs_e_auditoria_sem_usuario_nem_senha(self) -> None:
+        inativa = self.criar("func.dois", "funcionario", SENHA_FUNC)
+        server.alterar_conta(inativa["id"], {"ativa": False}, inativa["versao"], None, sistema=True)
+        with self.assertLogs(server.log, level="DEBUG") as comum, \
+                self.assertLogs(server.auditoria, level="INFO") as trilha:
+            self.login_conta("ninguem.aqui", "senha-errada-ficticia", ip=71)
+            self.login_conta("func.um", "senha-errada-ficticia", ip=72)
+            self.login_conta("func.dois", SENHA_FUNC, ip=73)
+            self.login_conta("func.um", SENHA_FUNC, ip=74)
+            self.login_local("ana.adm", SENHA_ADM)
+            self.login_local("ana.adm", "senha-errada-ficticia")
+        texto = "\n".join(comum.output + trilha.output)
+        self.assertIn("acao=login", texto)
+        for segredo in ("ninguem.aqui", "func.um", "func.dois", "ana.adm", SENHA_FUNC, SENHA_ADM,
+                        "senha-errada-ficticia", self.func["id"], self.adm["id"]):
+            self.assertNotIn(segredo, texto)
+
     def test_token_de_conta_desativada_ou_senha_trocada_cai(self) -> None:
         token = cookie_da_resposta(self.login_conta("func.um", SENHA_FUNC))
         self.assertEqual(self.remoto("get", "/api/mensagens", headers=self.com_cookie(token)).status_code, 200)
         atual = server.conta_por_id(self.func["id"])
-        server.alterar_conta(self.func["id"], {"senha": SENHA_NOVA}, atual["versao"], None)   # sessao_v + 1
+        server.alterar_conta(self.func["id"], {"senha": SENHA_NOVA}, atual["versao"], None, sistema=True)   # sessao_v + 1
         self.assertEqual(self.remoto("get", "/api/mensagens", headers=self.com_cookie(token)).status_code, 401)
         token = cookie_da_resposta(self.login_conta("func.um", SENHA_NOVA))
         atual = server.conta_por_id(self.func["id"])
-        server.alterar_conta(self.func["id"], {"ativa": False}, atual["versao"], None)
+        server.alterar_conta(self.func["id"], {"ativa": False}, atual["versao"], None, sistema=True)
         self.assertEqual(self.remoto("get", "/api/mensagens", headers=self.com_cookie(token)).status_code, 401)
 
 
@@ -342,6 +407,30 @@ class TesteSessao(BaseContas):
             r = self.local_get("/api/musicas/zzzzzzzzzzzzzzzz/audio", novo, atividade=True)
             self.assertGreaterEqual(r.status_code, 400)
             self.assertIsNone(cookie_da_resposta(r))
+
+    def test_tunel_suspende_o_token_local(self) -> None:
+        self.criar_adm()
+        self.assertEqual(self.local_get("/api/programacao", self.token_adm).status_code, 200)
+        with mock.patch.object(server, "_tunel_suspende_loopback", return_value=True):
+            self.assertEqual(self.local_get("/api/programacao", self.token_adm).status_code, 401)
+
+    def test_corpo_grande_em_modo_contas(self) -> None:
+        self.criar_adm()
+        token_rede = cookie_da_resposta(self.login_conta("ana.adm", SENHA_ADM))
+        rota = server.ROTA_ENVIO_MUSICAS
+
+        def permitido(origem: str, host: str, token: "str | None") -> bool:
+            cab = {"HOST": host}
+            if token:
+                cab["COOKIE"] = f"{COOKIE}={token}"
+            return server._corpo_grande_permitido("POST", rota, cab, origem)
+
+        with mock.patch.object(server, "MUSICAS_ENVIO_HABILITADO", True):
+            self.assertFalse(permitido("127.0.0.1", "127.0.0.1:8502", None))             # PC sem sessão
+            self.assertTrue(permitido("127.0.0.1", "127.0.0.1:8502", self.token_adm))    # PC com token local
+            self.assertFalse(permitido("127.0.0.1", "127.0.0.1:8502", token_rede))       # PC com token da rede
+            self.assertFalse(permitido("192.168.0.50", "192.168.0.10:8502", self.token_adm))   # rede com l:1
+            self.assertTrue(permitido("192.168.0.50", "192.168.0.10:8502", token_rede))  # rede com token da rede
 
     def test_token_local_nao_vale_na_rede_e_vice_versa(self) -> None:
         self.criar_adm()
@@ -471,21 +560,24 @@ class TesteCliRedefinirSenha(unittest.TestCase):
 
     def setUp(self) -> None:
         # O contas.json da cópia temporária é criado por ESTE processo (mesmas funções do servidor).
-        self._salvo = server.CONFIG_PATH
+        self._salvo = (server.CONFIG_PATH, server._config_cache, server._config_assinatura)
         server.CONFIG_PATH = self.base / "config.json"
+        server._config_cache = {}
+        server._config_assinatura = None
         server._contas_arquivo.resetar()
         self.addCleanup(self._restaurar)
         for arq in ("contas.json", "config.json"):
             (self.base / arq).unlink(missing_ok=True)
+        shutil.rmtree(self.base / "logs", ignore_errors=True)
         with mock.patch.object(contas, "ITERACOES", 1000):
-            self.conta = server.criar_conta(dict(ADM, perfil="adm"), None)
+            self.conta = server.criar_conta(dict(ADM, perfil="adm"), None, primeiro_adm=True)
         self.env = {k: v for k, v in os.environ.items() if not k.startswith(("PROCLAMARE_", "ANUNCIADOR_"))}
         self.env.update({"PROCLAMARE_HOST": "127.0.0.1", "PROCLAMARE_PORT": str(self.porta),
                          "PROCLAMARE_MUSICAS_DIR": str(self.base / "musicas"), "PROCLAMARE_NO_BROWSER": "1",
                          "PYTHONIOENCODING": "utf-8"})
 
     def _restaurar(self) -> None:
-        server.CONFIG_PATH = self._salvo
+        server.CONFIG_PATH, server._config_cache, server._config_assinatura = self._salvo
         server._contas_arquivo.resetar()
 
     def rodar(self, usuario: str, entrada: str) -> subprocess.CompletedProcess:
@@ -505,6 +597,11 @@ class TesteCliRedefinirSenha(unittest.TestCase):
         self.assertTrue(contas.conferir_senha(SENHA_NOVA, disco["senha_hash"]))
         self.assertFalse(contas.conferir_senha(SENHA_ADM, disco["senha_hash"]))
         self.assertEqual(disco["sessao_v"], self.conta["sessao_v"] + 1)   # derruba as sessões abertas
+        # auditoria no arquivo de sempre (logs/auditoria.log da pasta do programa), só com a ação
+        trilha = (self.base / "logs" / "auditoria.log").read_text(encoding="utf-8")
+        self.assertIn("acao=senha_redefinida_cli", trilha)
+        for segredo in ("ana.adm", "Ana.Adm", SENHA_NOVA, self.conta["id"]):
+            self.assertNotIn(segredo, trilha)
 
     def test_cli_senhas_diferentes_ou_usuario_inexistente_nao_muda_nada(self) -> None:
         antes = self.conta_no_disco()["senha_hash"]

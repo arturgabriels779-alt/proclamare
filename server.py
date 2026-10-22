@@ -126,7 +126,8 @@ Contrato v2.8 (Parte B: contas e perfis - B3, login e sessão)
   token sem "c" (de PIN) em modo contas; conta inexistente ou desativada; "sv" diferente (senha/perfil/ativa
   mudaram); "l" que não bate com a origem da requisição (token do PC não vale pela rede e vice-versa). A conta é
   RELIDA do contas.json a cada requisição (conta_da_requisicao(), guardada em flask.g; perfil_da_requisicao():
-  perfil da conta, "gerente" em modo PIN para o PC/sessão de PIN, None sem sessão).
+  perfil da conta; em modo PIN "adm" para o PC da loja (livre, pode tudo, como hoje) e "gerente" para sessões de
+  PIN pela rede; None sem sessão).
   Vida: rede = 14 dias deslizantes (renova se faltar < 7 dias) e teto de 90 dias desde o login, como sempre. PC das
   caixas = SESSAO_LOCAL_OCIOSA_S (300 s): só é renovado (mesmo iat e conta) em requisição /api/* com sucesso
   (< 400) e com o cabeçalho "X-Proclamare-Atividade: 1" (o painel manda quando houve clique/tecla no último
@@ -143,14 +144,15 @@ Contrato v2.8 (Parte B: contas e perfis - B3, login e sessão)
                      -> limite do PC (30/5 min) ou reserva por IP/faixa/trava (rede, cookie de aparelho como sempre)
                      -> UM PBKDF2 (usuário inexistente confere contra contas.HASH_FICTICIO). Usuário inexistente,
                      senha errada e conta desativada = o MESMO 401 {"ok":false,"error":"Usuário ou senha
-                     incorretos.","tentativas_restantes"}. Bloqueio por usuário (vale também para o PC das caixas
-                     e para usuários que não existem): CONTA_MAX_ERROS 10 em CONTA_JANELA_S 900 s -> CONTA_BLOQUEIO_S
+                     incorretos.","tentativas_restantes"}. Bloqueio por usuário (também para usuários que não
+                     existem), com contadores SEPARADOS para a rede e para o PC das caixas (erros pela rede nunca
+                     travam a pessoa no PC): CONTA_MAX_ERROS 10 em CONTA_JANELA_S 900 s -> CONTA_BLOQUEIO_S
                      900 s, respondido com o MESMO 429 do bloqueio por IP ("Muitas tentativas. Tente novamente em
                      N min."); acerto zera o contador do usuário; "liberar" e revogar também. Sucesso: {ok, conta,
                      permissoes} + cookie (rede 14 d; PC 5 min) + cookie de aparelho (só rede).
   GET  /api/auth/status ganha "modo_contas", "precisa_criar_adm" (PC da loja e nenhuma conta), "conta" (pública:
                      sem senha_hash/sessao_v; null sem sessão), "permissoes" (capacidades do perfil efetivo, em ordem;
-                     [] sem sessão) e, em modo contas, "pode_desligar" = PC das caixas E perfil com "desligar"
+                     [] sem sessão; modo PIN: todas no PC da loja, as do gerente numa sessão de PIN) e, em modo contas, "pode_desligar" = PC das caixas E perfil com "desligar"
                      (gerente/ADM). "autenticado" em modo contas = há conta logada válida. "pin_configurado" = false
                      em modo contas. O bloco "seguranca" (falhas, IPs, túneis) em modo contas só para o ADM no PC.
   POST /api/auth/pin (modo contas) -> 409 "codigo":"modo_contas". POST /api/auth/revogar, /api/auth/liberar e
@@ -161,7 +163,9 @@ Contrato v2.8 (Parte B: contas e perfis - B3, login e sessão)
                      eco; uma linha cada com stdin em pipe), mesmas regras do painel, sessao_v + 1 (derruba as sessões
                      da conta). Em modo contas --definir-pin/--remover-pin recusam (código 1).
   Auditoria: login com resultado (ok, senha_errada, usuario_inexistente, conta_inativa, limite) e perfil no
-  sucesso; primeiro_adm. NUNCA usuário, nome, senha ou id de conta no log ou na auditoria.
+  sucesso; primeiro_adm; senha_redefinida_cli (a CLI grava no mesmo logs/auditoria.log). NUNCA usuário, nome, senha
+  ou id de conta no log ou na auditoria. criar_conta/alterar_conta sem ator só com marca explícita
+  (primeiro_adm=True / sistema=True); ator None sem a marca = 403 "sem_permissao".
 
 Contrato v2.8 (Parte A: voz da loja)
 ------------------------------------
@@ -1782,9 +1786,12 @@ LOGIN_OK_MAX_POR_MIN = 10
 LOGIN_LOCAL_MAX = 30  # tentativas de login por 5 min vindas do "PC da loja" (que nem precisa de PIN)
 LOGIN_IP_MAX_CHAVES = 1024
 FALHAS_JANELA_S = 24 * 3600.0
-# v2.8 (B3): bloqueio POR USUÁRIO digitado (soma-se às camadas acima, vale também para o PC das caixas). A chave é o
-# login normalizado, exista a conta ou não: um usuário inexistente trava do mesmo jeito (não revela quem existe).
-# 10 erros em 15 min -> 15 min fixos; a resposta é o MESMO 429 do bloqueio por IP. Só memória (reiniciar zera).
+# v2.8 (B3): bloqueio POR USUÁRIO digitado (soma-se às camadas acima). A chave é a ORIGEM + o login normalizado,
+# exista a conta ou não: um usuário inexistente trava do mesmo jeito (não revela quem existe). Contadores SEPARADOS
+# para a rede ("r:") e para o PC das caixas ("l:"): erros vindos da rede nunca travam a pessoa no PC das caixas (senão
+# qualquer um na Wi-Fi tiraria o fiscal do ar por 15 min, de novo e de novo); o PC tem o próprio limite por usuário
+# além do LOGIN_LOCAL_MAX. 10 erros em 15 min -> 15 min fixos; a resposta é o MESMO 429 do bloqueio por IP.
+# Só memória (reiniciar zera).
 CONTA_MAX_ERROS = 10
 CONTA_JANELA_S = 900.0
 CONTA_BLOQUEIO_S = 900.0
@@ -1994,15 +2001,18 @@ def conta_da_requisicao() -> dict | None:
 
 def perfil_da_requisicao() -> str | None:
     """
-    v2.8: perfil efetivo de quem faz a requisição. Modo contas: o da conta logada (None sem sessão). Modo PIN: o PC
-    da loja e toda sessão de PIN valem como "gerente" (como hoje); None sem sessão.
+    v2.8: perfil efetivo de quem faz a requisição. Modo contas: o da conta logada (None sem sessão). Modo PIN (como
+    hoje): o PC da loja é livre e pode TUDO (saídas de som, segurança, Spotify) = "adm"; uma sessão de PIN pela rede
+    vale como "gerente"; None sem sessão.
     """
     if not has_request_context():
         return None
     if modo_contas():
         conta = conta_da_requisicao()
         return None if conta is None else conta["perfil"]
-    if _requisicao_local() or _token_valido_sessao(request.cookies.get(COOKIE_SESSAO), load_config()):
+    if _requisicao_local():
+        return "adm"
+    if _token_valido_sessao(request.cookies.get(COOKIE_SESSAO), load_config()):
         return "gerente"
     return None
 
@@ -2187,6 +2197,10 @@ def aplicar_pin(pin: str | None) -> bool:
     """
     novo_hash = _novo_hash_pin(pin) if pin is not None else None  # custo fora do lock
     with _config_lock:
+        # v2.8: confere DE NOVO sob o lock (o primeiro-adm grava o config sob o mesmo lock): um /api/auth/pin que
+        # passou da checagem da rota antes do primeiro ADM não pode regravar o PIN nem girar/apagar a chave depois.
+        if modo_contas():
+            raise ErroContas("O Proclamare agora usa contas: o PIN não vale mais.", 409, "modo_contas")
         cfg = load_config()
         if novo_hash is None:
             cfg.pop("acesso_pin_hash", None)
@@ -2501,12 +2515,16 @@ def _login_sucesso(ip: str, aparelho: str | None = None) -> None:
 
 
 # --- v2.8 (B3): bloqueio por usuário digitado ------------------------------------------------------------------
-def _usuario_chave(usuario: Any) -> str:
-    """Chave do bloqueio por usuário: o login normalizado; formato impossível vira uma chave própria (curta)."""
+def _usuario_chave(usuario: Any, local: bool) -> str:
+    """
+    Chave do bloqueio por usuário: origem ("l:" PC das caixas | "r:" rede) + o login normalizado; formato impossível
+    vira uma chave própria (curta). A origem separa os contadores (veja CONTA_MAX_ERROS).
+    """
+    origem = "l:" if local else "r:"
     normal = contas.normalizar_usuario(usuario)
     if normal is not None:
-        return "u:" + normal
-    return "x:" + hashlib.sha256(str(usuario).strip().lower().encode("utf-8", "replace")).hexdigest()[:16]
+        return origem + "u:" + normal
+    return origem + "x:" + hashlib.sha256(str(usuario).strip().lower().encode("utf-8", "replace")).hexdigest()[:16]
 
 
 def _usuario_limpar(agora: float) -> None:
@@ -2916,7 +2934,7 @@ def auth_status() -> Response:
         # v2.8 (modo contas): e só para quem pode desligar (gerente/ADM logados no PC das caixas).
         "pode_desligar": (local and perfil is not None and contas.pode(perfil, "desligar")) if modo else local,
         # v2.8 (B3): contas e perfis. "conta" nunca traz senha_hash/sessao_v; "permissoes" = capacidades do perfil
-        # efetivo (modo PIN: as do gerente para o PC da loja e para sessões de PIN; [] sem sessão).
+        # efetivo (modo PIN: TODAS para o PC da loja, que é livre; as do gerente para sessões de PIN; [] sem sessão).
         "modo_contas": modo,
         "precisa_criar_adm": local and not modo,
         "conta": conta_publica(conta) if conta is not None else None,
@@ -2979,7 +2997,7 @@ def _login_por_conta(dados: dict) -> Any:
     aparelho = _aparelho_valido(request.cookies.get(COOKIE_APARELHO), cfg) if not local else None
     suspenso = (not local and _tunel_suspende_loopback() and _local_por(
         ip, request.host, any(h in request.headers for h in CABECALHOS_DE_PROXY), ignorar_tunel=True))
-    chave = _usuario_chave(usuario)
+    chave = _usuario_chave(usuario, local)
     espera = _usuario_reservar(chave)
     if espera:
         # MESMO 429 do bloqueio por IP: não diz que é o usuário (nem se ele existe)
@@ -3245,7 +3263,7 @@ def auth_primeiro_adm() -> Any:
     if modo_contas():
         raise ErroContas("Já existe uma conta de administrador.", 409, "ja_existe")
     try:
-        conta = criar_conta(dict(dados, perfil="adm"), None)
+        conta = criar_conta(dict(dados, perfil="adm"), None, primeiro_adm=True)
     except ErroContas as exc:
         if exc.status == 403:   # outra aba criou o ADM no meio (criar_conta confere de novo sob o lock)
             raise ErroContas("Já existe uma conta de administrador.", 409, "ja_existe") from None
@@ -7767,12 +7785,16 @@ def _erro_validacao_conta(campo: str | None, motivo: str | None) -> ErroContas:
     return ErroContas(f"Valor inválido em '{campo}'.", 400, motivo, campo)
 
 
-def criar_conta(dados: Any, ator: dict | None) -> dict:
+def criar_conta(dados: Any, ator: dict | None, *, primeiro_adm: bool = False) -> dict:
     """
-    Cria uma conta e devolve a cópia interna dela. `ator` = conta que cria; None SÓ para o primeiro ADM
-    (B3, pelo PC das caixas): None com contas já existentes, ou com perfil != adm, é 403. A hierarquia é checada
-    ANTES de duplicado/limite (quem não pode criar não descobre quais logins existem). O PBKDF2 roda FORA do lock.
+    Cria uma conta e devolve a cópia interna dela. `ator` = conta que cria. Sem ator SÓ com `primeiro_adm=True`
+    (B3, POST /api/auth/primeiro-adm pelo PC das caixas), e aí só perfil adm e só sem nenhuma conta; `ator` None sem
+    a marca (ou ator junto com a marca) = 403 "sem_permissao" (falha fechado: um None esquecido nunca vira
+    permissão). A hierarquia é checada ANTES de duplicado/limite (quem não pode criar não descobre quais logins
+    existem). O PBKDF2 roda FORA do lock.
     """
+    if (ator is None) != primeiro_adm:
+        raise ErroContas("Seu perfil não pode criar esse tipo de conta.", 403, "sem_permissao", "perfil")
     perfil_pedido = dados.get("perfil") if isinstance(dados, dict) else None
     if perfil_pedido in contas.PERFIS:
         permitido = (perfil_pedido == "adm") if ator is None else contas.pode_gerenciar(ator.get("perfil", ""), perfil_pedido)
@@ -7806,12 +7828,16 @@ def criar_conta(dados: Any, ator: dict | None) -> dict:
         return copy.deepcopy(conta)
 
 
-def alterar_conta(conta_id: Any, mudancas: Any, versao: Any, ator: dict | None) -> dict:
+def alterar_conta(conta_id: Any, mudancas: Any, versao: Any, ator: dict | None, *,
+                  sistema: bool = False) -> dict:
     """
     Altera nome/função/perfil/ativa/senha de uma conta (o login não muda) e devolve a cópia interna.
-    `versao` = a que o cliente viu (409 `versao_mudou` se outro aparelho salvou antes). `ator` None = sistema/CLI
-    (sem hierarquia). Trocar senha, perfil ou ativa faz `sessao_v += 1` (derruba as sessões abertas da conta).
+    `versao` = a que o cliente viu (409 `versao_mudou` se outro aparelho salvou antes). Sem ator (sem hierarquia)
+    SÓ com `sistema=True` (CLI --redefinir-senha); `ator` None sem a marca, ou ator junto com ela, = 403
+    "sem_permissao". Trocar senha, perfil ou ativa faz `sessao_v += 1` (derruba as sessões abertas da conta).
     """
+    if (ator is None) != sistema:
+        raise ErroContas("Seu perfil não pode alterar essa conta.", 403, "sem_permissao")
     limpa, campo, motivo = contas.validar_alteracao(mudancas)
     if limpa is None:
         raise _erro_validacao_conta(campo, motivo)
@@ -10720,6 +10746,21 @@ _MSG_SENHA_CLI = {
 }
 
 
+def _auditar_cli(acao: str) -> None:
+    """
+    Linha na trilha de auditoria a partir da CLI (o servidor está desligado e o log não foi configurado): o MESMO
+    arquivo que o servidor usa - PROCLAMARE_AUDIT_FILE, senão auditoria.log ao lado do PROCLAMARE_LOG_FILE, senão o
+    padrão do lançador (logs/auditoria.log na pasta do programa). Só a ação (sem nome, usuário ou id). Falha ao abrir
+    o arquivo não impede a CLI.
+    """
+    caminho = _caminho_auditoria(_env("LOG_FILE", "").strip() or str(APP_DIR / "logs" / "proclamare.log"))
+    if caminho is None or _configurar_auditoria(caminho) is not None:
+        return
+    auditar(acao, resultado="ok")
+    for h in auditoria.handlers:
+        h.flush()
+
+
 def _cli_redefinir_senha(usuario: str) -> int:
     """
     v2.8 (B3): `python server.py --redefinir-senha <usuario>` - recuperação da conta no PC das caixas (ex.: o último
@@ -10743,7 +10784,8 @@ def _cli_redefinir_senha(usuario: str) -> int:
         if _ler_senha("Repita a senha: ") != senha:
             print("As duas senhas nao sao iguais. Nada foi alterado.")
             return 1
-        alterar_conta(conta["id"], {"senha": senha}, conta["versao"], None)
+        alterar_conta(conta["id"], {"senha": senha}, conta["versao"], None, sistema=True)
+        _auditar_cli("senha_redefinida_cli")
         print("Senha redefinida. As sessoes abertas dessa conta foram encerradas.")
         return 0
     except ErroContas as exc:

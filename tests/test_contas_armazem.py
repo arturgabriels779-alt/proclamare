@@ -53,7 +53,7 @@ class ArmazemTests(Base):
         self.assertIsNone(server.conta_por_usuario("ana.adm"))
 
     def test_criar_ativa_modo_contas(self):
-        c = server.criar_conta(_dados(usuario=" Ana.ADM "), None)
+        c = server.criar_conta(_dados(usuario=" Ana.ADM "), None, primeiro_adm=True)
         self.assertTrue(server.modo_contas())
         self.assertRegex(c["id"], r"^[0-9a-f]{8}$")
         self.assertEqual(c["usuario"], "ana.adm")
@@ -73,7 +73,7 @@ class ArmazemTests(Base):
         self.assertTrue(list(self.tmp.glob("contas.json.corrompido-*")))
 
     def test_conta_torta_e_descartada(self):
-        boa = server.criar_conta(_dados(), None)
+        boa = server.criar_conta(_dados(), None, primeiro_adm=True)
         doc = json.loads(self.arquivo().read_text(encoding="utf-8"))
         doc["contas"].append({"id": "zz", "usuario": "x"})
         doc["contas"].append("lixo")
@@ -81,7 +81,7 @@ class ArmazemTests(Base):
         self.assertEqual([c["id"] for c in server._contas_arquivo.ler()["contas"]], [boa["id"]])
 
     def test_conta_publica_sem_hash(self):
-        c = server.criar_conta(_dados(), None)
+        c = server.criar_conta(_dados(), None, primeiro_adm=True)
         pub = server.conta_publica(c)
         self.assertNotIn("senha_hash", pub)
         self.assertNotIn("sessao_v", pub)
@@ -89,7 +89,7 @@ class ArmazemTests(Base):
         self.assertNotIn(SENHA, json.dumps(pub))
 
     def test_sessao_v_sobe_ao_trocar_senha(self):
-        adm = server.criar_conta(_dados(), None)
+        adm = server.criar_conta(_dados(), None, primeiro_adm=True)
         f = server.criar_conta(_dados("bia.func", "funcionario"), adm)
         self.assertEqual(f["sessao_v"], 0)
         novo = server.alterar_conta(f["id"], {"senha": SENHA2}, f["versao"], adm)
@@ -102,16 +102,16 @@ class ArmazemTests(Base):
         self.assertEqual(novo["sessao_v"], 2)
 
     def test_ultimo_adm_409(self):
-        adm = server.criar_conta(_dados(), None)
+        adm = server.criar_conta(_dados(), None, primeiro_adm=True)
         for mud in ({"ativa": False}, {"perfil": "gerente"}):
             with self.assertRaises(server.ErroContas) as e:
-                server.alterar_conta(adm["id"], mud, adm["versao"], None)
+                server.alterar_conta(adm["id"], mud, adm["versao"], None, sistema=True)
             self.assertEqual((e.exception.status, e.exception.codigo), (409, "ultimo_adm"))
         outro = server.criar_conta(_dados("cris.adm"), adm)
         server.alterar_conta(adm["id"], {"ativa": False}, adm["versao"], outro)   # agora há outro ADM
 
     def test_versao_mudou_409(self):
-        adm = server.criar_conta(_dados(), None)
+        adm = server.criar_conta(_dados(), None, primeiro_adm=True)
         f = server.criar_conta(_dados("bia.func", "funcionario"), adm)
         server.alterar_conta(f["id"], {"nome": "Bia"}, f["versao"], adm)
         with self.assertRaises(server.ErroContas) as e:
@@ -119,7 +119,7 @@ class ArmazemTests(Base):
         self.assertEqual((e.exception.status, e.exception.codigo), (409, "versao_mudou"))
 
     def test_hierarquia_e_senha_igual_usuario(self):
-        adm = server.criar_conta(_dados(), None)
+        adm = server.criar_conta(_dados(), None, primeiro_adm=True)
         ger = server.criar_conta(_dados("gil.ger", "gerente"), adm)
         f = server.criar_conta(_dados("bia.func", "funcionario"), ger)
         for acao in (lambda: server.criar_conta(_dados("x.ger", "gerente"), ger),
@@ -136,24 +136,43 @@ class ArmazemTests(Base):
         self.assertEqual(e.exception.status, 404)
 
     def test_ator_none_so_para_o_primeiro_adm(self):
-        with self.assertRaises(server.ErroContas) as e:
-            server.criar_conta(_dados("bia.func", "funcionario"), None)
-        self.assertEqual(e.exception.status, 403)
+        for kw in ({}, {"primeiro_adm": True}):
+            with self.assertRaises(server.ErroContas) as e:
+                server.criar_conta(_dados("bia.func", "funcionario"), None, **kw)
+            self.assertEqual(e.exception.status, 403)
         self.assertFalse(server.modo_contas())
-        server.criar_conta(_dados(), None)
+        server.criar_conta(_dados(), None, primeiro_adm=True)
         with self.assertRaises(server.ErroContas) as e:
-            server.criar_conta(_dados("cris.adm"), None)
+            server.criar_conta(_dados("cris.adm"), None, primeiro_adm=True)
         self.assertEqual((e.exception.status, e.exception.codigo), (403, "sem_permissao"))
 
+    def test_ator_none_sem_marca_e_403(self):
+        """Fix B3: None sozinho nunca vira permissão (criar sem primeiro_adm, alterar sem sistema)."""
+        with self.assertRaises(server.ErroContas) as e:
+            server.criar_conta(_dados(), None)                            # nem o primeiro ADM sem a marca
+        self.assertEqual((e.exception.status, e.exception.codigo), (403, "sem_permissao"))
+        self.assertFalse(server.modo_contas())
+        adm = server.criar_conta(_dados(), None, primeiro_adm=True)
+        with self.assertRaises(server.ErroContas) as e:
+            server.criar_conta(_dados("bia.func", "funcionario"), adm, primeiro_adm=True)   # ator + marca
+        self.assertEqual(e.exception.status, 403)
+        with self.assertRaises(server.ErroContas) as e:
+            server.alterar_conta(adm["id"], {"nome": "Z"}, adm["versao"], None)
+        self.assertEqual((e.exception.status, e.exception.codigo), (403, "sem_permissao"))
+        with self.assertRaises(server.ErroContas) as e:
+            server.alterar_conta(adm["id"], {"nome": "Z"}, adm["versao"], adm, sistema=True)
+        self.assertEqual(e.exception.status, 403)
+        self.assertEqual(server.conta_por_id(adm["id"])["nome"], "Ana")
+
     def test_403_antes_de_duplicado(self):
-        adm = server.criar_conta(_dados(), None)
+        adm = server.criar_conta(_dados(), None, primeiro_adm=True)
         ger = server.criar_conta(_dados("gil.ger", "gerente"), adm)
         with self.assertRaises(server.ErroContas) as e:
             server.criar_conta(_dados("ana.adm", "gerente"), ger)
         self.assertEqual(e.exception.status, 403)
 
     def test_hash_fora_do_lock(self):
-        adm = server.criar_conta(_dados(), None)
+        adm = server.criar_conta(_dados(), None, primeiro_adm=True)
         vistos = []
         real = contas.hash_senha
 
@@ -166,15 +185,15 @@ class ArmazemTests(Base):
         self.assertEqual(vistos, [False, False])
 
     def test_editar_nome_nao_exige_adm_ativo(self):
-        adm = server.criar_conta(_dados(), None)
+        adm = server.criar_conta(_dados(), None, primeiro_adm=True)
         doc = json.loads(self.arquivo().read_text(encoding="utf-8"))
         doc["contas"][0]["ativa"] = False
         self.arquivo().write_text(json.dumps(doc), encoding="utf-8")
-        novo = server.alterar_conta(adm["id"], {"nome": "Ana Maria"}, adm["versao"], None)
+        novo = server.alterar_conta(adm["id"], {"nome": "Ana Maria"}, adm["versao"], None, sistema=True)
         self.assertEqual(novo["nome"], "Ana Maria")
 
     def test_limite_de_contas(self):
-        adm = server.criar_conta(_dados(), None)
+        adm = server.criar_conta(_dados(), None, primeiro_adm=True)
         for i in range(contas.CONTAS_MAX - 1):
             server.criar_conta(_dados(f"func{i:03d}", "funcionario"), adm)
         with self.assertRaises(server.ErroContas) as e:
