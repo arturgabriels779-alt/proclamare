@@ -454,7 +454,7 @@ Detalhes que valem saber:
 
 ## 2c. Aviso sonoro e voz da loja
 
-Antes de cada anúncio falado, o Proclamare toca um **aviso sonoro curto** (como o "ding-dong" de aeroporto) para
+Antes de cada anúncio falado, o Proclamare toca um **aviso sonoro curto** (como o "ding-dong" do microfone da loja) para
 chamar a atenção. Ele toca depois de a música abaixar e **antes** da fala. Vale para o anúncio que você digita, para
 as **Mensagens prontas** e para os **anúncios da Programação**. **Não** toca no **Testar caixas**, nem nos áudios
 (músicas) marcados na Programação.
@@ -462,20 +462,27 @@ as **Mensagens prontas** e para os **anúncios da Programação**. **Não** toca
 **Como escolher.** No bloco **Voz da loja** (aba Anúncio) escolha o aviso:
 
 - **Nenhum**: o anúncio sai direto, sem sineta.
-- **Ding-dong**: duas notas, a mais aguda primeiro.
-- **Aeroporto** (o padrão): três notas subindo, como a sineta clássica de aeroporto.
-- **Suave**: quatro notas mais baixas e macias, para ambientes calmos.
-- **Sino**: uma badalada de sino.
-- **Avião (comissário)**: um "ding" agudo e curto, no estilo da chamada do comissário de bordo no avião.
-- **Aeroporto (início e fim)**: uma sineta que **sobe antes** da fala e outra que **desce depois** dela, como nos
-  avisos de aeroporto que abrem e fecham com sineta. A música só volta depois da sineta do fim. Se você apertar
-  **Parar** na Programação no meio da fala, a fala é cortada e a sineta do fim não toca. A exceção é a **voz do
-  computador** (motor Offline, sem saída de som escolhida): essa fala não tem como ser cortada, então o **Parar**
-  durante ela não faz efeito e a sineta do fim toca normalmente; apertando **Parar** de novo durante a sineta do fim,
-  ela é cortada. Parar só na sineta do fim não conta como "interrompido" no histórico (a fala inteira já saiu).
+- **Microfone (início e fim)** (o padrão): três notas que **sobem antes** da fala, no estilo do "ding-dong" de
+  microfone do sistema de som, e as **mesmas notas ao contrário** (descendo) **depois** dela. "Ao contrário" quer dizer
+  as notas na ordem inversa, e não o som tocado de trás para frente (que soaria "sugado").
+- **Aeroporto**: três notas subindo, como a sineta clássica de aeroporto (só antes da fala).
+- **Supermercado (início e fim)**: quatro notas um pouco mais lentas que sobem antes da fala e descem depois dela,
+  como o microfone de supermercado.
+- **Ding-dong (2 vezes)**: um "ding-dong" (a nota aguda primeiro) tocado duas vezes seguidas, com uma pausa curta,
+  só antes da fala.
+
+Nos avisos com **início e fim**, a música só volta depois da sineta do fim. Se você apertar **Parar** na Programação
+no meio da fala, a fala é cortada e a sineta do fim não toca. A exceção é a **voz do computador** (motor Offline,
+sem saída de som escolhida): essa fala não tem como ser cortada, então o **Parar** durante ela não faz efeito e a
+sineta do fim toca normalmente; apertando **Parar** de novo durante a sineta do fim, ela é cortada. Parar só na
+sineta do fim não conta como "interrompido" no histórico (a fala inteira já saiu).
+
+Quem usava um aviso que saiu da lista nesta versão (Ding-dong de uma vez, Suave, Sino, Avião (comissário) ou
+Aeroporto (início e fim)) passa automaticamente para o **Microfone (início e fim)**; dá para escolher outro a
+qualquer momento.
 
 Cada sineta dura no máximo 3 segundos. Toque em **Ouvir** para escutar: o aviso sai **nas caixas da loja** (não no
-celular) e a música não abaixa; no **Aeroporto (início e fim)** você ouve a sineta de início, uma pausa curta e a do
+celular) e a música não abaixa; nos avisos com **início e fim** você ouve a sineta de início, uma pausa curta e a do
 fim. Para ninguém ficar tocando sinetas sem
 parar, o **Ouvir** aceita até 6 toques por minuto em cada celular e 20 a cada 10 minutos na loja toda.
 
@@ -488,11 +495,11 @@ Por enquanto qualquer aparelho com acesso (PC da loja ou PIN) pode mudar; numa v
 
 Se a voz da loja estiver em **Online** e a internet cair, o anúncio não sai e o painel avisa: escolha **Auto** para
 usar a voz do computador enquanto isso. No limite de 60 minutos de som por dia da **Programação**, cada anúncio
-conta 6 segundos de sineta (o caso mais longo: a de início mais a do fim do **Aeroporto (início e fim)**), mesmo
+conta 6 segundos de sineta (a reserva para o caso mais longo: a de início mais a do fim), mesmo
 com o aviso em **Nenhum**: assim trocar o aviso depois nunca faz os horários já marcados passarem do limite.
 
 Os sons do aviso são criados pelo próprio Proclamare: não usam música nem áudio de terceiros, então não há
-direitos autorais envolvidos. O **Avião (comissário)** e o **Aeroporto (início e fim)** são sons originais, apenas
+direitos autorais envolvidos. O **Microfone**, o **Supermercado** e o **Ding-dong (2 vezes)** são sons originais, apenas
 no mesmo estilo dos exemplos que a loja mandou (nada foi baixado nem copiado).
 
 ---

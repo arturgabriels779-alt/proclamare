@@ -41,7 +41,7 @@ VALORES = {"lista_id": "abcd1234", "atalho_id": "abcd1234", "item_id": "abcd1234
 # DEPOIS da permissão (nada desliga, nada abre o Explorer).
 CORPOS: dict[tuple[str, str], dict] = {
     ("POST", "/api/announce"): {"text": "Teste da matriz de permissões"},
-    ("POST", "/api/voz/ouvir"): {"aviso": "sino"},
+    ("POST", "/api/voz/ouvir"): {"aviso": "aeroporto"},
     ("POST", "/api/sistema/desligar"): {"campo_que_nao_existe": 1},
     ("POST", "/api/musicas/abrir-pasta"): {"campo_que_nao_existe": 1},
     # S4: com {} a rota encerraria as sessões da própria conta (a matriz perderia o token no meio)
@@ -312,7 +312,7 @@ class TesteFuncionario(BasePermissoes):
         negadas = [
             ("GET", "/api/programacao", None), ("POST", "/api/programacao", {"versao": 0, "itens": []}),
             ("POST", "/api/programacao/parar", {}), ("POST", "/api/voz", {"aviso": "nenhum"}),
-            ("POST", "/api/voz/ouvir", {"aviso": "sino"}),
+            ("POST", "/api/voz/ouvir", {"aviso": "aeroporto"}),
             ("POST", "/api/youtube/command", {"action": "pause"}),
             ("POST", "/api/youtube/queue", {"op": "clear"}), ("GET", "/api/youtube/state", None),
             ("POST", "/api/spotify/play", {"uri": "spotify:track:" + "a" * 22}), ("GET", "/api/spotify/status", None),
@@ -364,10 +364,10 @@ class TesteFuncionario(BasePermissoes):
         r = self.chamar("POST", "/api/voz", self.rede["gerente"], local=False, corpo={"velocidade": 1}, ip=160)
         self.assertEqual(r.status_code, 429)
         for i in range(server.VOZ_OUVIR_MAX_POR_MIN):
-            r = self.chamar("POST", "/api/voz/ouvir", self.rede["adm"], local=False, corpo={"aviso": "sino"},
+            r = self.chamar("POST", "/api/voz/ouvir", self.rede["adm"], local=False, corpo={"aviso": "aeroporto"},
                             ip=170 + i)
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        r = self.chamar("POST", "/api/voz/ouvir", self.rede["adm"], local=False, corpo={"aviso": "sino"}, ip=190)
+        r = self.chamar("POST", "/api/voz/ouvir", self.rede["adm"], local=False, corpo={"aviso": "aeroporto"}, ip=190)
         self.assertEqual(r.status_code, 429)
 
     def test_auditoria_com_token_opaco_da_conta(self) -> None:
@@ -375,7 +375,7 @@ class TesteFuncionario(BasePermissoes):
         with self.assertLogs(server.auditoria, level="INFO") as trilha:
             self.chamar("POST", "/api/announce", self.rede["funcionario"], local=False, corpo={"text": "Oi"})
             self.chamar("POST", "/api/voz", self.rede["gerente"], local=False, corpo={"velocidade": 3})
-            self.chamar("POST", "/api/voz/ouvir", self.rede["gerente"], local=False, corpo={"aviso": "sino"})
+            self.chamar("POST", "/api/voz/ouvir", self.rede["gerente"], local=False, corpo={"aviso": "aeroporto"})
         linhas = {acao: l for l in trilha.output for acao in ("anuncio", "voz_salvar", "voz_ouvir")
                   if f"acao={acao} " in l}
         self.assertEqual(set(linhas), {"anuncio", "voz_salvar", "voz_ouvir"})

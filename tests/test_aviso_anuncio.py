@@ -93,25 +93,27 @@ class TestAvisoNoAnuncio(BaseAviso):
         self.assertEqual(self.cen.eventos, [
             "gerar",                                   # o mp3 é gerado com a música ainda alta
             "duck_spotify", ("yt", "duck"),
-            ("aviso", "aviso_aeroporto.wav"),           # padrão de fábrica
+            ("aviso", "aviso_microfone.wav"),           # padrão de fábrica (com sineta do fim)
             "tocar_legacy",
+            ("aviso", "aviso_microfone.fim.wav"),
             ("restore_spotify", 30), ("yt", "restore")])
-        self.assertEqual(self.nomes_na_pasta(), ["aviso_aeroporto.wav"])   # o mp3 foi apagado; o aviso fica
+        # o mp3 foi apagado; as sinetas ficam
+        self.assertEqual(self.nomes_na_pasta(), ["aviso_microfone.fim.wav", "aviso_microfone.wav"])
 
     def test_legado_offline_aviso_antes_da_fala(self) -> None:
-        self.voz(aviso="sino")
+        self.voz(aviso="aeroporto")
         with self.falar_legado():
             r = self.anunciar()
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(r.get_json()["engine_used"], "offline")
         self.assertEqual(self.cen.eventos, [
-            "duck_spotify", ("yt", "duck"), ("aviso", "aviso_sino.wav"), "falar_legacy",
+            "duck_spotify", ("yt", "duck"), ("aviso", "aviso_aeroporto.wav"), "falar_legacy",
             ("restore_spotify", 30), ("yt", "restore")])
 
     def test_saida_lista_aviso_e_fala_na_ordem(self) -> None:
         self.configurar()
         self.internet = True
-        self.voz(motor="online", aviso="ding_dong")
+        self.voz(motor="online", aviso="ding_dong_duplo")
         r = self.anunciar()
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self.cen.tocados, [".wav", ".mp3"])          # [aviso, fala]
@@ -120,15 +122,16 @@ class TestAvisoNoAnuncio(BaseAviso):
         self.assertEqual(len(plays), 2)
         self.assertLess(ev.index("duck_spotify"), plays[0])            # abaixa ANTES do aviso
         self.assertLess(plays[1], ev.index(("restore_spotify", 30)))  # restaura DEPOIS da fala
-        self.assertNotIn(("aviso", "aviso_ding_dong.wav"), ev)         # a saída não usa o caminho legado
-        self.assertEqual(self.nomes_na_pasta(), ["aviso_ding_dong.wav"])   # o mp3 foi apagado; o aviso não
+        self.assertNotIn(("aviso", "aviso_ding_dong_duplo.wav"), ev)         # a saída não usa o caminho legado
+        self.assertEqual(self.nomes_na_pasta(), ["aviso_ding_dong_duplo.wav"])   # o mp3 foi apagado; o aviso não
 
     def test_saida_offline_aviso_e_fala(self) -> None:
         self.configurar()
         r = self.anunciar()
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(self.cen.tocados, [".wav", ".wav"])
-        self.assertEqual(self.nomes_na_pasta(), ["aviso_aeroporto.wav"])   # a fala (wav) foi apagada
+        self.assertEqual(self.cen.tocados, [".wav", ".wav", ".wav"])   # aviso, fala e sineta do fim (padrão)
+        # a fala (wav) foi apagada; as sinetas ficam
+        self.assertEqual(self.nomes_na_pasta(), ["aviso_microfone.fim.wav", "aviso_microfone.wav"])
 
     def test_teste_true_sem_aviso(self) -> None:
         with self.falar_legado():
@@ -223,13 +226,13 @@ class TestAvisoNoAnuncio(BaseAviso):
 
         with mock.patch.object(server.SOM.motor, "tocar", tocar):
             server._anunciar_na_saida(TEXTO, "offline", "pt-BR-FranciscaNeural", 0, None, False, som,
-                                      contexto=contextlib.nullcontext, parar=sinal, aviso="suave")
+                                      contexto=contextlib.nullcontext, parar=sinal, aviso="ding_dong_duplo")
         self.assertEqual(self.cen.tocados, [".wav"])                   # a fala não chegou a tocar
 
     def test_saida_falha_do_aviso_nao_impede_a_fala(self) -> None:
         # Final (I-1): ErroReproducao no aviso (saída fixada) é só um aviso no log; a fala toca e o anúncio dá 200.
         self.configurar()
-        self.voz(aviso="sino")
+        self.voz(aviso="aeroporto")
         tocar_original = server.SOM.motor.tocar
         prazos: list[Any] = []
 
@@ -261,14 +264,14 @@ class TestAvisoNoAnuncio(BaseAviso):
 
         with mock.patch.object(server.SOM.motor, "tocar", tocar), self.assertLogs(server.log.name, "WARNING"):
             server._anunciar_na_saida(TEXTO, "offline", "pt-BR-FranciscaNeural", 0, None, False, som,
-                                      contexto=contextlib.nullcontext, parar=sinal, aviso="sino")
+                                      contexto=contextlib.nullcontext, parar=sinal, aviso="aeroporto")
         self.assertEqual(self.cen.tocados, [])                         # o aviso falhou e a fala nem começou
 
     def test_legado_parar_ja_setado_nao_toca_o_aviso(self) -> None:
         # Final (M-2): "parar" chegou antes do aviso -> nem o aviso toca, e a fala também não.
         sinal = programacao.SinalParada()
         sinal.parar()
-        c = server.caminho_do_aviso("sino")
+        c = server.caminho_do_aviso("aeroporto")
         self.assertFalse(server._tocar_aviso_legado(c, sinal))
         self.assertEqual(self.cen.eventos, [])
 
@@ -280,7 +283,7 @@ class TestAvisoNoAnuncio(BaseAviso):
             timeouts.append((func, timeout))
 
         with mock.patch.object(server, "executar_no_audio", executar):
-            self.assertTrue(server._tocar_aviso_legado(server.caminho_do_aviso("sino"), None))
+            self.assertTrue(server._tocar_aviso_legado(server.caminho_do_aviso("aeroporto"), None))
         self.assertEqual(timeouts, [(server._tocar_aviso, aviso_mod.AVISO_MAX_S + 15.0)])
 
     def test_campo_desconhecido_no_anuncio_400(self) -> None:
@@ -313,19 +316,19 @@ class TestVozesSoLocal(BaseAviso):
 class TestAvisoArquivo(BaseAviso):
     def test_caminho_do_aviso(self) -> None:
         self.assertIsNone(server.caminho_do_aviso("nenhum"))
-        c = server.caminho_do_aviso("sino")
-        self.assertEqual(c, self.audio / "aviso_sino.wav")
-        self.assertEqual(c.read_bytes(), aviso_mod.wav_do_aviso("sino"))
+        c = server.caminho_do_aviso("aeroporto")
+        self.assertEqual(c, self.audio / "aviso_aeroporto.wav")
+        self.assertEqual(c.read_bytes(), aviso_mod.wav_do_aviso("aeroporto"))
         mtime = c.stat().st_mtime_ns
-        self.assertEqual(server.caminho_do_aviso("sino"), c)           # grava uma vez só
+        self.assertEqual(server.caminho_do_aviso("aeroporto"), c)           # grava uma vez só
         self.assertEqual(c.stat().st_mtime_ns, mtime)
         c.write_bytes(b"RIFF")                                         # arquivo torto: é regravado
-        server.caminho_do_aviso("sino")
-        self.assertEqual(c.read_bytes(), aviso_mod.wav_do_aviso("sino"))
-        certo = aviso_mod.wav_do_aviso("sino")
+        server.caminho_do_aviso("aeroporto")
+        self.assertEqual(c.read_bytes(), aviso_mod.wav_do_aviso("aeroporto"))
+        certo = aviso_mod.wav_do_aviso("aeroporto")
         c.write_bytes(certo[:-4] + b"\x00\x01\x02\x03")            # MESMO tamanho, conteúdo diferente
         self.assertEqual(c.stat().st_size, len(certo))
-        server.caminho_do_aviso("sino")
+        server.caminho_do_aviso("aeroporto")
         self.assertEqual(c.read_bytes(), certo)                        # é regravado (compara o conteúdo)
         with self.assertRaises(ValueError):
             server.caminho_do_aviso("../config")
@@ -344,25 +347,25 @@ class TestOuvir(BaseAviso):
         return getattr(self, quem)("post", "/api/voz/ouvir", json=corpo)
 
     def test_ouvir_legado_toca_so_o_aviso_sem_abaixar(self) -> None:
-        r = self.ouvir(aviso="sino")
+        r = self.ouvir(aviso="aeroporto")
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(r.get_json(), {"ok": True})
-        self.assertEqual(self.cen.eventos, [("aviso", "aviso_sino.wav")])    # sem duck/restore
+        self.assertEqual(self.cen.eventos, [("aviso", "aviso_aeroporto.wav")])    # sem duck/restore
         self.assertFalse(server._anuncio_lock.locked())
 
     def test_ouvir_na_saida(self) -> None:
         self.configurar()
-        r = self.ouvir(aviso="ding_dong")
+        r = self.ouvir(aviso="ding_dong_duplo")
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self.cen.tocados, [".wav"])
         self.assertNotIn("duck_spotify", self.cen.eventos)
         self.assertNotIn(("yt", "duck"), self.cen.eventos)
-        self.assertEqual(self.nomes_na_pasta(), ["aviso_ding_dong.wav"])
+        self.assertEqual(self.nomes_na_pasta(), ["aviso_ding_dong_duplo.wav"])
 
     def test_ouvir_ocupado_409(self) -> None:
         self.assertTrue(server._anuncio_lock.acquire(blocking=False))
         try:
-            r = self.ouvir(aviso="sino")
+            r = self.ouvir(aviso="aeroporto")
         finally:
             server._anuncio_lock.release()
         self.assertEqual(r.status_code, 409)
@@ -373,31 +376,31 @@ class TestOuvir(BaseAviso):
         self.assertTrue(server._anuncio_lock.acquire(blocking=False))
         try:
             with mock.patch.object(server, "PROGRAMACAO", SimpleNamespace(tocando={"nome": "Fechamento"})):
-                r = self.ouvir(aviso="sino")
+                r = self.ouvir(aviso="aeroporto")
         finally:
             server._anuncio_lock.release()
         self.assertEqual((r.status_code, r.get_json()["error"]), (409, "Programação tocando: Fechamento"))
 
     def test_ouvir_nenhum_400(self) -> None:
-        for corpo in ({"aviso": "nenhum"}, {"aviso": "buzina"}, {"aviso": 1}, {}, {"aviso": "sino", "x": 1}):
+        for corpo in ({"aviso": "nenhum"}, {"aviso": "buzina"}, {"aviso": 1}, {}, {"aviso": "aeroporto", "x": 1}):
             r = self.ouvir(**corpo)
             self.assertEqual(r.status_code, 400, corpo)
         self.assertEqual(self.cen.eventos, [])
 
     def test_ouvir_remoto_sem_pin_401(self) -> None:
         server.aplicar_pin(ts.PIN)
-        r = self.ouvir("remoto", aviso="sino")
+        r = self.ouvir("remoto", aviso="aeroporto")
         self.assertEqual(r.status_code, 401)
         self.assertEqual(self.cen.eventos, [])
         self.definir_pin_e_logar()
-        self.assertEqual(self.ouvir("remoto", aviso="sino").status_code, 200)
+        self.assertEqual(self.ouvir("remoto", aviso="aeroporto").status_code, 200)
 
     def test_ouvir_limite_6_por_minuto_por_aparelho_remoto(self) -> None:
         self.definir_pin_e_logar()
         for _ in range(6):
-            self.assertEqual(self.ouvir("remoto", aviso="sino").status_code, 200)
+            self.assertEqual(self.ouvir("remoto", aviso="aeroporto").status_code, 200)
         with self.assertLogs(server.auditoria.name, level="INFO") as cap:
-            r = self.ouvir("remoto", aviso="sino")
+            r = self.ouvir("remoto", aviso="aeroporto")
         self.assertEqual(r.status_code, 429)
         self.assertTrue(any("acao=voz_ouvir" in linha and "resultado=limite" in linha for linha in cap.output))
 
@@ -407,17 +410,17 @@ class TestOuvir(BaseAviso):
         self.assertEqual(server.VOZ_OUVIR_GLOBAL_JANELA_S, 600.0)
         self.assertIn("voz_ouvir:global", server._TAXA_GLOBAIS)
         for i in range(server.VOZ_OUVIR_GLOBAL_MAX):
-            self.assertEqual(self.ouvir(aviso="sino").status_code, 200, i)
+            self.assertEqual(self.ouvir(aviso="aeroporto").status_code, 200, i)
         with self.assertLogs(server.auditoria.name, level="INFO") as cap:
-            r = self.ouvir(aviso="sino")
+            r = self.ouvir(aviso="aeroporto")
         self.assertEqual(r.status_code, 429)
         self.assertTrue(any("acao=voz_ouvir" in linha and "resultado=limite" in linha for linha in cap.output))
 
     def test_ouvir_teto_global_vale_para_remotos(self) -> None:
         self.definir_pin_e_logar()
         for _ in range(server.VOZ_OUVIR_GLOBAL_MAX):
-            self.assertEqual(self.ouvir(aviso="sino").status_code, 200)
-        self.assertEqual(self.ouvir("remoto", aviso="sino").status_code, 429)
+            self.assertEqual(self.ouvir(aviso="aeroporto").status_code, 200)
+        self.assertEqual(self.ouvir("remoto", aviso="aeroporto").status_code, 429)
 
     def test_ouvir_falha_ao_gravar_o_aviso_500_sem_vazar(self) -> None:
         def quebra(nome: str) -> Path:
@@ -425,7 +428,7 @@ class TestOuvir(BaseAviso):
 
         with mock.patch.object(server, "caminho_do_aviso", quebra), \
                 self.assertLogs(server.log.name, level="ERROR") as cap:
-            r = self.ouvir(aviso="sino")
+            r = self.ouvir(aviso="aeroporto")
         self.assertEqual((r.status_code, r.get_json()["error"]), (500, "Não foi possível tocar o aviso."))
         self.assertNotIn("secreto", r.get_data(as_text=True))
         self.assertNotIn("secreto", "\n".join(cap.output))            # LOW-5: só o tipo do erro, sem traceback
@@ -437,17 +440,17 @@ class TestOuvir(BaseAviso):
         self.configurar()
         with self.assertLogs(server.log.name, level="WARNING"):   # o executor trocado avisa no log (esperado)
             server._substituir_executor_audio()
-            r = self.ouvir(aviso="sino")
+            r = self.ouvir(aviso="aeroporto")
         self.assertEqual((r.status_code, r.get_json()["codigo"]), (503, "motor_contaminado"))
         self.assertFalse(server._anuncio_lock.locked())
 
 
-FIM = "aeroporto_inicio_fim"
+FIM = "microfone"
 ARQ_INICIO, ARQ_FIM = f"aviso_{FIM}.wav", f"aviso_{FIM}.fim.wav"
 
 
 class TestSinetaDoFim(BaseAviso):
-    """v2.8: aviso -> fala -> sineta do fim ("aeroporto_inicio_fim"), nos dois caminhos de áudio."""
+    """v2.8: aviso -> fala -> sineta do fim ("supermercado"), nos dois caminhos de áudio."""
 
     def test_caminho_do_aviso_fim(self) -> None:
         for nome in aviso_mod.AVISOS:
@@ -497,7 +500,7 @@ class TestSinetaDoFim(BaseAviso):
         self.assertEqual(self.nomes_na_pasta(), sorted([ARQ_INICIO, ARQ_FIM]))   # o mp3 foi apagado
 
     def test_sem_fim_nos_outros_avisos(self) -> None:
-        for nome in ("comissario", "aeroporto"):
+        for nome in ("ding_dong_duplo", "aeroporto"):
             with self.subTest(aviso=nome):
                 self.cen.eventos.clear()
                 self.voz(aviso=nome)
@@ -687,11 +690,11 @@ class TestSinetaDoFim(BaseAviso):
 
         with mock.patch.object(server, "executar_no_audio", executar):
             self.assertEqual(self.local("post", "/api/voz/ouvir", json={"aviso": FIM}).status_code, 200)
-            self.assertEqual(self.local("post", "/api/voz/ouvir", json={"aviso": "comissario"}).status_code, 200)
+            self.assertEqual(self.local("post", "/api/voz/ouvir", json={"aviso": "ding_dong_duplo"}).status_code, 200)
         self.assertEqual(timeouts, [
             (server._tocar_aviso_e_fim, [ARQ_INICIO, ARQ_FIM],
              2 * aviso_mod.AVISO_MAX_S + server.AVISO_OUVIR_PAUSA_S + 15.0),
-            (server._tocar_aviso, ["aviso_comissario.wav"], aviso_mod.AVISO_MAX_S + 15.0)])
+            (server._tocar_aviso, ["aviso_ding_dong_duplo.wav"], aviso_mod.AVISO_MAX_S + 15.0)])
 
     def test_ouvir_na_saida_toca_as_duas(self) -> None:
         self.configurar()
@@ -722,8 +725,8 @@ class TestSinetaDoFim(BaseAviso):
     def test_opcoes_do_painel_trazem_os_novos(self) -> None:
         avisos = self.local("get", "/api/voz").get_json()["opcoes"]["avisos"]
         self.assertEqual([a["id"] for a in avisos], list(aviso_mod.AVISOS))
-        self.assertIn({"id": "comissario", "nome": "Avião (comissário)"}, avisos)
-        self.assertIn({"id": FIM, "nome": "Aeroporto (início e fim)"}, avisos)
+        self.assertIn({"id": "ding_dong_duplo", "nome": "Ding-dong (2 vezes)"}, avisos)
+        self.assertIn({"id": FIM, "nome": "Microfone (início e fim)"}, avisos)
         r = self.local("post", "/api/voz", json={"aviso": FIM})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(r.get_json()["voz_loja"]["aviso"], FIM)
@@ -788,7 +791,7 @@ class TestSinetaDoFim(BaseAviso):
 
 
 class TestSinetaDoFimNaProgramacaoSaida(BaseAviso):
-    """M-6: anúncio agendado com "aeroporto_inicio_fim" pela SAÍDA FIXADA (motor falso), e o resultado do "Parar"."""
+    """M-6: anúncio agendado com "supermercado" pela SAÍDA FIXADA (motor falso), e o resultado do "Parar"."""
 
     ITEM = {"tipo": "anuncio", "alvo": TEXTO, "motor": "offline", "voz": "francisca", "velocidade": 0}
 
@@ -857,7 +860,7 @@ class TestAvisoNaProgramacao(tp.BaseProg):
         it = self.gravar([self.corpo_anuncio(motor="offline")])[0]
         self.assertEqual(self.tocar_agora(it["id"]).status_code, 202)
         self.assertTrue(tp.esperar_ate(lambda: self.servico.tocando is None))
-        self.assertEqual(self.ordem, [("aviso", "aviso_aeroporto.wav"), "fala"])
+        self.assertEqual(self.ordem, [("aviso", "aviso_microfone.wav"), "fala", ("aviso", "aviso_microfone.fim.wav")])
         self.assertEqual(self.historico()[0]["status"], "ok")
 
     def resultado_no_historico_de_anuncios(self) -> str:
@@ -932,7 +935,7 @@ class TestAvisoNaProgramacao(tp.BaseProg):
     def test_estimativa_de_fala_soma_o_pior_aviso(self) -> None:
         # Final (LOW-4/M-4): as sinetas contam no PIOR caso, qualquer que seja o aviso atual, para que trocar o aviso
         # depois (inclusive de "nenhum" para um) nunca estoure o teto de 60 min/dia de horários já gravados. v2.8: o
-        # pior caso inclui a sineta do fim ("aeroporto_inicio_fim"): AVISO_MAX_S x 2.
+        # pior caso inclui a sineta do fim ("supermercado"): AVISO_MAX_S x 2.
         self.assertEqual(aviso_mod.AVISO_PIOR_CASO_S, 2 * aviso_mod.AVISO_MAX_S)
         pior = max(aviso_mod.duracao_do_aviso(a) + aviso_mod.duracao_do_aviso_fim(a) for a in aviso_mod.AVISOS)
         self.assertLessEqual(pior, aviso_mod.AVISO_PIOR_CASO_S)          # a reserva cobre as sinetas reais
@@ -947,15 +950,15 @@ class TestAvisoNaProgramacao(tp.BaseProg):
         self.assertEqual(server._prog_segundos_fala({**item, "tipo": "audio"}), 0.0)
 
     def test_programacao_anuncio_com_sineta_do_fim(self) -> None:
-        # v2.8: o anúncio agendado usa o aviso da LOJA; com "aeroporto_inicio_fim" a sineta do fim vem depois da fala.
+        # v2.8: o anúncio agendado usa o aviso da LOJA; com "supermercado" a sineta do fim vem depois da fala.
         cfg = server.load_config()
-        cfg["voz_loja"] = {"aviso": "aeroporto_inicio_fim"}
+        cfg["voz_loja"] = {"aviso": "supermercado"}
         server.save_config(cfg)
         it = self.gravar([self.corpo_anuncio(motor="offline")])[0]
         self.assertEqual(self.tocar_agora(it["id"]).status_code, 202)
         self.assertTrue(tp.esperar_ate(lambda: self.servico.tocando is None))
-        self.assertEqual(self.ordem, [("aviso", "aviso_aeroporto_inicio_fim.wav"), "fala",
-                                      ("aviso", "aviso_aeroporto_inicio_fim.fim.wav")])
+        self.assertEqual(self.ordem, [("aviso", "aviso_supermercado.wav"), "fala",
+                                      ("aviso", "aviso_supermercado.fim.wav")])
         self.assertEqual(self.historico()[0]["status"], "ok")
 
 

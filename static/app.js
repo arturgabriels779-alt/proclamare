@@ -1136,7 +1136,8 @@
   const VOZ_RETRY_MS = 5000; // leitura falhou: tenta de novo logo
   const VOZ_OUVIR_TIMEOUT_MS = 45000; // > espera do servidor pela thread de áudio: até 2 x 3 s + 0,6 s + 15 s = 21,6 s
   const VOZ_CAMPOS = ["motor", "voz", "velocidade", "aviso"];
-  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "aeroporto", definida: true, carregada: false };
+  // aviso: o padrão de fábrica do servidor (AVISO_PADRAO, "microfone"); vale só até a 1ª leitura de /api/voz
+  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "microfone", definida: true, carregada: false };
   let vozTimer = null; // debounce da gravação
   let vozPend = {}; // mudanças do usuário ainda não enviadas
   let vozEnviando = null; // corpo do POST em andamento (null = nenhum)
@@ -1278,6 +1279,8 @@
       if (p && ENGINES.includes(p.engine)) corpo.motor = p.engine;
       if (p && VOICES.includes(p.voice)) corpo.voz = p.voice;
       if (p && isNum(p.speed)) corpo.velocidade = clamp(Math.round(p.speed / 5) * 5, -50, 50);
+      // o aviso NUNCA vem das preferências antigas (não existia por aparelho): um id antigo/removido não é enviado;
+      // o servidor já devolve o padrão ("microfone") para quem tinha um aviso que saiu da lista.
       if (Object.keys(corpo).length) {
         vozSeq++;
         vozEnviando = corpo;

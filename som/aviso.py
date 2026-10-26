@@ -5,9 +5,14 @@ Só stdlib (wave/struct/math), determinístico e sem tocar nada: quem reproduz �
 Mono, 16 bits, pico <= 0,9 da escala (a pedido da loja: soar acima do barulho; antes era 0,5) e ataque/fade de pelo menos 10 ms (sem estalo).
 
 Os sons são ORIGINAIS, só no estilo das referências que a loja mandou (nada baixado nem copiado):
-  * "comissario": a sineta aguda única da chamada de comissário no avião (um "ding" de vibrafone/sino);
-  * "aeroporto_inicio_fim": sineta de aeroporto que sobe ANTES da fala e uma que desce DEPOIS dela (a de "fim",
-    `wav_do_aviso_fim`). Só os avisos de AVISOS_COM_FIM têm a do fim; os outros tocam só antes.
+  * "microfone": a sineta de microfone do sistema de som, que sobe ANTES da fala (lá-dó#-mi) e volta DEPOIS dela
+    com as mesmas notas na ordem inversa (mi-dó#-lá). "Ao contrário" = a ordem das notas, não o áudio de trás para
+    frente (que soaria "sugado"). Timbre mais limpo/eletrônico que o do aeroporto;
+  * "aeroporto": a sineta clássica de aeroporto, três notas subindo (só antes da fala);
+  * "supermercado": a sineta de microfone de supermercado, quatro notas um pouco mais lentas subindo antes
+    (fá-lá-dó-fá) e descendo depois da fala;
+  * "ding_dong_duplo": um ding-dong de vibrafone (agudo -> grave) tocado 2 vezes, com uma pausa curta.
+Só os avisos de AVISOS_COM_FIM têm a sineta do fim (`wav_do_aviso_fim`); os outros tocam só antes.
 """
 from __future__ import annotations
 
@@ -17,12 +22,15 @@ import math
 import struct
 import wave
 
-# A ordem é a do <select> do painel: as opções novas entram no FIM (as antigas não mudam de lugar).
-# Os ids viram parte do nome do arquivo em audios_temp/: só letras minúsculas e "_" (nunca ponto, barra nem "..").
-AVISOS: tuple[str, ...] = ("nenhum", "ding_dong", "aeroporto", "suave", "sino", "comissario", "aeroporto_inicio_fim")
-AVISO_PADRAO = "aeroporto"
+# A ordem é a do <select> do painel. Os ids viram parte do nome do arquivo em audios_temp/: só letras minúsculas e
+# "_" (nunca ponto, barra nem ".."). v2.8: as sinetas antigas (ding_dong, suave, sino, comissario,
+# aeroporto_inicio_fim) saíram a pedido da loja; um config.json que ainda tenha uma delas cai no AVISO_PADRAO (a
+# leitura da voz da loja confere o valor contra AVISOS, campo a campo) e o POST /api/voz com uma delas é 400.
+AVISOS: tuple[str, ...] = ("nenhum", "microfone", "aeroporto", "supermercado", "ding_dong_duplo")
+AVISO_PADRAO = "microfone"
 AVISO_MAX_S = 3.0          # teto de CADA sineta (a de antes e a do fim)
-AVISOS_COM_FIM: frozenset[str] = frozenset({"aeroporto_inicio_fim"})   # tocam também uma sineta DEPOIS da fala
+# Tocam também uma sineta DEPOIS da fala (as mesmas notas, na ordem inversa).
+AVISOS_COM_FIM: frozenset[str] = frozenset({"microfone", "supermercado"})
 # Pior caso de sineta por anúncio, entre TODOS os avisos (a de antes + a do fim): é o que a Programação reserva no
 # teto de 60 min/dia, qualquer que seja o aviso atual (trocar o aviso depois nunca estoura horários já gravados).
 AVISO_PIOR_CASO_S = AVISO_MAX_S * (2 if AVISOS_COM_FIM else 1)
@@ -30,46 +38,42 @@ AVISO_PIOR_CASO_S = AVISO_MAX_S * (2 if AVISOS_COM_FIM else 1)
 # Rótulos em português para a interface.
 NOMES_AVISO: dict[str, str] = {
     "nenhum": "Nenhum",
-    "ding_dong": "Ding-dong",
+    "microfone": "Microfone (início e fim)",
     "aeroporto": "Aeroporto",
-    "suave": "Suave",
-    "sino": "Sino",
-    "comissario": "Avião (comissário)",
-    "aeroporto_inicio_fim": "Aeroporto (início e fim)",
+    "supermercado": "Supermercado (início e fim)",
+    "ding_dong_duplo": "Ding-dong (2 vezes)",
 }
 
 _PICO = 0.9               # pico final de cada sineta (fração da escala; teto 0,9, nunca no limite do int16)
-_PICO_SUAVE = 0.7         # a "suave" é a opção discreta: mais baixa e sem saturação
 _SATURACAO = 2.0          # tanh(d*x)/tanh(d): sobe o RMS e dá "mordida" sem cortar (clip) a onda
 _HARMONICOS = ((1, 1.0), (2, 0.6), (3, 0.35), (4, 0.2))   # timbre brilhante (vibrafone/sineta de aeroporto)
-_HARMONICOS_SUAVE = ((1, 1.0), (2, 0.25))                  # timbre mais macio
-_DECAIMENTO = 1.2         # decaimento mais lento: a nota "enche" o tempo
-_DECAIMENTO_SUAVE = 1.6
+# "microfone": timbre mais limpo/eletrônico (quase senoidal; a saturação tanh já acrescenta um pouco de ímpares)
+_HARMONICOS_MICROFONE = ((1, 1.0), (2, 0.25), (3, 0.08))
+_DECAIMENTO = 1.2             # decaimento lento: a nota "enche" o tempo
+_DECAIMENTO_MICROFONE = 1.0   # som eletrônico: sustenta um pouco mais
 _FADE_S = 0.015           # ataque e saída de cada nota (>= 10 ms)
 _NOTA_S = 0.45            # duração de cada nota das sinetas em sequência
+_NOTA_SUPERMERCADO_S = 0.55   # "um pouquinho só mais lento" que as outras
 _CAUDA_S = 0.25           # a última nota da sequência soa mais um pouco
 
-_E5, _C5, _G5, _G4 = 659.25, 523.25, 783.99, 392.00
-_B4, _D5, _C6 = 493.88, 587.33, 1046.50
-_NOTAS: dict[str, tuple[float, ...]] = {
-    "ding_dong": (_D5, _B4),
-    "aeroporto": (_G4, _B4, _D5),   # mais grave que o C5-E5-G5 original (pedido da loja)
-    "suave": (_G4, _C5, _E5, _G5),
-    "aeroporto_inicio_fim": (_C5, _E5, _G5, _C6),   # antes da fala: sobe (dó-mi-sol-dó)
-}
-# Sineta do FIM (depois da fala): as mesmas notas, descendo (dó-sol-mi-dó).
-_NOTAS_FIM: dict[str, tuple[float, ...]] = {
-    "aeroporto_inicio_fim": (_C6, _G5, _E5, _C5),
-}
-_SINO_FREQ = 659.25
-_SINO_S = 1.6
+_G4, _B4, _D5 = 392.00, 493.88, 587.33
+_A4, _CS5, _E5 = 440.00, 554.37, 659.25
+_F4, _C5, _F5 = 349.23, 523.25, 698.46
 
-# "comissario": um "ding" agudo e brilhante (dó6). Cada parcial = (razão da frequência, peso, decaimento por s): os
-# harmônicos 2 e 3 dão o brilho e o parcial INARMÔNICO 2,76 (de leve) dá o "brilho de sino"; os agudos somem antes
-# da fundamental, como num vibrafone de verdade.
-_COMISSARIO_FREQ = _C6
-_COMISSARIO_S = 1.4
-_COMISSARIO_PARCIAIS = ((1.0, 1.0, 2.6), (2.0, 0.30, 4.0), (2.76, 0.16, 6.0), (3.0, 0.12, 6.5))
+# Sinetas em sequência: (notas de ANTES da fala, duração de cada nota, harmônicos, decaimento). A do FIM (só em
+# AVISOS_COM_FIM) usa as mesmas notas na ordem inversa, com o mesmo timbre.
+_SEQUENCIAS: dict[str, tuple[tuple[float, ...], float, tuple, float]] = {
+    "microfone": ((_A4, _CS5, _E5), _NOTA_S, _HARMONICOS_MICROFONE, _DECAIMENTO_MICROFONE),   # lá-dó#-mi
+    "aeroporto": ((_G4, _B4, _D5), _NOTA_S, _HARMONICOS, _DECAIMENTO),   # mais grave que o C5-E5-G5 original
+    "supermercado": ((_F4, _A4, _C5, _F5), _NOTA_SUPERMERCADO_S, _HARMONICOS, _DECAIMENTO),   # fá-lá-dó-fá
+}
+
+# "ding_dong_duplo": ding (mi5) -> dong (dó5) de vibrafone, 2 vezes, com uma pausa de silêncio entre os pares.
+# Cada parcial = (razão da frequência, peso, decaimento por s): o vibrafone tem um parcial forte 2 oitavas acima
+# (4x), que some antes da fundamental. 2 x (0,5 + 0,75) + 0,25 = 2,75 s (cabe no AVISO_MAX_S).
+_DING_DONG_NOTAS = ((_E5, 0.5), (_C5, 0.75))
+_DING_DONG_PAUSA_S = 0.25
+_VIBRAFONE_PARCIAIS = ((1.0, 1.0, 2.2), (2.0, 0.25, 4.0), (4.0, 0.30, 6.0))
 
 
 def _nota(freq: float, duracao_s: float, taxa: int, decaimento: float, harmonicos=((1, 1.0),)) -> list[float]:
@@ -87,7 +91,7 @@ def _nota(freq: float, duracao_s: float, taxa: int, decaimento: float, harmonico
 
 def _ding(freq: float, duracao_s: float, taxa: int, parciais) -> list[float]:
     """
-    Um "ding" de sino: cada parcial com o seu próprio decaimento exponencial (os agudos morrem antes), ataque e
+    Um "ding" de vibrafone: cada parcial com o seu próprio decaimento exponencial (os agudos morrem antes), ataque e
     saída lineares de _FADE_S (>= 10 ms, sem estalo); amostras em [-1, 1].
     """
     total = int(taxa * duracao_s)
@@ -103,32 +107,28 @@ def _ding(freq: float, duracao_s: float, taxa: int, parciais) -> list[float]:
 
 
 def _sintetizar(nome: str, taxa: int, fim: bool = False) -> list[float]:
-    if nome == "sino":
-        # Fundamental + 2º e 3º harmônicos, decaimento exponencial longo.
-        return _nota(_SINO_FREQ, _SINO_S, taxa, 2.4, ((1, 1.0), (2, 0.6), (3, 0.4), (4, 0.2)))
-    if nome == "comissario":
-        return _ding(_COMISSARIO_FREQ, _COMISSARIO_S, taxa, _COMISSARIO_PARCIAIS)
-    notas = _NOTAS_FIM[nome] if fim else _NOTAS[nome]
+    if nome == "ding_dong_duplo":
+        par: list[float] = []
+        for freq, dur in _DING_DONG_NOTAS:
+            par += _ding(freq, dur, taxa, _VIBRAFONE_PARCIAIS)
+        return par + [0.0] * int(taxa * _DING_DONG_PAUSA_S) + par
+    notas, nota_s, harmonicos, decaimento = _SEQUENCIAS[nome]
+    if fim:
+        notas = notas[::-1]   # sineta do fim: as mesmas notas na ordem inversa (cada nota ainda ataca e decai)
     saida: list[float] = []
     for k, freq in enumerate(notas):
-        ultima = k == len(notas) - 1
-        dur = _NOTA_S + (_CAUDA_S if ultima else 0.0)
-        if nome == "suave":
-            saida += _nota(freq, dur, taxa, _DECAIMENTO_SUAVE, _HARMONICOS_SUAVE)
-        else:
-            saida += _nota(freq, dur, taxa, _DECAIMENTO, _HARMONICOS)
+        dur = nota_s + (_CAUDA_S if k == len(notas) - 1 else 0.0)
+        saida += _nota(freq, dur, taxa, decaimento, harmonicos)
     return saida
 
 
-def _finalizar(nome: str, amostras: list[float]) -> list[float]:
-    """Saturação suave (menos na "suave", que não tem) e normalização do pico; amostras em [-1, 1]."""
-    if nome != "suave":
-        norm = math.tanh(_SATURACAO)
-        pico_in = max(abs(x) for x in amostras) or 1.0
-        amostras = [math.tanh(_SATURACAO * x / pico_in) / norm for x in amostras]
+def _finalizar(amostras: list[float]) -> list[float]:
+    """Saturação suave (tanh, sem clip) e normalização do pico em _PICO; amostras em [-1, 1]."""
+    norm = math.tanh(_SATURACAO)
+    pico_in = max(abs(x) for x in amostras) or 1.0
+    amostras = [math.tanh(_SATURACAO * x / pico_in) / norm for x in amostras]
     pico = max(abs(x) for x in amostras) or 1.0
-    alvo = _PICO_SUAVE if nome == "suave" else _PICO
-    return [x * alvo / pico for x in amostras]
+    return [x * _PICO / pico for x in amostras]
 
 
 _TAXA_PADRAO = 22050
@@ -138,10 +138,11 @@ _TAXA_PADRAO = 22050
 def _wav(nome: str, taxa: int, fim: bool = False) -> bytes:
     """
     WAV pronto, cacheado (v2.8 A3): o anúncio e a estimativa da Programação pedem o mesmo aviso muitas vezes.
-    Guarda os BYTES (~50-90 KB cada), não as amostras em float (mais de 1 MB em objetos Python por aviso).
-    `fim` = a sineta de DEPOIS da fala (só para AVISOS_COM_FIM). 16 entradas cobrem todos os avisos + os de fim.
+    Guarda os BYTES (~50-120 KB cada), não as amostras em float (mais de 1 MB em objetos Python por aviso).
+    `fim` = a sineta de DEPOIS da fala (só para AVISOS_COM_FIM). 16 entradas cobrem todos os avisos + os de fim
+    (hoje 4 + 2).
     """
-    amostras = _finalizar(nome, _sintetizar(nome, taxa, fim))
+    amostras = _finalizar(_sintetizar(nome, taxa, fim))
     quadros = struct.pack("<%dh" % len(amostras), *(int(round(32767 * x)) for x in amostras))
     buf = io.BytesIO()
     with wave.open(buf, "wb") as arq:

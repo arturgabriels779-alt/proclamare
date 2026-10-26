@@ -373,9 +373,11 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
 Contrato v2.8 (Parte A: voz da loja)
 ------------------------------------
   A voz dos anúncios é da LOJA, não de cada aparelho: mora em config.json["voz_loja"] =
-  {"motor": auto|online|offline, "voz": francisca|antonio, "velocidade": -50..50, "aviso": nenhum|ding_dong|
-  aeroporto|suave|sino|comissario|aeroporto_inicio_fim}. Padrão (VOZ_LOJA_PADRAO): auto / francisca / 0 / aeroporto. voz_loja() nunca levanta:
-  chave ausente ou campo torto cai no padrão campo a campo; "definida" = a chave existe no config.
+  {"motor": auto|online|offline, "voz": francisca|antonio, "velocidade": -50..50, "aviso": nenhum|microfone|
+  aeroporto|supermercado|ding_dong_duplo}. Padrão (VOZ_LOJA_PADRAO): auto / francisca / 0 / microfone. voz_loja() nunca levanta:
+  chave ausente ou campo torto cai no padrão campo a campo; "definida" = a chave existe no config. Os avisos que saíram
+  da lista na v2.8 (ding_dong, suave, sino, comissario, aeroporto_inicio_fim) são "campo torto": guardados no
+  config.json, viram o padrão (microfone) na leitura; no POST /api/voz e no /api/voz/ouvir, 400 com "campo":"aviso".
   GET  /api/voz   -> {ok, voz_loja:{motor,voz,velocidade,aviso,definida}, opcoes:{motores,vozes[{id,nome}],avisos[{id,nome}]}}
   POST /api/voz   -> qualquer subconjunto (>= 1) de motor/voz/velocidade/aviso; o resto é preservado. Chave fora da
                      lista = 400 "Campo desconhecido."; valor inválido = 400 com "campo". 20 gravações/min por IP.
@@ -389,13 +391,15 @@ Contrato v2.8 (Parte A: voz da loja)
   (ErroReproducao na saída fixada, qualquer erro no legado) vira só um aviso no log e a fala sai; o "parar" da
   Programação antes ou durante o aviso não deixa a fala começar (a voz do Windows só fica "não interrompível" depois
   do aviso). O cache audios_temp/aviso_<nome>.wav é conferido pelo CONTEÚDO (não só pelo tamanho) e regravado se
-  diferir. Sineta do FIM (v2.8): os avisos de som.aviso.AVISOS_COM_FIM (hoje só "aeroporto_inicio_fim": dó-mi-sol-dó
-  subindo antes, dó-sol-mi-dó descendo depois) tocam também uma sineta DEPOIS da fala, ainda com a música baixa:
+  diferir. Sineta do FIM (v2.8): os avisos de som.aviso.AVISOS_COM_FIM ("microfone": lá-dó#-mi subindo antes e
+  mi-dó#-lá depois; "supermercado": fá-lá-dó-fá subindo antes e descendo depois, notas de 0,55 s; o fim = as mesmas
+  notas na ordem inversa, não o áudio de trás para frente) tocam também uma sineta DEPOIS da fala, ainda com a música baixa:
   aviso -> fala -> fim, na thread de áudio única. Arquivo próprio audios_temp/aviso_<nome>.fim.wav (mesma lista
   branca, mesma conferência de conteúdo e gravação atômica; caminho_do_aviso(nome, fim=True)). Legado: chamada própria
   (_tocar_aviso, mesmos tetos do aviso); saída fixada: na mesma chamada e no mesmo prazo de 85 s de
-  _som_tocar_anuncio, com o prazo da FALA antecipado em AVISO_MAX_S (a sineta do fim tem sempre >= 3 s; a fala perde
-  no máximo ~0,05 s do teto de 80 s, pois o aviso de início dura ~2 s). "Parar" da Programação durante a fala: com
+  _som_tocar_anuncio, com o prazo da FALA antecipado em AVISO_MAX_S (a sineta do fim tem sempre >= 3 s; o aviso de
+  início dura 1,6 s no Microfone, sem perda, e 2,45 s no Supermercado: a fala perde no máximo ~0,45 s do teto de
+  80 s). "Parar" da Programação durante a fala: com
   mp3 (online) ou na saída fixada corta a fala e a sineta do fim não toca (resultado "interrompido"); com a voz do
   Windows no caminho legado a fala NÃO é cortável: o "Parar" responde "nao_interrompivel" e não fica registrado, a
   fala e a sineta do fim tocam; assim que a fala acaba o sinal volta a ser interrompível (interrompivel_de_novo) e um
@@ -6962,7 +6966,7 @@ VOZ_OUVIR_GLOBAL_JANELA_S = 600.0  # por 10 min: vários aparelhos com PIN não 
 def voz_ouvir() -> Response | tuple[Response, int]:
     """
     v2.8 (A3): botão "Ouvir" — toca SÓ o aviso escolhido nas caixas (pela saída fixada, se houver; senão pelo
-    mixer padrão), SEM abaixar a música. Aviso com sineta do fim ("aeroporto_inicio_fim"): a de início, ~0,6 s de
+    mixer padrão), SEM abaixar a música. Aviso com sineta do fim (AVISOS_COM_FIM): a de início, ~0,6 s de
     silêncio e a do fim. Mesma trava dos anúncios: 409 se outro anúncio/teste/programação toca.
     Limites: 6/min por aparelho remoto e 20 por 10 min no total ("voz_ouvir:global", vale também para o PC local).
     """
@@ -6987,7 +6991,7 @@ def voz_ouvir() -> Response | tuple[Response, int]:
         som = SOM.config_som()
         try:
             caminho = caminho_do_aviso(nome)   # disco cheio/sem permissão: cai no 500 genérico abaixo
-            fim = caminho_do_aviso(nome, fim=True)   # v2.8: só "aeroporto_inicio_fim" tem (senão None)
+            fim = caminho_do_aviso(nome, fim=True)   # v2.8: só os de AVISOS_COM_FIM têm (senão None)
             if som is not None and som["saida_anuncio"] is not None:
                 _abrir_saida_som(SOM.candidatas_anuncio(som))   # 503 com "codigo" se não houver saída
                 partes = [caminho] if fim is None else [caminho, fim]
@@ -7508,7 +7512,7 @@ def _som_tocar_anuncio(aviso: Path | None, fala: Path, duracoes: list[float | No
     `duracoes` = as medidas de [aviso?, fala, fim?], na ordem. Falha do aviso (ErroReproducao) é só um aviso no
     log e a fala segue; "parar" depois do aviso não deixa a fala começar; "parar" durante a fala tira o fim.
     Com sineta do fim, a FALA tem o prazo antecipado em AVISO_MAX_S (3 s): a sineta do fim tem sempre ao menos 3 s
-    (>= a duração dela, ~2 s) e o total continua dentro dos 85 s. Falha da sineta do fim (qualquer erro) só vai para
+    (>= a duração dela, 1,6-2,45 s) e o total continua dentro dos 85 s. Falha da sineta do fim (qualquer erro) só vai para
     o log com o tipo: a fala já saiu e o anúncio conta como ok.
     """
     motor = SOM.motor
@@ -11186,7 +11190,7 @@ def _prog_segundos_audio(item: dict) -> float:
 def _prog_segundos_fala(item: dict) -> float:
     """
     Anúncio agendado: estimativa conservadora de fala (len/7 s, no máximo 80 s) + as sinetas (v2.8 A3) no PIOR
-    caso, AVISO_PIOR_CASO_S (= AVISO_MAX_S x 2: a de antes + a do fim do "aeroporto_inicio_fim"), qualquer que seja
+    caso, AVISO_PIOR_CASO_S (= AVISO_MAX_S x 2: a de antes + a do fim de AVISOS_COM_FIM), qualquer que seja
     o aviso atual da loja (até "nenhum"): trocar o aviso depois nunca faz horários já gravados passarem do teto de
     60 min/dia.
     """
