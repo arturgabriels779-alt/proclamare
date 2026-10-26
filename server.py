@@ -239,7 +239,7 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
   (primeiro_adm=True / sistema=True); ator None sem a marca = 403 "sem_permissao".
   Histórico de anúncios (B6). anuncios.jsonl AO LADO do config.json (_anuncios_path(); nunca versionado; ACL
                      restrita ao nascer; só append sob _historico_lock, ensure_ascii=False, uma linha JSON por
-                     anúncio): {"t" (ISO com fuso, relógio do PC, microssegundos), "conta_id", "usuario", "nome",
+                     anúncio): {"t" (INÍCIO do anúncio: ISO com fuso, relógio do PC, microssegundos), "conta_id", "usuario", "nome",
                      "funcao", "texto", "resultado" (ok|ocupado|erro|sem_internet|limite|interrompido), "origem"
                      (local|rede), "tipo" (digitado|tocar_agora|agendado)}. Sem conta (modo PIN ou horário sem
                      autor): conta_id/usuario/funcao null e nome "antes das contas". É o ÚNICO lugar do
@@ -250,7 +250,9 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
                      dele; o 409 ocupado da rota também entra) e o anúncio agendado que toca sozinho (autor = a
                      conta que criou/alterou o horário por último, relida em contas.json; origem "local"); "não tocou" vira
                      ocupado/sem_internet/erro e o "Parar" vira interrompido. Áudio, lista e Spotify não são anúncios.
-                     Falha de disco ao gravar não derruba o anúncio (o log leva só o nome do erro). Retenção:
+                     Falha de disco ao gravar não derruba o anúncio (o log leva só o nome do erro; o mesmo para uma
+                     falha ao achar o autor de um horário, que nunca troca o resultado do horário). Arquivo que termina
+                     sem "\n" (processo morto no meio de uma escrita) = a próxima linha começa numa linha nova. Retenção:
                      HISTORICO_RETENCAO_DIAS = 90; podar_historico() regrava de forma atômica (temporário ".anuncios.*"
                      com ACL antes dos dados) sem as linhas vencidas nem as ilegíveis, logo ao ligar e a cada 6 h
                      (laço da vigia de túneis; falhou = tenta na próxima volta). A leitura já esconde o que passou de
@@ -6644,6 +6646,7 @@ def announce() -> Response | tuple[Response, int]:
     # "limite", mas só HISTORICO_LIMITE_MAX_POR_MIN por IP/conta (um aparelho insistente não enche o disco com texto).
     conta_hist = conta_da_requisicao()
     origem_hist = "local" if _requisicao_local() else "rede"
+    quando_hist = _historico_agora()   # o "t" do histórico é o INÍCIO do anúncio, não o fim
     # v2.7.1 (P05): um aparelho com PIN não emenda anúncios sem limite (o PC da loja é livre).
     # v2.8 (B4): em modo contas o mesmo teto vale também POR CONTA (trocar de IP não dá anúncios a mais).
     if not _requisicao_local() and _excedeu_limite_ip_e_conta("anuncio:", ANUNCIO_REMOTO_MAX_POR_MIN, 60.0):
@@ -6709,7 +6712,7 @@ def announce() -> Response | tuple[Response, int]:
                 conta=conta_audit)   # só o tamanho e o token opaco da conta, nunca o texto
         # o texto vai SÓ para o histórico (arquivo próprio, ACL restrita), nunca para a auditoria nem para o log
         registrar_anuncio(conta=conta_hist, texto=texto, resultado=resultado_audit, origem=origem_hist,
-                          tipo="digitado")
+                          tipo="digitado", quando=quando_hist)
 
 
 # ---------------------------------------------------------------------------
@@ -8548,9 +8551,11 @@ def _autor_minimo(conta: Any) -> dict | None:
     return {k: conta.get(k) for k in ("id", "usuario", "nome", "funcao")}
 
 
-def registrar_anuncio(*, conta: dict | None, texto: str, resultado: str, origem: str, tipo: str) -> None:
+def registrar_anuncio(*, conta: dict | None, texto: str, resultado: str, origem: str, tipo: str,
+                      quando: datetime | None = None) -> None:
     """
-    Acrescenta UMA linha ao anuncios.jsonl. `conta` None (modo PIN, ou item da Programação sem autor) = nome "antes
+    Acrescenta UMA linha ao anuncios.jsonl. `quando` = o INÍCIO do anúncio (quem chama lê _historico_agora() antes de
+    tocar; None = agora, para o que é recusado na hora). `conta` None (modo PIN, ou item da Programação sem autor) = nome "antes
     das contas" e conta_id/usuario/funcao null. Token de resultado/origem/tipo fora do esperado = ValueError (erro de
     programação, nunca do cliente). Falha de disco NÃO derruba o anúncio (que já tocou): vai para o log só o nome do
     erro, nunca o texto.
@@ -8559,7 +8564,7 @@ def registrar_anuncio(*, conta: dict | None, texto: str, resultado: str, origem:
         raise ValueError("token de histórico desconhecido")
     autor = _autor_minimo(conta)
     entrada = {
-        "t": _com_fuso(_historico_agora()).isoformat(timespec="microseconds"),
+        "t": _com_fuso(quando if quando is not None else _historico_agora()).isoformat(timespec="microseconds"),
         "conta_id": _id_de_conta_ou_none(autor["id"]) if autor else None,
         "usuario": autor["usuario"] if autor and isinstance(autor["usuario"], str) else None,
         "nome": autor["nome"] if autor and isinstance(autor["nome"], str) and autor["nome"] else HISTORICO_SEM_CONTA,
@@ -8581,6 +8586,15 @@ def registrar_anuncio(*, conta: dict | None, texto: str, resultado: str, origem:
                 _restringir_acl_windows(caminho)
                 with contextlib.suppress(OSError):
                     os.chmod(caminho, 0o600)
+            # Processo morto no meio de uma escrita deixa o arquivo sem o "\n" final: esta linha colaria na
+            # metade e as duas se perderiam. Último byte diferente de "\n" = começa numa linha nova (a metade
+            # fica sozinha, ilegível, e sai na próxima poda).
+            with open(caminho, "rb") as atual:
+                atual.seek(0, os.SEEK_END)
+                if atual.tell() > 0:
+                    atual.seek(-1, os.SEEK_END)
+                    if atual.read(1) != b"\n":
+                        linha = "\n" + linha
             with open(caminho, "a", encoding="utf-8", newline="\n") as f:
                 f.write(linha)
                 f.flush()
@@ -8690,7 +8704,11 @@ def _autor_do_item(item: dict) -> dict | None:
     aid = item.get("autor_id")
     if not isinstance(aid, str):
         return None
-    conta = conta_por_id(aid)
+    try:
+        conta = conta_por_id(aid)
+    except Exception as exc:  # noqa: BLE001 - contas.json ilegível: fica o nome guardado no horário
+        log.warning("Não foi possível reler a conta do autor de um horário (%s).", type(exc).__name__)
+        conta = None
     if conta is not None:
         return _autor_minimo(conta)
     return {"id": aid, "usuario": None, "nome": item.get("autor_nome") or HISTORICO_SEM_CONTA, "funcao": None}
@@ -8701,8 +8719,12 @@ def _pedido_por_da_requisicao() -> dict:
     return {"conta": _autor_minimo(conta_da_requisicao()), "origem": "local" if _requisicao_local() else "rede"}
 
 
-def _registrar_anuncio_da_programacao(item: dict, ctx: programacao.Execucao, resultado: str) -> None:
-    """Anúncio da Programação no histórico: "Tocar agora" = quem pediu; agendado = o autor do item, no PC."""
+def _registrar_anuncio_da_programacao(item: dict, ctx: programacao.Execucao, resultado: str,
+                                      quando: datetime | None = None) -> None:
+    """
+    Anúncio da Programação no histórico: "Tocar agora" = quem pediu; agendado = o autor do item, no PC. `quando` =
+    o início do anúncio.
+    """
     if ctx.origem == "manual":
         pedido = ctx.pedido_por or {}
         conta, origem, tipo = pedido.get("conta"), pedido.get("origem", "local"), "tocar_agora"
@@ -8710,7 +8732,8 @@ def _registrar_anuncio_da_programacao(item: dict, ctx: programacao.Execucao, res
             origem = "local"
     else:
         conta, origem, tipo = _autor_do_item(item), "local", "agendado"
-    registrar_anuncio(conta=conta, texto=item.get("alvo") or "", resultado=resultado, origem=origem, tipo=tipo)
+    registrar_anuncio(conta=conta, texto=item.get("alvo") or "", resultado=resultado, origem=origem, tipo=tipo,
+                      quando=quando)
 
 
 def _param_unico(nome: str) -> str | None:
@@ -10254,6 +10277,16 @@ def _prog_executar_anuncio(item: dict, ctx: programacao.Execucao) -> dict | None
     Só o tipo "anuncio" tem texto: áudio, lista e Spotify não são anúncios e não entram.
     """
     resultado = "erro"
+    # "t" = o INÍCIO do anúncio: o instante em que começa a tocar de verdade (ctx.comecou, depois de esperar a
+    # trava); se nem chegou a começar (não tocou), o instante em que a execução começou.
+    inicio = {"quando": _historico_agora()}
+    comecou = ctx.comecou
+
+    def comecou_com_instante() -> None:
+        inicio["quando"] = _historico_agora()
+        comecou()
+
+    ctx.comecou = comecou_com_instante
     try:
         extra = _prog_executar_som(item, ctx)
         resultado = "interrompido" if (extra or {}).get("interrompido") else "ok"
@@ -10262,7 +10295,10 @@ def _prog_executar_anuncio(item: dict, ctx: programacao.Execucao) -> dict | None
         resultado = _PROG_RESULTADO_HISTORICO.get(e.motivo, "erro")
         raise
     finally:
-        _registrar_anuncio_da_programacao(item, ctx, resultado)
+        try:
+            _registrar_anuncio_da_programacao(item, ctx, resultado, inicio["quando"])
+        except Exception as exc:  # noqa: BLE001 - o histórico nunca troca o resultado real do horário
+            log.error("Não foi possível registrar o anúncio da programação no histórico (%s).", type(exc).__name__)
 
 
 def _prog_criar_servico(**ajustes: Any) -> programacao.Programacao:

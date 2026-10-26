@@ -93,8 +93,8 @@ CHAVES_DOC = frozenset({"versao", "itens"})
 # Gravadas só pelo servidor (nunca vêm do cliente: chave desconhecida = 400). v2.8 (B6): "autor_id"/"autor_nome" = a
 # conta que criou ou alterou o CONTEÚDO por último (só em modo contas; item sem eles = "antes das contas").
 CHAVES_SO_SERVIDOR = frozenset({"origem", "criado_por", "alterado_em", "autor_id", "autor_nome"})
-RE_AUTOR_ID = re.compile(r"[0-9a-f]{8}")      # id de conta (server._CONTA_ID_RE)
-AUTOR_NOME_MAX = 60                           # contas.NOME_MAX (conferido nos testes)
+RE_AUTOR_ID = re.compile(r"[0-9a-f]{8}")      # id de conta = server._CONTA_ID_RE (conferido em tests/test_historico.py)
+AUTOR_NOME_MAX = 60                           # = contas.NOME_MAX (conferido em tests/test_historico.py)
 CHAVES_ITEM = frozenset({"id", "ativo", "tipo", "alvo", "nome", "hora", "dias", "data", "embaralhar",
                          "voz", "motor", "velocidade"})
 

@@ -23,10 +23,12 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import contas
+import programacao
 import server
 from tests import isolamento
 from tests import test_programacao as tp
-from tests.test_auth import HOST_REMOTO, ip_remoto
+from tests.test_auth import HOST_REMOTO, PIN, ip_remoto
 from tests.test_login_contas import SENHA_ADM, SENHA_FUNC, SENHA_GER, BaseContas, cookie_da_resposta
 
 COOKIE = server.COOKIE_SESSAO
@@ -218,6 +220,62 @@ class TesteGravacao(BaseComContas):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertNotIn(TEXTO_SECRETO, "\n".join(logs.output))
 
+    def test_linha_cortada_no_fim_nao_cola_na_proxima(self) -> None:
+        """Processo morto no meio da escrita: o arquivo termina sem "\n"; o próximo anúncio começa numa linha nova."""
+        self.anunciar_rede(self.tok["funcionario"], "Inteiro")
+        with server._anuncios_path().open("a", encoding="utf-8", newline="\n") as f:
+            f.write('{"t":"2026-10-2')   # fragmento sem "\n"
+        self.anunciar_rede(self.tok["funcionario"], "Depois do corte")
+        r = self.get_rede(self.tok["gerente"], "/api/historico")
+        self.assertEqual([x["texto"] for x in r.get_json()["itens"]], ["Depois do corte", "Inteiro"])
+        brutas = server._anuncios_path().read_text(encoding="utf-8").split("\n")
+        self.assertEqual(brutas[1], '{"t":"2026-10-2')   # o fragmento ficou sozinho na linha dele
+
+    def test_t_e_o_inicio_do_anuncio(self) -> None:
+        """O "t" é o instante em que o anúncio COMEÇA, não o fim (o relógio anda 30 s durante cada fala)."""
+        relogio = {"t": datetime(2026, 10, 19, 21, 44, 0, tzinfo=FUSO)}
+        falar_real = server._anunciar
+
+        def falar_devagar(*a: Any, **kw: Any) -> Any:
+            relogio["t"] += timedelta(seconds=30)
+            return falar_real(*a, **kw)
+
+        r = self.salvar_prog(self.tok["gerente"], [self.anuncio_item()])
+        item = r.get_json()["itens"][0]
+        inicios = []
+        with mock.patch.object(server, "_historico_agora", lambda: relogio["t"]), \
+                mock.patch.object(server, "_anunciar", falar_devagar):
+            inicios.append(relogio["t"])
+            self.assertEqual(self.anunciar_rede(self.tok["funcionario"], "Digitado").status_code, 200)
+            inicios.append(relogio["t"])
+            r = self.remoto("post", f"/api/programacao/{item['id']}/testar", json={},
+                            headers=self.com_cookie(self.tok["gerente"]))
+            self.assertEqual(r.status_code, 202, r.get_data(as_text=True))
+            inicios.append(relogio["t"])
+            self.rodar_agendados()
+        self.assertEqual(len(self.falas), 3)
+        self.assertEqual([(e["tipo"], datetime.fromisoformat(e["t"])) for e in self.linhas()],
+                         list(zip(("digitado", "tocar_agora", "agendado"), inicios)))
+
+    def test_falha_ao_achar_o_autor_nao_troca_o_resultado_do_horario(self) -> None:
+        self.salvar_prog(self.tok["gerente"], [self.anuncio_item()])
+        with mock.patch.object(server, "_autor_do_item", side_effect=RuntimeError(TEXTO_SECRETO)), \
+                self.assertLogs(server.log.name, level="ERROR") as logs:
+            self.rodar_agendados()
+        self.assertEqual(self.falas, [TEXTO_SECRETO])
+        self.assertEqual(self.servico.historico()[0]["status"], "ok")   # o resultado real fica
+        self.assertIn("RuntimeError", "\n".join(logs.output))
+        self.assertNotIn(TEXTO_SECRETO, "\n".join(logs.output))       # só o nome da exceção
+        self.assertEqual(self.linhas(), [])
+
+    def test_contas_ilegivel_no_agendado_usa_o_nome_guardado(self) -> None:
+        self.salvar_prog(self.tok["gerente"], [self.anuncio_item()])
+        with mock.patch.object(server, "conta_por_id", side_effect=OSError("disco")):
+            self.rodar_agendados()
+        (e,) = self.linhas()
+        self.assertEqual((e["conta_id"], e["nome"], e["usuario"], e["resultado"]),
+                         (self.ger["id"], self.ger["nome"], None, "ok"))
+
     def test_agendado_registra_autor_do_item(self) -> None:
         r = self.salvar_prog(self.tok["gerente"], [self.anuncio_item()])
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -275,6 +333,22 @@ class TesteAntesDasContas(BaseHistorico):
         r = self.c.get("/api/historico")
         self.assertEqual(r.status_code, 200)
         self.assertEqual([x["texto"] for x in r.get_json()["itens"]], ["Antigo", "Modo PIN"])
+
+    def test_sessao_de_pin_remota_le_o_historico_inteiro(self) -> None:
+        """Modo PIN: a sessão de PIN pela rede vale como gerente e lê tudo (inclusive com o filtro por conta)."""
+        server.aplicar_pin(PIN)
+        self.assertFalse(server.modo_contas())
+        token = cookie_da_resposta(self.login())
+        alguem = {"id": "0123abcd", "usuario": "ex.conta", "nome": "Ex Conta", "funcao": "Caixa"}
+        server.registrar_anuncio(conta=alguem, texto="De uma conta", resultado="ok", origem="rede", tipo="digitado")
+        self.assertEqual(self.c.post("/api/announce", json={"text": "Do PC"}).status_code, 200)
+        r = self.remoto("get", "/api/historico", headers=self.com_cookie(token))
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual([(x["texto"], x["nome"]) for x in r.get_json()["itens"]],
+                         [("Do PC", "antes das contas"), ("De uma conta", "Ex Conta")])
+        r = self.remoto("get", "/api/historico?conta=0123abcd", headers=self.com_cookie(token))
+        self.assertEqual([x["texto"] for x in r.get_json()["itens"]], ["De uma conta"])
+        self.assertEqual(self.remoto("get", "/api/historico").status_code, 401)
 
     def test_isolamento_falha_fechado_tambem_para_o_historico(self) -> None:
         self.assertTrue(isolamento.dentro_do_temporario(server._anuncios_path()))
@@ -472,6 +546,26 @@ class TesteCarimbos(BaseComContas):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(server.load_config()["mensagens"][0]["autor_id"], self.ger["id"])
 
+    def test_constantes_do_autor_espelham_as_das_contas(self) -> None:
+        """programacao.py não importa contas/server: as cópias das regras ficam conferidas aqui."""
+        self.assertEqual(programacao.AUTOR_NOME_MAX, contas.NOME_MAX)
+        for amostra in ("0123abcd", "ffffffff", "0123ABCD", "0123abc", "0123abcde", "0123abcg", "", " 0123abc"):
+            with self.subTest(amostra=amostra):
+                self.assertEqual(bool(programacao.RE_AUTOR_ID.fullmatch(amostra)),
+                                 bool(server._CONTA_ID_RE.fullmatch(amostra)))
+        self.assertEqual(programacao.RE_AUTOR_ID.pattern.strip("^$"), server._CONTA_ID_RE.pattern.strip("^$"))
+
+    def test_so_ligar_desligar_pelo_pc_nao_muda_o_autor(self) -> None:
+        r = self.salvar_prog(self.tok["gerente"], [self.anuncio_item()])
+        item = r.get_json()["itens"][0]
+        itens = [{k: item[k] for k in ("id", "tipo", "alvo", "hora", "dias", "ativo")}]
+        itens[0]["ativo"] = False
+        r = self.salvar_prog(None, itens)   # o PC das caixas, com a sessão local do ADM
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        salvo = server._prog_arquivo.ler()["itens"][0]
+        self.assertEqual((salvo["ativo"], salvo["autor_id"], salvo["autor_nome"]),
+                         (False, self.ger["id"], self.ger["nome"]))
+
     def test_carimbo_torto_no_disco_e_descartado(self) -> None:
         with server._prog_arquivo.lock:
             server._prog_arquivo.gravar({"versao": 1, "itens": [
@@ -493,10 +587,10 @@ class TesteSemRotaDeApagar(BaseComContas):
             with self.subTest(metodo=metodo):
                 for token in (self.tok["adm"], self.tok["gerente"]):
                     r = self.remoto(metodo, "/api/historico", json={}, headers=self.com_cookie(token))
-                    self.assertIn(r.status_code, (404, 405), r.get_data(as_text=True))
+                    self.assertEqual(r.status_code, 405, r.get_data(as_text=True))
                 r = self.l.open("/api/historico", method=metodo.upper(), json={},
                                 headers={"Cookie": f"{COOKIE}={self.token_adm}"})
-                self.assertIn(r.status_code, (404, 405))
+                self.assertEqual(r.status_code, 405)
         regras = [(r.rule, sorted(r.methods - {"HEAD", "OPTIONS"})) for r in server.app.url_map.iter_rules()
                   if "historico" in r.rule]
         self.assertEqual(regras, [("/api/historico", ["GET"])])
