@@ -127,13 +127,17 @@ class TesteSoTokenVivo(BaseContas):
         self.assertEqual(cookie_da_resposta(r), "")                          # o navegador esquece o cookie mesmo assim
         self.assertEqual(self.remoto("post", "/api/auth/logout", ip=91, json={}).status_code, 200)   # outro IP
 
-    def test_logout_com_429_nao_revoga(self) -> None:
+    def test_logout_no_limite_so_revoga_token_vivo(self) -> None:
+        """Rodada 4 (I3) mudou a regra da rodada 3: no limite, token VIVO ainda é revogado (200); morto leva 429."""
         self.criar_adm()
         token = cookie_da_resposta(self.login_conta("ana.adm", SENHA_ADM, ip=60))
         with mock.patch.object(server, "LOGOUT_MAX_POR_MIN", 0):
             r = self.remoto("post", "/api/auth/logout", ip=60, json={}, headers=self.com_cookie(token))
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(len(server._tokens_revogados), 1)
+            r = self.remoto("post", "/api/auth/logout", ip=60, json={}, headers=self.com_cookie(token))   # já morto
         self.assertEqual(r.status_code, 429)
-        self.assertEqual(server._tokens_revogados, {})
+        self.assertEqual(len(server._tokens_revogados), 1)
 
 
 # ---------------------------------------------------------------------------------------------

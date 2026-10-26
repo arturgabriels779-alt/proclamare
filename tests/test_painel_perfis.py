@@ -449,6 +449,23 @@ class TesteRevisaoFinalParte2(unittest.TestCase):
         self.assertIn('contaMotivo("senha", data.codigo, data)', JS)
 
 
+class TesteRodada4(unittest.TestCase):
+    def test_logout_429_limite_conta_como_saiu(self) -> None:
+        """I3: o 429 "limite" do logout já veio com o cookie apagado (e a sessão viva revogada): o painel sai igual."""
+        corpo = _funcao_js("logoutSaiu")
+        self.assertIn('r.status === 429 && r.data.codigo === "limite"', corpo)
+        self.assertIn("SAIU_COM_LIMITE_MSG", corpo)
+        self.assertIn("Sair de todos os aparelhos", re.search(r'const SAIU_COM_LIMITE_MSG = "([^"]*)";', JS).group(1))
+        # os dois botões de sair usam a mesma regra e seguem pelo mesmo caminho do sucesso
+        self.assertEqual(JS.count('if (!logoutSaiu(r)) throw new Error("logout recusado");'), 2)
+        self.assertNotIn('if (!r.ok || r.data.ok === false) throw new Error("logout recusado");', JS)
+        for trecho, limpeza in (("btnLogout.addEventListener", "wipeBrowserData();"),
+                                ("btnContaSair.addEventListener", "limparAoSair();")):
+            bloco = JS[JS.index(trecho):][:700]
+            self.assertLess(bloco.index("logoutSaiu(r)"), bloco.index(limpeza))
+            self.assertLess(bloco.index(limpeza), bloco.index("boot();"))
+
+
 class TesteCspDoHtml(unittest.TestCase):
     def test_sem_inline(self) -> None:
         self.assertEqual(re.findall(r"<script(?![^>]*\bsrc=)[^>]*>", HTML), [])

@@ -10716,12 +10716,24 @@
     try { window.sessionStorage.clear(); } catch (e) { /* idem */ }
   }
 
+  // v2.8 (revisão, rodada 4): o 429 "limite" do logout chega com o cookie JÁ apagado (e o servidor revoga mesmo assim
+  // uma sessão que ainda valia): para o painel é "saiu". O recado lembra do "Sair de todos os aparelhos".
+  const SAIU_COM_LIMITE_MSG = "Você saiu deste aparelho. Se acha que alguém copiou a sua sessão, entre de novo e use “Sair de todos os aparelhos”.";
+  function logoutSaiu(r) {
+    if (r.ok && r.data.ok !== false) return true;
+    if (r.status === 429 && r.data.codigo === "limite") {
+      toast(SAIU_COM_LIMITE_MSG, "info", { duration: 7000 });
+      return true;
+    }
+    return false;
+  }
+
   btnLogout.addEventListener("click", async () => {
     if (btnLogout.getAttribute("aria-disabled") === "true") return;
     btnLogout.setAttribute("aria-disabled", "true");
     try {
       const r = await postJSON("/api/auth/logout", {}, { auth: true, timeout: 8000 });
-      if (!r.ok || r.data.ok === false) throw new Error("logout recusado");
+      if (!logoutSaiu(r)) throw new Error("logout recusado");
       wipeBrowserData(); // v2.7.1 (P23): só depois de sair de verdade; se falhar, os dados ficam e o erro aparece
       boot();
     } catch (err) {
@@ -11061,7 +11073,7 @@
     btnContaSair.classList.add("is-loading");
     try {
       const r = await postJSON("/api/auth/logout", {}, { auth: true, timeout: 8000 });
-      if (!r.ok || r.data.ok === false) throw new Error("logout recusado");
+      if (!logoutSaiu(r)) throw new Error("logout recusado");
       limparAoSair();
       boot();
     } catch (err) {

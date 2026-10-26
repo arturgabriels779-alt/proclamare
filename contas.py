@@ -145,10 +145,11 @@ def _forma_fraca(texto: str) -> bool:
         return True
     if len(texto) >= 6 and len(set(texto)) <= 2:   # aaaaaaa1, 11112222, 00000001, 12121212
         return True
-    for k in (3, 4):           # bloco repetido DE VERDADE (mais de 2 vezes o bloco): abcabcab, 12341234
-        # rodada 3: sem o "len > 2k" um texto de 4 caracteres "repetia" o próprio bloco e senhas fortes curtas com
-        # símbolos (Ab3$xY7!, Xk9!mQ2#) caíam por uma variante curta ("9mq2")
-        if len(texto) > 2 * k and texto == (texto[:k] * len(texto))[:len(texto)]:
+    for k in (3, 4):           # bloco repetido DE VERDADE (pelo menos 2 vezes o bloco): abcabcab, qwerqwer, 12341234
+        # rodada 3: sem o guarda um texto de 4 caracteres "repetia" o próprio bloco e senhas fortes curtas com
+        # símbolos (Ab3$xY7!, Xk9!mQ2#) caíam por uma variante curta ("9mq2"); rodada 4: ">=" (não ">") para pegar o
+        # bloco de 4 escrito 2 vezes (lojaloja, Ab1!Ab1!)
+        if len(texto) >= 2 * k and texto == (texto[:k] * len(texto))[:len(texto)]:
             return True
     return any(texto in seq or texto in seq[::-1] for seq in _SEQUENCIAS)
 

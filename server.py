@@ -216,8 +216,9 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
   nenhum membro novo nasce depois, porque toda emissão revalida o token apresentado), em memória, até
   TOKENS_REVOGADOS_MAX 50000 entradas; as vencidas saem antes e uma revogação VIVA nunca é descartada: lista cheia =
   falha fechada, a conta de quem saiu tem todas as sessões encerradas (sessao_v + 1) ou, num token de PIN, todas as
-  sessões caem (acesso_versao + 1), com aviso no log. O logout tem LOGOUT_MAX_POR_MIN 20/min por IP: acima, 429
-  {"ok":false,"codigo":"limite","error"} sem revogar, mas com o cookie apagado. Trocar a própria senha (POST
+  sessões caem (acesso_versao + 1), com aviso no log. O logout tem LOGOUT_MAX_POR_MIN 20/min por IP: acima, um token
+  ainda VIVO é revogado do mesmo jeito (200, rodada 4); token morto/torto/ausente leva 429
+  {"ok":false,"codigo":"limite","error"}, também com o cookie apagado (o painel trata como "saiu"). Trocar a própria senha (POST
   /api/conta/senha) começa uma família NOVA (sid novo, mesmo iat). UM REINÍCIO DO SERVIDOR ESQUECE A LISTA - para
   derrubar de vez use "Sair de todos os aparelhos"; vale também em modo PIN). A conta é
   RELIDA do contas.json a cada requisição (conta_da_requisicao(), guardada em flask.g; perfil_da_requisicao():
@@ -3870,10 +3871,16 @@ def auth_logout() -> Any:
     mais (até um reinício). Rodada 3: LOGOUT_MAX_POR_MIN por IP; acima disso 429 SEM revogar nada, mas o cookie deste
     navegador é apagado do mesmo jeito (a pessoa sai do aparelho; "Sair de todos os aparelhos" continua disponível).
     """
+    token = request.cookies.get(COOKIE_SESSAO)
     if excedeu_limite("logout:" + (request.remote_addr or "?"), LOGOUT_MAX_POR_MIN, 60.0):
+        # Rodada 4 (I3): o limite nunca impede revogar um token AINDA VIVO (quem divide o IP não consegue, gastando o
+        # limite com logouts vazios, deixar a cópia da sessão de outra pessoa valendo). O custo continua limitado:
+        # revogar exige um token vivo. Só o trabalho à toa (token morto, torto ou ausente) leva o 429.
+        if _revogar_token(token):
+            return _apagar_cookie(jsonify({"ok": True}))
         return _apagar_cookie(jsonify({"ok": False, "codigo": "limite",
                                        "error": "Muitos pedidos de saída seguidos. Aguarde um minuto."})), 429
-    _revogar_token(request.cookies.get(COOKIE_SESSAO))
+    _revogar_token(token)
     return _apagar_cookie(jsonify({"ok": True}))
 
 
