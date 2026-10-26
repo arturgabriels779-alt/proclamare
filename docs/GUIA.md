@@ -468,8 +468,11 @@ as **Mensagens prontas** e para os **anúncios da Programação**. **Não** toca
 - **Sino**: uma badalada de sino.
 - **Avião (comissário)**: um "ding" agudo e curto, no estilo da chamada do comissário de bordo no avião.
 - **Aeroporto (início e fim)**: uma sineta que **sobe antes** da fala e outra que **desce depois** dela, como nos
-  avisos de aeroporto que abrem e fecham com sineta. A música só volta depois da sineta do fim. Se a Programação
-  mandar **parar** no meio da fala, a sineta do fim não toca.
+  avisos de aeroporto que abrem e fecham com sineta. A música só volta depois da sineta do fim. Se você apertar
+  **Parar** na Programação no meio da fala, a fala é cortada e a sineta do fim não toca. A exceção é a **voz do
+  computador** (motor Offline, sem saída de som escolhida): essa fala não tem como ser cortada, então o **Parar**
+  durante ela não faz efeito e a sineta do fim toca normalmente; apertando **Parar** de novo durante a sineta do fim,
+  ela é cortada. Parar só na sineta do fim não conta como "interrompido" no histórico (a fala inteira já saiu).
 
 Cada sineta dura no máximo 3 segundos. Toque em **Ouvir** para escutar: o aviso sai **nas caixas da loja** (não no
 celular) e a música não abaixa; no **Aeroporto (início e fim)** você ouve a sineta de início, uma pausa curta e a do

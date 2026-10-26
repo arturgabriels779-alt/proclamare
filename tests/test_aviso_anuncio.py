@@ -532,7 +532,7 @@ class TestSinetaDoFim(BaseAviso):
 
         def executar(func: Any, *args: Any, timeout: float = server.TIMEOUT_AUDIO_S) -> Any:
             if func is server._tocar_aviso and args and args[0].name == ARQ_FIM:
-                self.assertEqual(timeout, aviso_mod.AVISO_MAX_S + 15.0)   # teto de espera próprio da sineta
+                self.assertEqual(timeout, aviso_mod.AVISO_MAX_S + 3.0)    # espera curta: a trava não fica presa
                 raise TimeoutError("A reprodução de áudio excedeu o tempo limite.")
             return executar_original(func, *args, timeout=timeout)
 
@@ -543,25 +543,51 @@ class TestSinetaDoFim(BaseAviso):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertTrue(any("TimeoutError" in linha for linha in cap.output))
 
-    def test_legado_parar_durante_a_fala_tira_o_fim(self) -> None:
-        sinais: list[programacao.SinalParada] = []
-
-        def falar(texto: str, wpm: int, voz: Any) -> None:
-            self.cen.eventos.append("fala")
-            sinais[-1].parar()                         # "parar" chegou durante a fala
+    def test_legado_online_parar_durante_a_fala_tira_o_fim(self) -> None:
+        # o mp3 (pygame) é cortável: "parar" durante a fala corta a fala e a sineta do fim nem começa.
+        # (A voz do Windows, que não é cortável, tem o teste com o "Parar" de verdade em TestAvisoNaProgramacao.)
+        sinal = programacao.SinalParada()
 
         def tocar_mp3(c: Path, parar: Any = None) -> None:
             self.cen.eventos.append("fala")
             parar.parar()
 
-        with mock.patch.object(server, "_falar_offline", falar), mock.patch.object(server, "_tocar_mp3", tocar_mp3):
-            for online in (False, True):
-                with self.subTest(online=online):
-                    self.cen.eventos.clear()
-                    sinais.append(programacao.SinalParada())
-                    server._anunciar(TEXTO, "auto", "pt-BR-FranciscaNeural", 0, None, online,
-                                     contexto=contextlib.nullcontext, parar=sinais[-1], aviso=FIM)
-                    self.assertEqual(self.cen.eventos, [("aviso", ARQ_INICIO), "fala"])   # sem a do fim
+        with mock.patch.object(server, "_tocar_mp3", tocar_mp3):
+            server._anunciar(TEXTO, "auto", "pt-BR-FranciscaNeural", 0, None, True,
+                             contexto=contextlib.nullcontext, parar=sinal, aviso=FIM)
+        self.assertEqual(self.cen.eventos, [("aviso", ARQ_INICIO), "fala"])   # sem a do fim
+        self.assertIs(sinal.fala_cortada, True)
+
+    def test_legado_offline_volta_a_ser_interrompivel_depois_da_fala(self) -> None:
+        sinal = programacao.SinalParada()
+        vistos: list[tuple] = []
+
+        def falar(texto: str, wpm: int, voz: Any) -> None:
+            vistos.append(("fala", sinal.interrompivel))
+
+        def tocar(caminho: Path, parar: Any = None) -> None:
+            vistos.append((caminho.name, sinal.interrompivel))
+
+        with mock.patch.object(server, "_falar_offline", falar), mock.patch.object(server, "_tocar_aviso", tocar):
+            server._anunciar(TEXTO, "offline", "pt-BR-FranciscaNeural", 0, None, False,
+                             contexto=contextlib.nullcontext, parar=sinal, aviso=FIM)
+        # a voz do Windows NÃO é cortável (só ela); a sineta do fim volta a ser
+        self.assertEqual(vistos, [(ARQ_INICIO, True), ("fala", False), (ARQ_FIM, True)])
+        self.assertIs(sinal.fala_cortada, False)
+
+    def test_sinal_parada_volta_a_ser_interrompivel(self) -> None:
+        sinal = programacao.SinalParada()
+        self.assertIsNone(sinal.fala_cortada)
+        sinal.nao_interrompivel()
+        self.assertFalse(sinal.interrompivel)
+        sinal.interrompivel_de_novo()
+        self.assertTrue(sinal.interrompivel)
+        sinal.marcar_fim_da_fala()
+        self.assertIs(sinal.fala_cortada, False)
+        sinal.parar()
+        self.assertIs(sinal.fala_cortada, False)                       # foi capturado no fim da fala
+        sinal.marcar_fim_da_fala()
+        self.assertIs(sinal.fala_cortada, True)
 
     def test_saida_aviso_fala_fim_no_mesmo_prazo_com_reserva(self) -> None:
         self.configurar()
@@ -702,11 +728,120 @@ class TestSinetaDoFim(BaseAviso):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(r.get_json()["voz_loja"]["aviso"], FIM)
 
+    def test_saida_duracoes_fora_do_formato_usam_a_da_fala(self) -> None:
+        # M-4: `duracoes` vem de _som_medir(partes) (mesmo tamanho); se não bater, a fala usa a dela como antes
+        a, f, z = (self.audio / n for n in ("aviso_a.wav", "fala.wav", "aviso_a.fim.wav"))
+        vistos: list[tuple[str, Any]] = []
+
+        def tocar(caminho: Path, **kw: Any) -> float:
+            vistos.append((caminho.name, kw.get("duracao")))
+            return 0.0
+
+        with mock.patch.object(server.SOM.motor, "tocar", tocar):
+            server._som_tocar_anuncio(a, f, [2.0, 9.0, 1.5], None, z)      # certo: [aviso, fala, fim]
+            server._som_tocar_anuncio(a, f, [9.0], None, z)                # só a da fala (formato antigo)
+            server._som_tocar_anuncio(a, f, [2.0, 9.0], None, None)        # [aviso, fala], sem fim
+            server._som_tocar_anuncio(None, f, [9.0], None, None)          # [fala]
+        self.assertEqual(vistos, [
+            ("aviso_a.wav", 2.0), ("fala.wav", 9.0), ("aviso_a.fim.wav", 1.5),
+            ("aviso_a.wav", None), ("fala.wav", 9.0), ("aviso_a.fim.wav", None),
+            ("aviso_a.wav", 2.0), ("fala.wav", 9.0),
+            ("fala.wav", 9.0)])
+
+    def test_ouvir_na_saida_tem_teto_de_espera_das_duas_sinetas(self) -> None:
+        self.configurar()
+        executar_original = server.executar_no_audio
+        timeouts: list[Any] = []
+
+        def executar(func: Any, *args: Any, timeout: float = server.TIMEOUT_AUDIO_S) -> Any:
+            if func is server._som_tocar:
+                timeouts.append(timeout)
+            return executar_original(func, *args, timeout=timeout)
+
+        with mock.patch.object(server, "executar_no_audio", executar):
+            self.assertEqual(self.local("post", "/api/voz/ouvir", json={"aviso": FIM}).status_code, 200)
+        self.assertEqual(timeouts, [2 * aviso_mod.AVISO_MAX_S + server.AVISO_OUVIR_PAUSA_S + 15.0])
+        self.assertEqual(self.cen.tocados, [".wav", ".wav"])
+
+    def test_limpeza_apaga_temporarios_de_aviso_orfaos(self) -> None:
+        # Red Team L2: um aviso_*.tmp que sobrou (queda no meio da gravação) é apagado se for antigo; um recente,
+        # que pode estar sendo gravado agora, fica. Os WAVs do aviso nunca são apagados.
+        c = server.caminho_do_aviso(FIM, fim=True)
+        velho = self.audio / f"aviso_{FIM}.fim.{'a' * 32}.tmp"
+        novo = self.audio / f"aviso_sino.{'b' * 32}.tmp"
+        outro = self.audio / "outra_coisa.tmp"
+        for arq in (velho, novo, outro):
+            arq.write_bytes(b"x")
+        antigo = time.time() - server.AVISO_TMP_IDADE_S - 60
+        os.utime(velho, (antigo, antigo))
+        os.utime(outro, (antigo, antigo))
+        server.limpar_audios_antigos(forcar=True)
+        self.assertFalse(velho.exists())
+        self.assertTrue(novo.exists())
+        self.assertTrue(outro.exists())                                # só o padrão aviso_*.tmp
+        self.assertTrue(c.exists())
+
+    def test_inicio_do_servidor_limpa_com_forcar(self) -> None:
+        # a limpeza (com os aviso_*.tmp) roda ao ligar: o main() chama limpar_audios_antigos(forcar=True)
+        import inspect
+        self.assertIn("limpar_audios_antigos(forcar=True)", inspect.getsource(server.main))
+
+
+class TestSinetaDoFimNaProgramacaoSaida(BaseAviso):
+    """M-6: anúncio agendado com "aeroporto_inicio_fim" pela SAÍDA FIXADA (motor falso), e o resultado do "Parar"."""
+
+    ITEM = {"tipo": "anuncio", "alvo": TEXTO, "motor": "offline", "voz": "francisca", "velocidade": 0}
+
+    def falar(self, parar_em: str | None = None) -> dict:
+        self.configurar()
+        self.voz(aviso=FIM)
+        ctx = SimpleNamespace(sinal=programacao.SinalParada())
+        tocar_original = server.SOM.motor.tocar
+
+        def tocar(caminho: Path, **kw: Any) -> float:
+            if parar_em == "fim" and caminho.name == ARQ_FIM:
+                ctx.sinal.parar()                      # "Parar" no começo da sineta do fim
+            seg = tocar_original(caminho, **kw)
+            if parar_em == "fala" and caminho.name.startswith("anuncio_"):
+                ctx.sinal.parar()                      # "Parar" durante a fala (o laço do motor sai)
+            return seg
+
+        pausa = contextlib.contextmanager(lambda avisos: (yield))
+        with mock.patch.object(server.SOM.motor, "tocar", tocar), \
+                mock.patch.object(server, "_musica_pausada", pausa):
+            return server._prog_falar(dict(self.ITEM), ctx, self.config_som())
+
+    def test_agendado_na_saida_toca_aviso_fala_fim(self) -> None:
+        r = self.falar()
+        self.assertEqual(self.cen.tocados, [".wav", ".wav", ".wav"])   # aviso, fala (voz offline em WAV), fim
+        self.assertFalse(r["interrompido"])
+        self.assertEqual(self.nomes_na_pasta(), sorted([ARQ_INICIO, ARQ_FIM]))
+
+    def test_parar_na_sineta_do_fim_nao_marca_interrompido(self) -> None:
+        r = self.falar(parar_em="fim")
+        self.assertFalse(r["interrompido"])                            # a fala inteira saiu
+
+    def test_parar_na_fala_marca_interrompido_e_tira_o_fim(self) -> None:
+        r = self.falar(parar_em="fala")
+        self.assertTrue(r["interrompido"])
+        self.assertEqual(self.cen.tocados, [".wav", ".wav"])           # sem a sineta do fim
+
 
 class TestAvisoNaProgramacao(tp.BaseProg):
     def setUp(self) -> None:
         super().setUp()
         self.ordem: list[Any] = []
+        # o histórico de anúncios (B6) só grava em modo contas: aqui basta o resultado que a Programação lhe passa
+        self.resultados_hist: list[str] = []
+        registrar = server._registrar_anuncio_da_programacao
+
+        def anotar(item: dict, ctx: Any, resultado: str, quando: Any = None) -> None:
+            self.resultados_hist.append(resultado)
+            registrar(item, ctx, resultado, quando)
+
+        p = mock.patch.object(server, "_registrar_anuncio_da_programacao", anotar)
+        p.start()
+        self.addCleanup(p.stop)
         trocas = {
             "_tocar_aviso": lambda caminho, parar=None: self.ordem.append(("aviso", caminho.name)),
             "_falar_offline": lambda texto, wpm, voz: self.ordem.append("fala"),
@@ -724,6 +859,67 @@ class TestAvisoNaProgramacao(tp.BaseProg):
         self.assertTrue(tp.esperar_ate(lambda: self.servico.tocando is None))
         self.assertEqual(self.ordem, [("aviso", "aviso_aeroporto.wav"), "fala"])
         self.assertEqual(self.historico()[0]["status"], "ok")
+
+    def resultado_no_historico_de_anuncios(self) -> str:
+        self.assertEqual(len(self.resultados_hist), 1)
+        return self.resultados_hist[0]
+
+    def test_legado_offline_parar_na_fala_nao_corta_e_parar_no_fim_corta(self) -> None:
+        # I-1: a voz do Windows não é cortável: "Parar" durante ELA responde "nao_interrompivel" (nada muda: a fala e a
+        # sineta do fim tocam); "Parar" durante a sineta do fim responde "parando" e a corta. O anúncio conta como ok.
+        cfg = server.load_config()
+        cfg["voz_loja"] = {"aviso": FIM}
+        server.save_config(cfg)
+        respostas: list[str] = []
+
+        def falar(texto: str, wpm: int, voz: Any) -> None:
+            respostas.append(self.servico.parar_execucao())
+            self.ordem.append("fala")
+
+        def tocar_aviso(caminho: Path, parar: Any = None) -> None:
+            if caminho.name == ARQ_FIM:
+                respostas.append(self.servico.parar_execucao())
+                self.ordem.append(("fim", "cortado" if parar.is_set() else "inteiro"))   # o laço legado sai aqui
+            else:
+                self.ordem.append(("aviso", caminho.name))
+
+        it = self.gravar([self.corpo_anuncio(motor="offline")])[0]
+        with mock.patch.object(server, "_falar_offline", falar), mock.patch.object(server, "_tocar_aviso", tocar_aviso):
+            self.assertEqual(self.tocar_agora(it["id"]).status_code, 202)
+            self.assertTrue(tp.esperar_ate(lambda: self.servico.tocando is None))
+        self.assertEqual(respostas, ["nao_interrompivel", "parando"])
+        self.assertEqual(self.ordem, [("aviso", ARQ_INICIO), "fala", ("fim", "cortado")])
+        h = self.historico()[0]
+        self.assertEqual((h["status"], h["interrompido"]), ("ok", False))   # M-1: a fala inteira saiu
+        self.assertEqual(self.resultado_no_historico_de_anuncios(), "ok")
+
+    def test_legado_online_parar_na_fala_e_interrompido(self) -> None:
+        # M-1: o corte DURANTE a fala continua "interrompido" (e a sineta do fim não toca)
+        cfg = server.load_config()
+        cfg["voz_loja"] = {"aviso": FIM}
+        server.save_config(cfg)
+        respostas: list[str] = []
+
+        def gerar(texto: str, voz: str, vel: int) -> Path:
+            c = server.AUDIO_DIR / "anuncio_teste.mp3"
+            c.write_bytes(b"ID3falso")
+            return c
+
+        def tocar_mp3(c: Path, parar: Any = None) -> None:
+            respostas.append(self.servico.parar_execucao())
+            self.ordem.append("fala")
+
+        it = self.gravar([self.corpo_anuncio(motor="online")])[0]
+        with mock.patch.object(server, "tem_internet", lambda timeout=1.5: True), \
+                mock.patch.object(server, "gerar_audio_online", gerar), \
+                mock.patch.object(server, "_tocar_mp3", tocar_mp3):
+            self.assertEqual(self.tocar_agora(it["id"]).status_code, 202)
+            self.assertTrue(tp.esperar_ate(lambda: self.servico.tocando is None))
+        self.assertEqual(respostas, ["parando"])
+        self.assertEqual(self.ordem, [("aviso", ARQ_INICIO), "fala"])
+        h = self.historico()[0]
+        self.assertEqual((h["status"], h["interrompido"]), ("ok", True))
+        self.assertEqual(self.resultado_no_historico_de_anuncios(), "interrompido")
 
     def test_programacao_audio_sem_aviso(self) -> None:
         mid = self.criar_musica("AVE MARIA.mp3")

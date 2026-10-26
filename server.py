@@ -395,8 +395,14 @@ Contrato v2.8 (Parte A: voz da loja)
   branca, mesma conferência de conteúdo e gravação atômica; caminho_do_aviso(nome, fim=True)). Legado: chamada própria
   (_tocar_aviso, mesmos tetos do aviso); saída fixada: na mesma chamada e no mesmo prazo de 85 s de
   _som_tocar_anuncio, com o prazo da FALA antecipado em AVISO_MAX_S (a sineta do fim tem sempre >= 3 s; a fala perde
-  no máximo ~0,05 s do teto de 80 s, pois o aviso de início dura ~2 s). "parar" durante a fala = sem sineta do fim;
-  falha da sineta do fim = só o tipo do erro no log, o anúncio conta como ok. Histórico e auditoria não mudam.
+  no máximo ~0,05 s do teto de 80 s, pois o aviso de início dura ~2 s). "Parar" da Programação durante a fala: com
+  mp3 (online) ou na saída fixada corta a fala e a sineta do fim não toca (resultado "interrompido"); com a voz do
+  Windows no caminho legado a fala NÃO é cortável: o "Parar" responde "nao_interrompivel" e não fica registrado, a
+  fala e a sineta do fim tocam; assim que a fala acaba o sinal volta a ser interrompível (interrompivel_de_novo) e um
+  "Parar" durante a sineta do fim a corta. "Parar" na sineta do fim não faz do anúncio "interrompido" (a fala inteira
+  saiu: SinalParada.fala_cortada). Falha da sineta do fim = só o tipo do erro no log, o anúncio conta como ok; no
+  legado a espera por ela é AVISO_MAX_S + 3 s. aviso_*.tmp órfãos (mais de 10 min) são apagados pela limpeza (e ao
+  ligar). Histórico e auditoria não mudam.
   Toca: /api/announce sem "teste" (digitado e Mensagens prontas) e o tipo "anuncio" da Programação (motor/
   voz/velocidade do item, aviso da loja, com a sineta do fim se houver). No teto de 60 min/dia da Programação cada
   anúncio conta as sinetas como o PIOR caso, AVISO_PIOR_CASO_S = AVISO_MAX_S x 2 (6 s: a de antes + a do fim),
@@ -4184,8 +4190,10 @@ def ip_local() -> str:
 # o mixer é iniciado uma vez e reaproveitado entre anúncios.
 # ---------------------------------------------------------------------------
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-# Tetos: o cliente espera ~180 s por /api/announce; a soma dos tetos do servidor
-# (geração 30 s + duck/restore do Spotify + áudio) precisa ficar abaixo disso.
+# Tetos: o cliente (app.js) espera até 240 s (240000 ms) por /api/announce; a soma dos tetos do servidor
+# (geração 30 s + duck/restore do Spotify + áudio) precisa ficar abaixo disso. Pior caso com a sineta do fim (v2.8):
+# legado = geração 30 + aviso (espera AVISO_MAX_S + 15 = 18) + fala 90 + sineta do fim (AVISO_MAX_S + 3 = 6) = 144 s;
+# saída fixada = geração 30 + aviso, fala e fim numa chamada só de até 90 s = 120 s; mais duck/restore do Spotify.
 TIMEOUT_AUDIO_S = 90.0  # teto de espera por um anúncio (fala + reprodução)
 TIMEOUT_REPRODUCAO_S = 80.0  # teto do laço de reprodução do mp3 (< TIMEOUT_AUDIO_S)
 TIMEOUT_GERACAO_S = 30.0  # teto para o edge-tts gerar o mp3
@@ -4394,10 +4402,14 @@ def _tocar_aviso_e_fim(caminho: Path, fim: Path) -> None:
 _ultima_limpeza = 0.0
 
 
+AVISO_TMP_IDADE_S = 600.0   # aviso_*.tmp mais velho que isto é sobra de uma gravação interrompida
+
+
 def limpar_audios_antigos(forcar: bool = False) -> None:
     """
     Rede de segurança: mantém no máximo MAX_ARQUIVOS_TEMP mp3/wav na pasta
-    (normalmente cada mp3 já é apagado logo após tocar). Roda raramente.
+    (normalmente cada mp3 já é apagado logo após tocar). Roda raramente (e ao ligar, com `forcar`).
+    v2.8: apaga também os aviso_*.tmp órfãos com mais de AVISO_TMP_IDADE_S (os aviso_*.wav nunca).
     """
     global _ultima_limpeza
     agora = time.monotonic()
@@ -4413,6 +4425,15 @@ def limpar_audios_antigos(forcar: bool = False) -> None:
     arquivos.sort()
     for _, p in arquivos[: max(len(arquivos) - MAX_ARQUIVOS_TEMP, 0)]:
         apagar_audio(p)
+    # v2.8 (Red Team L2): temporários do caminho_do_aviso que sobraram de uma queda no meio da gravação. Só os
+    # antigos: um recente pode estar sendo gravado agora (a gravação leva milissegundos).
+    limite = time.time() - AVISO_TMP_IDADE_S
+    for p in AUDIO_DIR.glob("aviso_*.tmp"):
+        try:
+            if p.stat().st_mtime < limite:
+                apagar_audio(p)
+        except OSError:
+            continue
 
 
 async def _gerar_audio_online_async(texto: str, voz: str, taxa: str, caminho: Path) -> None:
@@ -6971,7 +6992,8 @@ def voz_ouvir() -> Response | tuple[Response, int]:
                 _abrir_saida_som(SOM.candidatas_anuncio(som))   # 503 com "codigo" se não houver saída
                 partes = [caminho] if fim is None else [caminho, fim]
                 duracoes = executar_no_audio(_som_medir, partes)
-                executar_no_audio(_som_tocar, partes, duracoes, None, AVISO_OUVIR_PAUSA_S)
+                executar_no_audio(_som_tocar, partes, duracoes, None, AVISO_OUVIR_PAUSA_S,
+                                  timeout=2 * AVISO_MAX_S + AVISO_OUVIR_PAUSA_S + 15.0)   # 2 sinetas + pausa
             elif fim is None:
                 executar_no_audio(_tocar_aviso, caminho, timeout=AVISO_MAX_S + 15.0)   # teto próprio do aviso
             else:   # início + silêncio + fim: o teto de espera soma as duas sinetas e a pausa
@@ -7049,16 +7071,28 @@ def _tocar_aviso_legado(caminho: Path | None, parar: Any) -> bool:
 def _tocar_aviso_fim_legado(caminho: Path | None, parar: Any) -> None:
     """
     v2.8: a sineta do FIM no caminho legado, logo depois da fala e ainda com a música abaixada/pausada. Não toca se
-    não há (None) ou se `parar` chegou antes/durante a fala. Qualquer falha (inclusive a thread de áudio presa por
-    mais de AVISO_MAX_S + 15 s) vira SÓ uma linha no log com o tipo do erro: a fala já saiu, o anúncio conta como ok.
+    não há (None) ou se `parar` chegou antes/durante a fala. Espera no máximo AVISO_MAX_S + 3 s (Red Team L1: a
+    trava dos anúncios não fica presa 18 s a mais por um enfeite; o laço legado do aviso já corta em AVISO_MAX_S +
+    1 s). Qualquer falha (inclusive esse TimeoutError) vira SÓ uma linha no log com o tipo do erro: a fala já saiu, o
+    anúncio conta como ok.
     """
     if caminho is None or (parar is not None and parar.is_set()):
         return
     try:
         executar_no_audio(_tocar_aviso, caminho, *(() if parar is None else (parar,)),
-                          timeout=AVISO_MAX_S + 15.0)
+                          timeout=AVISO_MAX_S + 3.0)
     except Exception as exc:  # noqa: BLE001 - só o tipo no log; o anúncio já foi falado
+        # M-5: o aviso de INÍCIO só engole erro de reprodução (um TimeoutError lá sobe: a fala nem saiu e o anúncio
+        # tem de falhar). Aqui a fala JÁ saiu: qualquer erro só vai para o log, senão o anúncio daria 500 e alguém
+        # o repetiria (os clientes ouviriam duas vezes).
         log.warning("Falha ao tocar a sineta do fim do anúncio (%s).", type(exc).__name__)
+
+
+def _marcar_fim_da_fala(parar: Any) -> None:
+    """v2.8 (M-1): avisa o SinalParada que a fala acabou (um "parar" depois disso não é "interrompido")."""
+    marcar = getattr(parar, "marcar_fim_da_fala", None)
+    if marcar is not None:
+        marcar()
 
 
 def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
@@ -7073,8 +7107,11 @@ def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
     anúncio agendado PAUSA e retoma a música) e `parar` (SinalParada) corta a reprodução; a voz do
     Windows falando direto (SAPI) não tem como ser cortada e avisa o sinal disso.
     v2.8 (A3): `aviso` (nome em AVISOS) toca DENTRO do abaixar, antes da fala: abaixa -> aviso -> fala ->
-    [sineta do fim, só em AVISOS_COM_FIM] -> restaura. "parar" durante o aviso corta também a fala; "parar" durante
-    a fala tira a sineta do fim. Falha da sineta do fim só vai para o log.
+    [sineta do fim, só em AVISOS_COM_FIM] -> restaura. "parar" durante o aviso corta também a fala. Fala online
+    (mp3): "parar" durante ela corta a fala e tira a sineta do fim. Voz do Windows (offline): ela não é cortável, então
+    durante a fala o "Parar" responde "nao_interrompivel" e não fica registrado (fala e sineta do fim tocam inteiras);
+    logo que a fala acaba o sinal volta a ser interrompível e um "Parar" durante a sineta do fim a corta. Falha da
+    sineta do fim só vai para o log. O fim da fala é anotado no sinal (fala_cortada) para o resultado da Programação.
     """
     abaixar = contexto or musica_abaixada
     alerta: str | None = None
@@ -7099,6 +7136,7 @@ def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
                     if _tocar_aviso_legado(arquivo_aviso, parar):
                         # apaga o mp3 ao terminar
                         executar_no_audio(_tocar_mp3, caminho, *(() if parar is None else (parar,)))
+                        _marcar_fim_da_fala(parar)
                         _tocar_aviso_fim_legado(arquivo_fim, parar)
                 return "online", None
         finally:
@@ -7111,7 +7149,10 @@ def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
             if parar is not None:
                 parar.nao_interrompivel()   # pyttsx3.runAndWait não tem como ser interrompido de fora
             executar_no_audio(_falar_offline, texto, VELOCIDADE_OFFLINE_WPM, voz_id)
-            _tocar_aviso_fim_legado(arquivo_fim, parar)   # "parar" pedido durante a fala: sem a sineta do fim
+            if parar is not None:
+                _marcar_fim_da_fala(parar)
+                parar.interrompivel_de_novo()   # I-1: a sineta do fim (pygame) pode ser cortada pelo "Parar"
+            _tocar_aviso_fim_legado(arquivo_fim, parar)
     return ("offline_fallback" if alerta else "offline"), alerta
 
 
@@ -7474,7 +7515,16 @@ def _som_tocar_anuncio(aviso: Path | None, fala: Path, duracoes: list[float | No
     prazo_fala = prazo - AVISO_MAX_S if fim is not None else prazo
     extra = {} if parar is None else {"parar": parar}
     partes = [p for p in (aviso, fala, fim) if p is not None]
-    medidas = iter(duracoes if duracoes and len(duracoes) == len(partes) else [None] * len(partes))
+    # M-4: `duracoes` vem de _som_medir(partes), então tem o MESMO tamanho de `partes`. Se não tiver (chamador no
+    # formato antigo), só a fala aproveita a medida, como antes: [fala] -> a única; sem fim -> a última; o resto (e
+    # aviso/fim) fica None e o motor mede de novo.
+    if duracoes and len(duracoes) == len(partes):
+        lista = list(duracoes)
+    else:
+        d_fala = duracoes[0] if duracoes and len(duracoes) == 1 else (duracoes[-1] if duracoes and fim is None
+                                                                       else None)
+        lista = [None] * (aviso is not None) + [d_fala] + [None] * (fim is not None)
+    medidas = iter(lista)
     total = 0.0
     if aviso is not None:
         d_aviso = next(medidas)
@@ -7485,11 +7535,15 @@ def _som_tocar_anuncio(aviso: Path | None, fala: Path, duracoes: list[float | No
         if parar is not None and parar.is_set():
             return total   # "parar" durante o aviso: a fala nem começa
     total += motor.tocar(fala, prazo=prazo_fala, duracao=next(medidas), **extra)
+    _marcar_fim_da_fala(parar)   # M-1: "parar" daqui em diante (na sineta do fim) não é "interrompido"
     if fim is None or (parar is not None and parar.is_set()):
         return total   # sem sineta do fim, ou "parar" durante a fala
     try:
         total += motor.tocar(fim, prazo=prazo, duracao=next(medidas), **extra)
     except Exception as exc:  # noqa: BLE001 - a fala já saiu: só o tipo do erro no log
+        # M-5: no aviso de INÍCIO só ErroReproducao é engolido (SaidaIndisponivel/motor contaminado lá ainda podem
+        # impedir uma fala que nem começou e precisam subir). Aqui a fala JÁ saiu: qualquer erro só vai para o log,
+        # senão o anúncio daria erro e seria repetido.
         log.warning("Falha ao tocar a sineta do fim do anúncio (%s).", type(exc).__name__)
     return total
 
@@ -10900,7 +10954,10 @@ def _prog_falar(item: dict, ctx: programacao.Execucao, som: dict | None) -> dict
         raise programacao.NaoTocou("falha_audio", str(e) or "A reprodução travou.", "erro") from None
     if aviso:
         avisos.append(aviso)
-    return {"interrompido": ctx.sinal.is_set(), "aviso": " ".join(avisos) or None}
+    # M-1: "interrompido" = a FALA foi cortada. Um "Parar" na sineta do fim (a fala inteira já saiu) não conta;
+    # sem a anotação (cortado no aviso de início, antes da fala), vale o sinal.
+    cortada = getattr(ctx.sinal, "fala_cortada", None)
+    return {"interrompido": ctx.sinal.is_set() if cortada is None else cortada, "aviso": " ".join(avisos) or None}
 
 
 def _prog_executar_som(item: dict, ctx: programacao.Execucao) -> dict:

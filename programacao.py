@@ -136,6 +136,9 @@ class SinalParada:
     def __init__(self) -> None:
         self._ev = threading.Event()
         self.interrompivel = True
+        # v2.8: o "parar" já tinha chegado quando a FALA terminou? None = a fala nem chegou ao fim (cortada no aviso
+        # ou erro). Um "parar" depois disso (durante a sineta do fim) não faz do anúncio um "interrompido".
+        self.fala_cortada: bool | None = None
 
     def parar(self) -> None:
         self._ev.set()
@@ -145,6 +148,14 @@ class SinalParada:
 
     def nao_interrompivel(self) -> None:
         self.interrompivel = False
+
+    def interrompivel_de_novo(self) -> None:
+        """v2.8: o trecho que não dava para cortar (voz do Windows) acabou: o próximo (sineta do fim) pode ser cortado."""
+        self.interrompivel = True
+
+    def marcar_fim_da_fala(self) -> None:
+        """v2.8: a fala terminou agora; guarda se ela foi cortada (o "parar" já tinha chegado)."""
+        self.fala_cortada = self.is_set()
 
 
 # --- tempo --------------------------------------------------------------------------------------

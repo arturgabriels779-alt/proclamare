@@ -1134,7 +1134,7 @@
   const btnAvisoOuvir = $("btn-aviso-ouvir");
   const VOZ_POLL_MS = 60000;
   const VOZ_RETRY_MS = 5000; // leitura falhou: tenta de novo logo
-  const VOZ_OUVIR_TIMEOUT_MS = 45000; // > espera do servidor pela thread de áudio (até 2 sinetas de 3 s + pausa + fila)
+  const VOZ_OUVIR_TIMEOUT_MS = 45000; // > espera do servidor pela thread de áudio: até 2 x 3 s + 0,6 s + 15 s = 21,6 s
   const VOZ_CAMPOS = ["motor", "voz", "velocidade", "aviso"];
   const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "aeroporto", definida: true, carregada: false };
   let vozTimer = null; // debounce da gravação
