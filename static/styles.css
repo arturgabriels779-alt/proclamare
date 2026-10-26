@@ -3066,3 +3066,123 @@ html[data-so-anuncio] .conta-bar { width: 100%; max-width: 920px; margin-inline:
   .sheet--conta { padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
 }
 .gate__autoplay { max-width: 36ch; text-align: center; }
+
+/* =====================================================================
+   14. CONTAS (Configurações) E HISTÓRICO DE ANÚNCIOS (v2.8 B8)
+   ===================================================================== */
+
+/* ---- Tile "Histórico" do Anúncio: "Limpar" + "Ver tudo" (o histórico do servidor) ---- */
+.history__tools { display: flex; align-items: center; gap: 6px; }
+.history__tools .btn::after { content: ""; position: absolute; inset: -4px; }   /* área de toque >= 44px */
+
+/* ---- Seção "Contas" das Configurações ---- */
+.sheet--contas { padding-top: 24px; border-top: 1px solid var(--separator); gap: 14px; }
+@media (max-width: 767.98px) {
+  .sheet--contas::before { display: none; }           /* a alça do sheet fica só no topo */
+}
+.contas__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.contas__count { font-size: 13px; line-height: 18px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.contas__tools .btn { min-height: 44px; }
+.contas__list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.contas__list:empty { display: none; }
+.contas__empty { text-align: center; padding: 8px 0; }
+.contas__status { font-size: 14px; line-height: 20px; color: var(--ok); overflow-wrap: anywhere; }
+.contas__status:empty { display: none; }
+
+.crow {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--tile-inset);
+  border-radius: var(--r-inset);
+}
+.crow__avatar {
+  display: grid; place-items: center;
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font: 600 14px/1 var(--font);
+  letter-spacing: 0.02em;
+}
+.crow__main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.crow__top { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.crow__nome { font: 600 15px/20px var(--font); letter-spacing: -0.01em; color: var(--text-1); overflow-wrap: anywhere; }
+.crow__sub { font-size: 13px; line-height: 18px; color: var(--text-3); overflow-wrap: anywhere; }
+.crow__badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.crow__note { margin-top: 4px; font-size: 12px; line-height: 16px; color: var(--text-3); }
+.crow__edit.btn--sm { height: 44px; padding: 0 16px; background: var(--tile); }
+/* desativada: o avatar fica neutro (o selo "Desativada" diz o estado; o texto mantém o contraste) */
+.crow.is-off .crow__avatar { background: var(--fill-1); color: var(--text-3); }
+.crow.is-off .crow__nome { color: var(--text-2); }
+@media (hover: hover) {
+  .crow__edit.btn--sm:hover { background: var(--btn-secondary-hover); }
+}
+
+/* ---- Diálogo "Nova / Editar conta" ---- */
+.conta-form__login { display: flex; flex-direction: column; gap: 8px; }
+.conta-form__login-v {
+  padding: 11px 14px;
+  border-radius: var(--r-control);
+  background: var(--tile-inset);
+  color: var(--text-1);
+  font: 500 15px/20px var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.conta-form__extra {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--separator);
+}
+.select select[aria-invalid="true"] { border-color: var(--live); }
+.select select[aria-invalid="true"]:focus-visible { border-color: var(--live); box-shadow: 0 0 0 4px var(--live-soft); }
+
+/* ---- Diálogo "Histórico de anúncios" ---- */
+.sheet.hist { gap: 14px; }
+.hist__head { display: flex; align-items: flex-start; gap: 12px; }
+.hist__heading { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.hist__close { flex: none; margin: -6px -8px 0 0; }
+.hist__filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.hist__f-q,
+.hist__f-conta { grid-column: 1 / -1; }
+@media (min-width: 600px) {
+  .hist__filters { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .hist__f-conta { grid-column: auto; }
+}
+.hist__filters input[type="date"] { min-width: 0; }
+.hist__bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.hist__summary { flex: 1 1 auto; min-width: 0; font-size: 14px; line-height: 20px; color: var(--text-2); }
+.hist__bar .btn--sm { height: 44px; }
+.hist__list {
+  display: flex; flex-direction: column;
+  margin: 0; padding: 0; list-style: none;
+  border-radius: var(--r-card);
+  background: var(--tile-inset);
+}
+.hist__list:empty { display: none; }
+.hist__day { padding: 12px 14px 4px; }
+.hist__day:not(:first-child) { border-top: 1px solid var(--separator); }
+.hist__day-t { font: 600 13px/18px var(--font); letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+.hrow { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 2px 12px; padding: 10px 14px 12px; }
+.hrow + .hrow { border-top: 1px solid var(--separator); }
+.hrow__time { font: 600 14px/20px var(--font); font-variant-numeric: tabular-nums; color: var(--text-2); }
+.hrow__main { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.hrow__who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.hrow__nome { font: 600 14px/20px var(--font); color: var(--text-1); overflow-wrap: anywhere; }
+.hrow__nome.is-sem-conta { font-weight: 500; font-style: italic; color: var(--text-2); }
+.hrow__funcao { font-size: 13px; line-height: 18px; color: var(--text-3); overflow-wrap: anywhere; }
+/* o texto do anúncio é exatamente o que foi falado: quebras de linha mantidas, nada interpretado como HTML */
+.hrow__texto { font: 400 15px/1.45 var(--font); color: var(--text-1); white-space: pre-wrap; overflow-wrap: anywhere; }
+.hrow__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; line-height: 18px; color: var(--text-3); }
+.hist__empty { padding: 16px; text-align: center; }
+.hist__more { display: flex; justify-content: center; }
+.hist__more:not(:has(.btn:not([hidden]))) { display: none; }
+.hist__more .btn { min-width: min(100%, 220px); }
+@media (max-width: 767.98px) {
+  .hist__close { margin-top: -10px; }
+  .hrow { grid-template-columns: 44px minmax(0, 1fr); gap: 2px 10px; padding-inline: 12px; }
+  .hist__day { padding-inline: 12px; }
+  .hrow__texto { font-size: 16px; }
+}

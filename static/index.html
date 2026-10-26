@@ -175,8 +175,8 @@
           <svg class="icon" aria-hidden="true"><use href="#i-auto"/></svg>
         </button>
       </div>
-      <!-- data-perm com várias capacidades = basta uma (v2.8: Configurações só têm itens do ADM) -->
-      <button type="button" class="btn btn--icon" id="btn-settings" aria-label="Configurações" title="Configurações" data-perm="spotify_config som seguranca">
+      <!-- data-perm com várias capacidades = basta uma (v2.8: itens do ADM + a seção Contas, do gerente e do ADM) -->
+      <button type="button" class="btn btn--icon" id="btn-settings" aria-label="Configurações" title="Configurações" data-perm="spotify_config som seguranca contas">
         <svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>
         <span class="btn__dot" id="settings-dot" aria-hidden="true" hidden></span>
       </button>
@@ -383,7 +383,14 @@
         <div class="tile__head">
           <svg class="icon tile__icon" aria-hidden="true"><use href="#i-clock"/></svg>
           <h2 class="tile__title" id="label-history">Histórico</h2>
-          <button type="button" class="btn btn--text btn--sm tile__action" id="btn-history-clear" hidden>Limpar</button>
+          <div class="tile__action history__tools">
+            <button type="button" class="btn btn--text btn--sm" id="btn-history-clear" hidden>Limpar</button>
+            <!-- v2.8 (B8): o histórico de anúncios do servidor (todos os perfis; o funcionário vê só os dele) -->
+            <button type="button" class="btn btn--ghost btn--sm" id="btn-hist-abrir" aria-haspopup="dialog" aria-label="Ver tudo: histórico de anúncios" title="Histórico de anúncios">
+              <svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>
+              <span>Ver tudo</span>
+            </button>
+          </div>
         </div>
         <ol class="history__list" id="history-list" aria-labelledby="label-history"></ol>
       </div>
@@ -943,8 +950,8 @@
 <dialog id="settings-dialog" aria-labelledby="settings-title">
   <form method="dialog" class="sheet" id="settings-form" novalidate>
     <h2 class="sheet__title" id="settings-title">Configurações</h2>
-    <h3 class="sheet__section">Spotify</h3>
-    <p class="hint" id="spotify-remote-note" hidden>As credenciais do Spotify são configuradas no computador da loja.</p>
+    <h3 class="sheet__section" id="settings-sp-title" data-perm="spotify_config">Spotify</h3>
+    <p class="hint" id="spotify-remote-note" data-perm="spotify_config" hidden>As credenciais do Spotify são configuradas no computador da loja.</p>
     <div class="sheet__fields" id="spotify-fields" data-perm="spotify_config">
     <div class="notice notice--sheet notice--info" id="settings-warn" role="status" hidden>
       <span class="notice__icon" aria-hidden="true"><svg class="icon"><use href="#i-info"/></svg></span>
@@ -1008,6 +1015,40 @@
       </button>
     </div>
   </form>
+
+  <!-- Contas (v2.8 B8): só em modo contas. O gerente cria e edita contas de funcionário; o ADM, todas. Ninguém muda a
+       própria conta por aqui (a própria senha é "Trocar minha senha"). Contas nunca são apagadas, só desativadas.
+       As linhas são montadas pelo app.js (createElement/textContent). -->
+  <section class="sheet sheet--contas" id="contas-section" aria-labelledby="contas-title" data-perm="contas" hidden>
+    <div class="contas__head">
+      <h3 class="sheet__section" id="contas-title" tabindex="-1">Contas</h3>
+      <span class="contas__count" id="contas-count"></span>
+    </div>
+    <p class="hint" id="contas-hint">Cada pessoa entra com o próprio usuário e senha. Contas não são apagadas: desative quem saiu da equipe e o histórico continua com o nome da pessoa.</p>
+    <div class="actions actions--start contas__tools">
+      <button type="button" class="btn btn--primary" id="btn-conta-nova" aria-haspopup="dialog">
+        <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+        <span>Nova conta</span>
+      </button>
+      <button type="button" class="btn btn--ghost" id="btn-contas-atualizar">
+        <span class="spinner" aria-hidden="true"></span>
+        <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
+        <span>Atualizar</span>
+      </button>
+    </div>
+    <div class="field contas__busca" id="contas-busca-field" hidden>
+      <label class="label" for="contas-busca">Procurar conta</label>
+      <div class="input input--search">
+        <svg class="icon input__icon" aria-hidden="true"><use href="#i-search"/></svg>
+        <input type="search" id="contas-busca" maxlength="60" autocomplete="off" spellcheck="false" placeholder="Nome, função ou usuário">
+      </div>
+    </div>
+    <p class="hint" id="contas-loading" hidden>Carregando as contas…</p>
+    <ul class="contas__list" id="contas-list" aria-labelledby="contas-title"></ul>
+    <p class="hint contas__empty" id="contas-empty" hidden></p>
+    <p class="form-error" id="contas-error" role="alert" hidden></p>
+    <p class="contas__status" id="contas-status" role="status"></p>
+  </section>
 
   <!-- Minhas saídas de som: procurar, escolher, testar e preferências (F1) -->
   <section class="sheet sheet--som" id="som-section" aria-labelledby="som-title" data-perm="som">
@@ -1447,6 +1488,176 @@
       </button>
     </div>
   </form>
+</dialog>
+
+<!-- ======================= NOVA / EDITAR CONTA (v2.8 B8) =======================
+     POST /api/contas {usuario, nome, funcao, perfil, senha} | POST /api/contas/<id> {versao, nome?, funcao?, perfil?}.
+     O perfil só oferece o que quem está logado pode gerenciar. As senhas só passam pela memória até o POST. -->
+<dialog id="conta-dialog" class="dialog--narrow" aria-labelledby="cf-dlg-title" aria-describedby="cf-dlg-lead">
+  <form class="sheet sheet--conta" id="conta-form" novalidate>
+    <h2 class="sheet__title" id="cf-dlg-title">Nova conta</h2>
+    <p class="hint conta-form__lead" id="cf-dlg-lead"></p>
+    <div class="conta-form__pair">
+      <div class="field">
+        <label class="label" for="cf-nome">Nome</label>
+        <div class="input"><input type="text" id="cf-nome" autocomplete="off" maxlength="60" spellcheck="false" aria-describedby="cf-error"></div>
+      </div>
+      <div class="field">
+        <label class="label" for="cf-funcao">Função</label>
+        <div class="input"><input type="text" id="cf-funcao" autocomplete="off" maxlength="40" placeholder="ex.: Fiscal de caixa" aria-describedby="cf-error"></div>
+      </div>
+    </div>
+    <div class="field" id="cf-usuario-field">
+      <label class="label" for="cf-usuario">Usuário (para entrar)</label>
+      <div class="input"><input type="text" id="cf-usuario" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="30" aria-describedby="cf-usuario-hint cf-error"></div>
+      <p class="hint" id="cf-usuario-hint">De 3 a 30 letras minúsculas, números, ponto ou sublinhado. Ex.: maria.souza</p>
+    </div>
+    <p class="conta-form__login" id="cf-usuario-fixo" hidden>
+      <span class="label">Usuário (não muda)</span>
+      <span class="conta-form__login-v" id="cf-usuario-fixo-v"></span>
+    </p>
+    <div class="field">
+      <label class="label" for="cf-perfil">Perfil</label>
+      <div class="select"><select id="cf-perfil" aria-describedby="cf-perfil-hint cf-error"></select></div>
+      <p class="hint" id="cf-perfil-hint"></p>
+    </div>
+    <div class="conta-form__pair" id="cf-senha-campos">
+      <div class="field">
+        <label class="label" for="cf-senha">Senha</label>
+        <div class="input"><input type="password" id="cf-senha" autocomplete="new-password" maxlength="128" aria-describedby="cf-senha-hint cf-error"></div>
+      </div>
+      <div class="field">
+        <label class="label" for="cf-senha2">Repita a senha</label>
+        <div class="input"><input type="password" id="cf-senha2" autocomplete="new-password" maxlength="128" aria-describedby="cf-error"></div>
+      </div>
+    </div>
+    <p class="hint" id="cf-senha-hint">De 8 a 128 caracteres, diferente do usuário. Combine a senha com a pessoa; ela pode trocar depois em “Trocar minha senha”.</p>
+    <div class="conta-form__extra" id="cf-extra" hidden>
+      <button type="button" class="btn btn--ghost" id="btn-conta-definir-senha" aria-haspopup="dialog">
+        <svg class="icon" aria-hidden="true"><use href="#i-key"/></svg>
+        <span>Definir senha nova</span>
+      </button>
+      <button type="button" class="btn btn--text btn--danger" id="btn-conta-desativar" aria-haspopup="dialog">Desativar conta</button>
+      <button type="button" class="btn btn--ghost" id="btn-conta-reativar" hidden>
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Reativar conta</span>
+      </button>
+    </div>
+    <p class="form-error" id="cf-error" role="alert" hidden></p>
+    <div class="actions actions--end">
+      <button type="button" class="btn btn--ghost" id="btn-conta-cancel">Cancelar</button>
+      <button type="submit" class="btn btn--primary" id="btn-conta-save">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="btn-conta-save-label">Criar conta</span>
+      </button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ================== DEFINIR SENHA NOVA DE OUTRA CONTA (v2.8 B8) ==================
+     POST /api/contas/<id> {versao, senha}. A pessoa sai de todos os aparelhos. Os campos são limpos ao fechar. -->
+<dialog id="csenha-dialog" class="dialog--narrow" aria-labelledby="csenha-title" aria-describedby="csenha-text">
+  <form class="sheet sheet--conta" id="csenha-form" novalidate>
+    <h2 class="sheet__title" id="csenha-title">Definir senha nova</h2>
+    <p class="hint conta-form__lead" id="csenha-text"></p>
+    <div class="conta-form__pair">
+      <div class="field">
+        <label class="label" for="csenha-nova">Senha nova</label>
+        <div class="input"><input type="password" id="csenha-nova" autocomplete="new-password" maxlength="128" aria-describedby="csenha-hint csenha-error"></div>
+      </div>
+      <div class="field">
+        <label class="label" for="csenha-nova2">Repita a senha nova</label>
+        <div class="input"><input type="password" id="csenha-nova2" autocomplete="new-password" maxlength="128" aria-describedby="csenha-error"></div>
+      </div>
+    </div>
+    <p class="hint" id="csenha-hint">De 8 a 128 caracteres, diferente do usuário.</p>
+    <p class="form-error" id="csenha-error" role="alert" hidden></p>
+    <div class="actions actions--end">
+      <button type="button" class="btn btn--ghost" id="btn-csenha-cancel">Cancelar</button>
+      <button type="submit" class="btn btn--primary" id="btn-csenha-save">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Definir senha</span>
+      </button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ======================= DESATIVAR CONTA (v2.8 B8) =======================
+     Confirmação própria; o foco começa em "Cancelar". POST /api/contas/<id> {versao, ativa:false}. -->
+<dialog id="cdesat-dialog" class="dialog--narrow" aria-labelledby="cdesat-title" aria-describedby="cdesat-text">
+  <div class="sheet sheet--power">
+    <span class="callout__icon callout__icon--danger" aria-hidden="true"><svg class="icon"><use href="#i-user"/></svg></span>
+    <h2 class="sheet__title" id="cdesat-title">Desativar a conta?</h2>
+    <p class="callout__text" id="cdesat-text">A pessoa sai na hora de todos os aparelhos e não consegue mais entrar. O histórico continua com o nome da pessoa, e dá para reativar depois.</p>
+    <p class="form-error" id="cdesat-error" role="alert" hidden></p>
+    <div class="actions actions--end">
+      <button type="button" class="btn btn--ghost" id="btn-cdesat-cancel">Cancelar</button>
+      <button type="button" class="btn btn--danger-solid" id="btn-cdesat-confirm">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Desativar</span>
+      </button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ===================== HISTÓRICO DE ANÚNCIOS (v2.8 B8) =====================
+     GET /api/historico ?de=&ate=&conta=&q=&antes= (só leitura; ninguém apaga nem edita; 90 dias). O funcionário vê
+     só os próprios anúncios (o servidor força). Sem sondagem: carrega ao abrir, ao mudar um filtro e em "Atualizar".
+     O texto do anúncio é dado do usuário: entra só por textContent. -->
+<dialog id="hist-dialog" class="dialog--wide" aria-labelledby="hist-title" aria-describedby="hist-lead">
+  <div class="sheet hist">
+    <div class="hist__head">
+      <div class="hist__heading">
+        <h2 class="sheet__title" id="hist-title">Histórico de anúncios</h2>
+        <p class="hint" id="hist-lead">Anúncios dos últimos 90 dias, do mais novo para o mais antigo. Ninguém apaga nem edita.</p>
+      </div>
+      <button type="button" class="btn btn--icon btn--lg hist__close" id="btn-hist-close" aria-label="Fechar o histórico" title="Fechar">
+        <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+      </button>
+    </div>
+
+    <form class="hist__filters" id="hist-filters" role="search" aria-label="Filtros do histórico" novalidate>
+      <div class="field hist__f-q">
+        <label class="label" for="hist-q">Buscar no texto</label>
+        <div class="input input--search">
+          <svg class="icon input__icon" aria-hidden="true"><use href="#i-search"/></svg>
+          <input type="search" id="hist-q" maxlength="100" autocomplete="off" spellcheck="false" enterkeyhint="search" placeholder="ex.: farol, caixa rápido" aria-describedby="hist-error">
+        </div>
+      </div>
+      <div class="field hist__f-conta" id="hist-conta-field" data-perm="historico_todos" hidden>
+        <label class="label" for="hist-conta">Pessoa</label>
+        <div class="select"><select id="hist-conta" aria-describedby="hist-error"><option value="">Todas as pessoas</option></select></div>
+      </div>
+      <div class="field">
+        <label class="label" for="hist-de">De</label>
+        <div class="input"><input type="date" id="hist-de" aria-describedby="hist-error"></div>
+      </div>
+      <div class="field">
+        <label class="label" for="hist-ate">Até</label>
+        <div class="input"><input type="date" id="hist-ate" aria-describedby="hist-error"></div>
+      </div>
+    </form>
+
+    <div class="hist__bar">
+      <p class="hist__summary" id="hist-summary" role="status"></p>
+      <button type="button" class="btn btn--text btn--sm" id="btn-hist-limpar" hidden>Limpar filtros</button>
+      <button type="button" class="btn btn--ghost btn--sm" id="btn-hist-atualizar">
+        <span class="spinner" aria-hidden="true"></span>
+        <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
+        <span>Atualizar</span>
+      </button>
+    </div>
+    <p class="form-error" id="hist-error" role="alert" hidden></p>
+
+    <ol class="hist__list" id="hist-list" aria-labelledby="hist-title" aria-busy="false"></ol>
+    <p class="hint hist__empty" id="hist-empty" hidden></p>
+    <div class="hist__more">
+      <button type="button" class="btn btn--ghost" id="btn-hist-mais" hidden>
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Carregar mais</span>
+      </button>
+    </div>
+  </div>
 </dialog>
 
 <!-- ====================== NOVO / EDITAR HORÁRIO (v2.6) ======================

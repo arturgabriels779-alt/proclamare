@@ -929,6 +929,73 @@
   const spotifyRemoteNote = $("spotify-remote-note");
   const spotifyFields = $("spotify-fields");
   const redirectHint = $("redirect-hint");
+  // contas e histórico de anúncios (v2.8 B8)
+  const contasSection = $("contas-section");
+  const contasTitle = $("contas-title");
+  const contasCount = $("contas-count");
+  const btnContaNova = $("btn-conta-nova");
+  const btnContasAtualizar = $("btn-contas-atualizar");
+  const contasBuscaField = $("contas-busca-field");
+  const contasBusca = $("contas-busca");
+  const contasLoading = $("contas-loading");
+  const contasList = $("contas-list");
+  const contasEmpty = $("contas-empty");
+  const contasError = $("contas-error");
+  const contasStatus = $("contas-status");
+  const contaDialog = $("conta-dialog");
+  const contaForm = $("conta-form");
+  const cfTitle = $("cf-dlg-title");
+  const cfLead = $("cf-dlg-lead");
+  const cfNome = $("cf-nome");
+  const cfFuncao = $("cf-funcao");
+  const cfUsuarioField = $("cf-usuario-field");
+  const cfUsuario = $("cf-usuario");
+  const cfUsuarioFixo = $("cf-usuario-fixo");
+  const cfUsuarioFixoV = $("cf-usuario-fixo-v");
+  const cfPerfil = $("cf-perfil");
+  const cfPerfilHint = $("cf-perfil-hint");
+  const cfSenhaCampos = $("cf-senha-campos");
+  const cfSenha = $("cf-senha");
+  const cfSenha2 = $("cf-senha2");
+  const cfSenhaHint = $("cf-senha-hint");
+  const cfExtra = $("cf-extra");
+  const btnContaDefinirSenha = $("btn-conta-definir-senha");
+  const btnContaDesativar = $("btn-conta-desativar");
+  const btnContaReativar = $("btn-conta-reativar");
+  const cfError = $("cf-error");
+  const btnContaCancel = $("btn-conta-cancel");
+  const btnContaSave = $("btn-conta-save");
+  const btnContaSaveLabel = $("btn-conta-save-label");
+  const csenhaDialog = $("csenha-dialog");
+  const csenhaForm = $("csenha-form");
+  const csenhaText = $("csenha-text");
+  const csenhaNova = $("csenha-nova");
+  const csenhaNova2 = $("csenha-nova2");
+  const csenhaError = $("csenha-error");
+  const btnCsenhaCancel = $("btn-csenha-cancel");
+  const btnCsenhaSave = $("btn-csenha-save");
+  const cdesatDialog = $("cdesat-dialog");
+  const cdesatTitle = $("cdesat-title");
+  const cdesatError = $("cdesat-error");
+  const btnCdesatCancel = $("btn-cdesat-cancel");
+  const btnCdesatConfirm = $("btn-cdesat-confirm");
+  const btnHistAbrir = $("btn-hist-abrir");
+  const histDialog = $("hist-dialog");
+  const histLead = $("hist-lead");
+  const btnHistClose = $("btn-hist-close");
+  const histFilters = $("hist-filters");
+  const histQ = $("hist-q");
+  const histContaField = $("hist-conta-field");
+  const histConta = $("hist-conta");
+  const histDe = $("hist-de");
+  const histAte = $("hist-ate");
+  const histSummary = $("hist-summary");
+  const btnHistLimpar = $("btn-hist-limpar");
+  const btnHistAtualizar = $("btn-hist-atualizar");
+  const histError = $("hist-error");
+  const histList = $("hist-list");
+  const histEmpty = $("hist-empty");
+  const btnHistMais = $("btn-hist-mais");
 
   // ======================================================================
   // 8. Estado de tela (aba ativa, fonte ativa) — usado pelos pollers
@@ -9148,8 +9215,8 @@
   /** `target === "net"` rola até "Acesso pela rede" e foca o campo do PIN. */
   async function openSettings(target, opts) {
     if (settingsDialog.open) return;
-    // v2.8 (modo contas): as Configurações só têm itens do ADM (Spotify, saídas de som, segurança)
-    if (auth.modoContas && !["spotify_config", "som", "seguranca"].some(pode)) return;
+    // v2.8 (modo contas): as Configurações têm itens do ADM (Spotify, saídas de som, segurança) e as Contas (B8)
+    if (auth.modoContas && !["spotify_config", "som", "seguranca", "contas"].some(pode)) return;
     showSettingsError("");
     clearCodeInvalid();
     showSettingsWarn(opts && typeof opts.aviso === "string" ? opts.aviso : "");
@@ -9163,7 +9230,7 @@
     spotifyFields.hidden = remote;
     spotifyRemoteNote.hidden = !remote;
     btnSettingsSave.hidden = remote;
-    btnSettingsCancel.textContent = remote ? "Fechar" : "Cancelar";
+    btnSettingsCancel.textContent = remote || !pode("spotify_config") ? "Fechar" : "Cancelar"; // v2.8: gerente só vê Contas
     if (auth.supported && auth.local && pode("seguranca")) { refreshLocalAuthInfo(); segLoadRemotos(); } // atualiza alertas, bloqueio e pendentes da rede
     settingsClientId.readOnly = true;
     settingsClientSecret.readOnly = true;
@@ -9171,6 +9238,7 @@
     let loaded = false;
     settingsDialog.showModal();
     somAoAbrir(target === "som");
+    contasAoAbrirSettings(target === "contas"); // v2.8 (B8)
     if (target === "net" && !netSection.hidden && !netLocal.hidden) {
       netSection.scrollIntoView({ block: "nearest" });
       pinNew.focus({ preventScroll: true });
@@ -9314,6 +9382,7 @@
     if (searchCtrl) { searchCtrl.abort(); searchCtrl = null; }
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
     toastHost.replaceChildren();
+    contasHistLimpar(); // v2.8 (B8): a lista de contas e o histórico de anúncios não ficam para a próxima pessoa
     for (const d of [settingsDialog, msgsDialog, powerDialog, admDialog, senhaDialog]) if (d.open) d.close();
   }
 
@@ -10671,6 +10740,7 @@
     if ((activeTab === "music" && !pode("musica")) || (activeTab === "prog" && !pode("programacao"))) {
       tabGroup.set("announce"); // chama setTab
     }
+    contasAplicarPermissoes(); // v2.8 (B8): seção Contas (só modo contas) e o filtro de pessoa do histórico
   }
 
   /** 403 "sem_permissao" fora do esperado: relê o status (no máximo a cada 30 s) e reaplica as permissões. */
@@ -10771,6 +10841,7 @@
     history = [];
     store.remove(LS.history);
     renderHistory(false);
+    contasHistLimpar(); // v2.8 (B8): contas e histórico de anúncios da pessoa anterior
   }
 
   /** Outra pessoa entrou neste navegador: some o que a anterior digitou e o histórico local dela. */
@@ -11000,6 +11071,972 @@
       btnAdmSave.removeAttribute("aria-disabled");
     }
   });
+
+  // ======================================================================
+  // 17d. Contas (em Configurações) e Histórico de anúncios (v2.8 B8)
+  // ======================================================================
+  // GET  /api/contas            -> {ok, versao, contas:[{id, usuario, nome, funcao, perfil, ativa, versao, …, pode_editar}]}
+  // POST /api/contas            {usuario, nome, funcao, perfil, senha} -> 201 {ok, conta}
+  // POST /api/contas/<id>       {versao, nome?, funcao?, perfil?, ativa?, senha?} -> {ok, conta}
+  // Erros: {ok:false, error, codigo, campo?}. Quem decide é o servidor (hierarquia, própria conta, último ADM, versão):
+  // a tela só esconde o que o perfil não pode e, no resto, mostra o "error" do servidor. Sem sondagem: a lista é lida
+  // ao abrir as Configurações, em "Atualizar" e depois de cada mudança.
+  const CONTAS_MAX = 50; // = contas.CONTAS_MAX
+  const CONTA_ID_RE = /^[0-9a-f]{8}$/; // = server._CONTA_ID_RE
+  const PERFIS = ["funcionario", "gerente", "adm"]; // ordem do select (do menor para o maior)
+  // = contas.pode_gerenciar: o ADM gerencia todos os perfis; o gerente, só funcionários; o funcionário, ninguém
+  const PERFIS_GERENCIAVEIS = { adm: ["funcionario", "gerente", "adm"], gerente: ["funcionario"], funcionario: [] };
+  const PERFIL_DESCRICAO = {
+    funcionario: "Só faz anúncios e usa as mensagens prontas. Vê só o próprio histórico.",
+    gerente: "Tudo, menos saídas de som, segurança e a conexão do Spotify. Cria e edita contas de funcionário.",
+    adm: "Pode tudo, inclusive criar e editar gerentes e outros administradores.",
+  };
+  const CONTA_VERSAO_MUDOU_MSG = "Outra pessoa alterou esta conta; confira e tente de novo.";
+  const CONTAS_SEM_REDE_MSG = "Não foi possível falar com o servidor. Tente de novo.";
+  const CONTAS_BUSCA_A_PARTIR = 9; // a busca aparece com 9 contas ou mais
+
+  const ct = {
+    lista: [], // contas saneadas (contaLimpa)
+    carregada: false,
+    carregando: null, // Promise da leitura em curso
+    erro: "",
+    seq: 0, // sobe quando a pessoa muda: respostas atrasadas da anterior são descartadas
+    modo: "", // "nova" | "editar"
+    editando: null, // cópia da conta aberta no diálogo (com a versão vista)
+    busy: false,
+  };
+
+  /** Texto de erro do servidor (cortado), ou "". */
+  function msgDoServidor(data) {
+    return data && typeof data.error === "string" && data.error ? str(data.error, 200) : "";
+  }
+
+  /** Conta como a tela usa: só campos conhecidos, textos cortados (o tamanho em code points cabe no dobro). */
+  function contaLimpa(c) {
+    if (!c || typeof c !== "object" || typeof c.id !== "string" || !CONTA_ID_RE.test(c.id)) return null;
+    if (!PERFIS.includes(c.perfil) || !Number.isInteger(c.versao) || c.versao < 1) return null;
+    return {
+      id: c.id,
+      usuario: str(c.usuario, 30),
+      nome: str(c.nome, NOME_MAX * 2),
+      funcao: str(c.funcao, FUNCAO_MAX * 2),
+      perfil: c.perfil,
+      ativa: c.ativa === true,
+      versao: c.versao,
+      podeEditar: c.pode_editar === true,
+    };
+  }
+
+  const ehPropria = (c) => !!(auth.conta && c && c.id === auth.conta.id);
+  const contaRotulo = (c) => (c && (c.nome || c.usuario)) || "a pessoa";
+  const contaUrl = (id) => "/api/contas/" + encodeURIComponent(id);
+  /** Perfis que a pessoa logada pode dar a uma conta (espelho de contas.pode_gerenciar). */
+  const perfisPermitidos = () => (auth.conta && PERFIS_GERENCIAVEIS[auth.conta.perfil]) || [];
+  const contasVisiveis = () => auth.modoContas && pode("contas") && !!auth.conta;
+  /** Minúsculas e sem acento, para a busca. */
+  const semAcento = (s) => String(s).normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+
+  function showContasError(text) {
+    contasError.hidden = !text;
+    setText(contasError, text || "");
+  }
+
+  /** Recado da última ação (role="status"): "Conta de Maria criada." etc. */
+  function contaAvisar(text, erro) {
+    contasError.dataset.daLista = "";
+    if (erro) {
+      setText(contasStatus, "");
+      showContasError(text);
+    } else {
+      showContasError("");
+      setText(contasStatus, text || "");
+    }
+  }
+
+  /** Lê a lista de contas (uma leitura por vez). Devolve true se leu. */
+  function contasCarregar() {
+    if (!contasVisiveis() || authLocked) return Promise.resolve(false);
+    if (ct.carregando) return ct.carregando;
+    const seq = ct.seq;
+    if (!ct.carregada) contasLoading.hidden = false;
+    btnContasAtualizar.classList.add("is-loading");
+    btnContasAtualizar.setAttribute("aria-disabled", "true");
+    ct.carregando = (async () => {
+      try {
+        const { ok, status, data } = await getJSON("/api/contas", { timeout: 8000 });
+        if (seq !== ct.seq) return false;
+        if (ok && data.ok && Array.isArray(data.contas)) {
+          ct.lista = data.contas.slice(0, CONTAS_MAX * 2).map(contaLimpa).filter(Boolean);
+          ct.carregada = true;
+          ct.erro = "";
+          return true;
+        }
+        if (status !== 401 || !authLocked) ct.erro = msgDoServidor(data) || "Não foi possível carregar as contas. Toque em Atualizar.";
+        return false;
+      } catch (err) {
+        if (seq === ct.seq && err.name !== "AuthLockedError") ct.erro = "Não foi possível carregar as contas. Toque em Atualizar.";
+        return false;
+      } finally {
+        if (seq === ct.seq) {
+          ct.carregando = null;
+          contasLoading.hidden = true;
+          btnContasAtualizar.classList.remove("is-loading");
+          btnContasAtualizar.removeAttribute("aria-disabled");
+          contasRender();
+          histPreencherPessoas();
+        }
+      }
+    })();
+    return ct.carregando;
+  }
+
+  /** Ativas primeiro; depois ADM, gerente, funcionário; depois pelo nome. */
+  function contasOrdenadas() {
+    return ct.lista.slice().sort((a, b) => (a.ativa === b.ativa ? 0 : a.ativa ? -1 : 1)
+      || PERFIS.indexOf(b.perfil) - PERFIS.indexOf(a.perfil)
+      || contaRotulo(a).localeCompare(contaRotulo(b), "pt-BR", { sensitivity: "base" }));
+  }
+
+  function contasRender() {
+    const total = ct.lista.length;
+    const ativas = ct.lista.filter((c) => c.ativa).length;
+    setText(contasCount, ct.carregada ? total + " de " + CONTAS_MAX + (total !== ativas ? " · " + plural(ativas, "ativa", "ativas") : "") : "");
+    contasBuscaField.hidden = total < CONTAS_BUSCA_A_PARTIR;
+    if (contasBuscaField.hidden && contasBusca.value) contasBusca.value = "";
+    const termo = semAcento(contasBusca.value.trim());
+    const visiveis = contasOrdenadas().filter((c) => !termo || semAcento(c.nome + " " + c.funcao + " " + c.usuario).includes(termo));
+    const frag = document.createDocumentFragment();
+    for (const c of visiveis) frag.appendChild(contaLinha(c));
+    contasList.replaceChildren(frag);
+    contasEmpty.hidden = !(ct.carregada && !visiveis.length);
+    setText(contasEmpty, termo ? "Nenhuma conta com esse nome, função ou usuário." : "Nenhuma conta.");
+    // o erro de leitura da lista some sozinho quando a lista volta; o de uma ação fica até a próxima
+    if (ct.erro) {
+      showContasError(ct.erro);
+      contasError.dataset.daLista = "1";
+    } else if (contasError.dataset.daLista === "1") {
+      showContasError("");
+      contasError.dataset.daLista = "";
+    }
+    btnContaNova.hidden = !perfisPermitidos().length;
+  }
+
+  /** Uma linha da lista: avatar, nome (+ "Você"), função · usuário, perfil, "Desativada" e o botão Editar. */
+  function contaLinha(c) {
+    const propria = ehPropria(c);
+    const li = mk("li", "crow" + (c.ativa ? "" : " is-off"));
+    li.dataset.id = c.id;
+    const av = mk("span", "crow__avatar", iniciais(contaRotulo(c)));
+    av.setAttribute("aria-hidden", "true");
+    const main = mk("div", "crow__main");
+    const top = mk("p", "crow__top");
+    top.appendChild(mk("span", "crow__nome", contaRotulo(c)));
+    if (propria) top.appendChild(mk("span", "badge badge--info", "Você"));
+    const sub = mk("p", "crow__sub", [c.funcao, c.usuario].filter(Boolean).join(" · "));
+    const badges = mk("p", "crow__badges");
+    badges.appendChild(mk("span", "badge" + (c.perfil === "funcionario" ? "" : " badge--info"), PERFIL_NOMES[c.perfil]));
+    if (!c.ativa) badges.appendChild(mk("span", "badge badge--warn", "Desativada"));
+    main.append(top, sub, badges);
+    if (propria) main.appendChild(mk("p", "crow__note", "A sua senha muda em “Trocar minha senha” (a chave, no topo)."));
+    li.append(av, main);
+    // o servidor diz quem pode ser editado (pode_editar: hierarquia e nunca a própria conta)
+    if (c.podeEditar && !propria) {
+      li.appendChild(mkBtn("btn btn--ghost btn--sm crow__edit", "editar", "edit", "Editar a conta de " + contaRotulo(c), "Editar"));
+    }
+    return li;
+  }
+
+  contasList.addEventListener("click", (e) => {
+    const btn = e.target.closest('button[data-act="editar"]');
+    if (!btn || !contasList.contains(btn)) return;
+    const li = btn.closest("li[data-id]");
+    const c = li && ct.lista.find((x) => x.id === li.dataset.id);
+    if (c) openContaDialog("editar", c);
+  });
+  contasBusca.addEventListener("input", () => contasRender());
+  btnContasAtualizar.addEventListener("click", () => {
+    if (btnContasAtualizar.getAttribute("aria-disabled") === "true") return;
+    contaAvisar("");
+    contasCarregar();
+  });
+  btnContaNova.addEventListener("click", () => openContaDialog("nova", null));
+
+  /** Configurações abriram: relê a lista (e rola até ela, se pedido). */
+  function contasAoAbrirSettings(focar) {
+    contasSection.hidden = !auth.modoContas;
+    if (!contasVisiveis()) return;
+    contaAvisar("");
+    contasRender();
+    contasCarregar();
+    if (focar) {
+      contasSection.scrollIntoView({ block: "start" });
+      contasTitle.focus({ preventScroll: true });
+    }
+  }
+
+  // ---- Diálogo "Nova conta" / "Editar conta" ----
+  const CF_CAMPOS = { nome: cfNome, funcao: cfFuncao, usuario: cfUsuario, perfil: cfPerfil, senha: cfSenha };
+
+  /** Texto para um campo recusado (codigo = motivo do servidor ou o código do erro). */
+  function contaMotivo(campo, codigo) {
+    if (campo === "nome") return codigo === "caractere" ? "O nome tem um caractere que não é aceito." : "Digite o nome (até " + NOME_MAX + " caracteres, numa linha só).";
+    if (campo === "funcao") return codigo === "caractere" ? "A função tem um caractere que não é aceito." : "Digite a função (até " + FUNCAO_MAX + " caracteres, numa linha só).";
+    if (campo === "usuario") return codigo === "usuario_repetido" ? "Esse usuário já existe. Escolha outro." : ADM_MOTIVOS.usuario;
+    if (campo === "perfil") return "Escolha um perfil da lista.";
+    if (campo === "senha") {
+      if (codigo === "igual_usuario") return "A senha não pode ser igual ao usuário.";
+      if (codigo === "caractere") return "A senha tem um caractere que não é aceito.";
+      return "A senha precisa ter de " + SENHA_MIN + " a " + SENHA_MAX + " caracteres.";
+    }
+    return "";
+  }
+
+  function showCfError(text, campo) {
+    cfError.hidden = !text;
+    setText(cfError, text || "");
+    for (const el of [cfNome, cfFuncao, cfUsuario, cfPerfil, cfSenha, cfSenha2]) el.removeAttribute("aria-invalid");
+    if (campo) { campo.setAttribute("aria-invalid", "true"); campo.focus(); }
+  }
+
+  function limparCfSenhas() {
+    cfSenha.value = "";
+    cfSenha2.value = "";
+  }
+
+  /** O select de perfil só tem o que a pessoa logada pode dar (o gerente: só Funcionário). */
+  function cfMontarPerfis(atual) {
+    const lista = perfisPermitidos().slice();
+    if (atual && !lista.includes(atual)) lista.push(atual); // não acontece (pode_editar), mas o valor atual não some
+    const frag = document.createDocumentFragment();
+    for (const p of PERFIS) if (lista.includes(p)) frag.appendChild(new Option(PERFIL_NOMES[p], p));
+    cfPerfil.replaceChildren(frag);
+    cfPerfil.value = atual && lista.includes(atual) ? atual : lista[0] || "";
+    cfPerfilDescrever();
+  }
+
+  function cfPerfilDescrever() {
+    let t = PERFIL_DESCRICAO[cfPerfil.value] || "";
+    if (perfisPermitidos().length === 1) t = "Como gerente, você cria e edita só contas de funcionário. " + t;
+    if (ct.modo === "editar" && ct.editando && cfPerfil.value !== ct.editando.perfil) t += " Mudar o perfil faz a pessoa sair de todos os aparelhos.";
+    setText(cfPerfilHint, t);
+  }
+  cfPerfil.addEventListener("change", cfPerfilDescrever);
+
+  /** Preenche o diálogo com o modo atual (nova = vazio; editar = a conta em ct.editando). */
+  function cfPreencher() {
+    const nova = ct.modo === "nova";
+    const c = ct.editando;
+    showCfError("");
+    setText(cfTitle, nova ? "Nova conta" : "Editar conta");
+    setText(cfLead, nova
+      ? "A pessoa entra com este usuário e senha em qualquer aparelho, inclusive no computador da loja."
+      : c.ativa ? "As mudanças valem já na próxima vez que a pessoa usar o painel."
+        : "Esta conta está desativada: a pessoa não consegue entrar até alguém reativá-la.");
+    cfNome.value = nova ? "" : c.nome;
+    cfFuncao.value = nova ? "" : c.funcao;
+    cfUsuario.value = "";
+    cfUsuarioField.hidden = !nova;
+    cfUsuarioFixo.hidden = nova;
+    setText(cfUsuarioFixoV, nova ? "" : c.usuario);
+    cfSenhaCampos.hidden = !nova;
+    cfSenhaHint.hidden = !nova;
+    limparCfSenhas();
+    cfExtra.hidden = nova;
+    if (!nova) {
+      btnContaDesativar.hidden = !c.ativa;
+      btnContaReativar.hidden = c.ativa;
+    }
+    setText(btnContaSaveLabel, nova ? "Criar conta" : "Salvar");
+    cfMontarPerfis(nova ? "funcionario" : c.perfil);
+  }
+
+  function openContaDialog(modo, conta) {
+    if (!contasVisiveis() || authLocked || contaDialog.open || ct.busy || shuttingDown) return;
+    if (modo === "nova" && !perfisPermitidos().length) return;
+    if (modo === "editar" && (!conta || !conta.podeEditar || ehPropria(conta))) return;
+    ct.modo = modo;
+    ct.editando = modo === "editar" ? Object.assign({}, conta) : null;
+    cfPreencher();
+    contaDialog.showModal();
+    cfNome.focus();
+  }
+
+  function closeContaDialog() {
+    if (ct.busy) return;
+    limparCfSenhas();
+    closeDialogAnimated(contaDialog);
+  }
+
+  /** Fecha os três diálogos de conta, de cima para baixo (sem animação). */
+  function fecharDialogosConta() {
+    for (const d of [cdesatDialog, csenhaDialog, contaDialog]) if (d.open) d.close();
+  }
+
+  btnContaCancel.addEventListener("click", closeContaDialog);
+  contaDialog.addEventListener("cancel", (e) => { e.preventDefault(); closeContaDialog(); });
+  onBackdropClick(contaDialog, closeContaDialog);
+  contaDialog.addEventListener("close", () => {
+    limparCfSenhas(); // a senha nunca fica num diálogo fechado
+    if (!csenhaDialog.open && !cdesatDialog.open) ct.editando = null;
+  });
+
+  /** Põe a conta devolvida pelo servidor na lista (substitui pelo id ou acrescenta). */
+  function contaAplicar(conta) {
+    const i = ct.lista.findIndex((c) => c.id === conta.id);
+    if (i >= 0) ct.lista[i] = conta;
+    else ct.lista.push(conta);
+    contasRender();
+    histPreencherPessoas();
+  }
+
+  /**
+   * 409 "versao_mudou": relê a lista e, se a conta ainda pode ser editada, mostra os valores novos no diálogo de
+   * edição (o que foi digitado é descartado: "confira e tente de novo"). `mostrar` exibe o aviso no diálogo certo.
+   */
+  async function contaVersaoMudou(mostrar) {
+    const id = ct.editando && ct.editando.id;
+    const seq = ct.seq;
+    await contasCarregar();
+    if (seq !== ct.seq) return;
+    const atual = id ? ct.lista.find((c) => c.id === id) : null;
+    if (!atual || !atual.podeEditar || ehPropria(atual)) {
+      fecharDialogosConta();
+      contaAvisar(CONTA_VERSAO_MUDOU_MSG, true);
+      return;
+    }
+    ct.editando = Object.assign({}, atual);
+    if (contaDialog.open) cfPreencher();
+    mostrar(CONTA_VERSAO_MUDOU_MSG);
+  }
+
+  /**
+   * Trata os erros comuns de POST /api/contas/<id> (senha, desativar, reativar). Devolve true se tratou
+   * (versão, conta sumida, porta fechada); senão quem chamou mostra contaErroTexto().
+   */
+  function contaErroComum(status, data, mostrar) {
+    if (status === 401 && authLocked) return true; // request() já fechou a porta
+    if (data.codigo === "versao_mudou") { contaVersaoMudou(mostrar); return true; }
+    if (data.codigo === "nao_encontrada" || status === 404) {
+      fecharDialogosConta();
+      contaAvisar(msgDoServidor(data) || "Conta não encontrada.", true);
+      contasCarregar();
+      return true;
+    }
+    if (data.codigo === "sem_permissao" || data.codigo === "propria_conta" || data.codigo === "ultimo_adm") contasCarregar();
+    return false;
+  }
+
+  function contaErroTexto(status, data) {
+    const erro = msgDoServidor(data);
+    if (status === 429) return erro || "Muitos pedidos seguidos. Aguarde um minuto.";
+    if (data.codigo === "sem_permissao") return erro || "Seu perfil não pode alterar essa conta.";
+    return erro || "Não foi possível salvar. Tente de novo.";
+  }
+
+  function contaBotaoOcupado(btn, on) {
+    btn.classList.toggle("is-loading", on);
+    if (on) btn.setAttribute("aria-disabled", "true");
+    else btn.removeAttribute("aria-disabled");
+  }
+
+  contaForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (ct.busy || !auth.conta || !ct.modo) return;
+    const nova = ct.modo === "nova";
+    const nome = cleanMsgText(cfNome.value, false);
+    const funcao = cleanMsgText(cfFuncao.value, false);
+    const perfil = cfPerfil.value;
+    if (!nome || tamanho(nome) > NOME_MAX) return showCfError(contaMotivo("nome"), cfNome);
+    if (!funcao || tamanho(funcao) > FUNCAO_MAX) return showCfError(contaMotivo("funcao"), cfFuncao);
+    const base = ct.editando;
+    if (!perfisPermitidos().includes(perfil) && !(base && perfil === base.perfil)) return showCfError(contaMotivo("perfil"), cfPerfil);
+    let url;
+    let body;
+    if (nova) {
+      const usuario = cfUsuario.value.trim().toLowerCase();
+      const senha = cfSenha.value;
+      cfUsuario.value = usuario;
+      if (!USUARIO_RE.test(usuario)) return showCfError(contaMotivo("usuario"), cfUsuario);
+      if (ct.lista.some((c) => c.usuario === usuario)) return showCfError(contaMotivo("usuario", "usuario_repetido"), cfUsuario);
+      if (tamanho(senha) < SENHA_MIN || tamanho(senha) > SENHA_MAX) return showCfError(contaMotivo("senha", "tamanho"), cfSenha);
+      if (senha.trim().toLowerCase() === usuario) return showCfError(contaMotivo("senha", "igual_usuario"), cfSenha);
+      if (senha !== cfSenha2.value) return showCfError("As duas senhas não são iguais.", cfSenha2);
+      url = "/api/contas";
+      body = { usuario, nome, funcao, perfil, senha };
+    } else {
+      if (!base) return;
+      body = { versao: base.versao };
+      if (nome !== base.nome) body.nome = nome;
+      if (funcao !== base.funcao) body.funcao = funcao;
+      if (perfil !== base.perfil) body.perfil = perfil;
+      if (Object.keys(body).length === 1) { closeContaDialog(); return; } // nada mudou: não grava
+      url = contaUrl(base.id);
+    }
+    showCfError("");
+    const seq = ct.seq;
+    ct.busy = true;
+    contaBotaoOcupado(btnContaSave, true);
+    try {
+      const { ok, status, data } = await postJSON(url, body, { timeout: 20000 });
+      if (seq !== ct.seq) return;
+      if (ok && data.ok) {
+        const conta = contaLimpa(data.conta);
+        ct.busy = false;
+        if (conta) contaAplicar(conta);
+        limparCfSenhas();
+        if (nova) { cfNome.value = ""; cfFuncao.value = ""; cfUsuario.value = ""; }
+        closeDialogAnimated(contaDialog);
+        const quem = contaRotulo(conta || { nome });
+        contaAvisar(nova
+          ? "Conta de " + quem + " criada. Já dá para entrar com o usuário " + (conta ? conta.usuario : body.usuario) + "."
+          : "Conta de " + quem + " salva." + (body.perfil ? " A pessoa sai dos aparelhos e entra de novo com o perfil novo." : ""));
+        contasCarregar();
+        return;
+      }
+      if (status === 401 && authLocked) return;
+      const codigo = typeof data.codigo === "string" ? data.codigo : "";
+      const campo = typeof data.campo === "string" ? data.campo : "";
+      if (!nova && contaErroComum(status, data, (m) => showCfError(m))) return;
+      if (nova && codigo === "sem_permissao") contasCarregar();
+      if (codigo === "limite_contas") {
+        showCfError(msgDoServidor(data) || "Limite de " + CONTAS_MAX + " contas atingido.");
+      } else if ((status === 400 || codigo === "usuario_repetido") && Object.prototype.hasOwnProperty.call(CF_CAMPOS, campo)) {
+        if (campo === "senha") limparCfSenhas();
+        showCfError(contaMotivo(campo, codigo) || msgDoServidor(data), CF_CAMPOS[campo]);
+      } else {
+        showCfError(contaErroTexto(status, data));
+      }
+    } catch (err) {
+      if (seq === ct.seq && err.name !== "AuthLockedError") showCfError(CONTAS_SEM_REDE_MSG);
+    } finally {
+      if (seq === ct.seq) {
+        ct.busy = false;
+        contaBotaoOcupado(btnContaSave, false);
+      }
+    }
+  });
+
+  // ---- "Definir senha nova" de outra conta ----
+  function showCsenhaError(text, campo) {
+    csenhaError.hidden = !text;
+    setText(csenhaError, text || "");
+    for (const el of [csenhaNova, csenhaNova2]) el.removeAttribute("aria-invalid");
+    if (campo) { campo.setAttribute("aria-invalid", "true"); campo.focus(); }
+  }
+
+  function limparCsenha() {
+    csenhaNova.value = "";
+    csenhaNova2.value = "";
+  }
+
+  btnContaDefinirSenha.addEventListener("click", () => {
+    const c = ct.editando;
+    if (!c || csenhaDialog.open || ct.busy || authLocked) return;
+    limparCsenha();
+    showCsenhaError("");
+    setText(csenhaText, "Para " + contaRotulo(c) + " (" + c.usuario + "). A pessoa sai de todos os aparelhos e passa a entrar com a senha nova. Combine a senha pessoalmente.");
+    csenhaDialog.showModal();
+    csenhaNova.focus();
+  });
+
+  function closeCsenha() {
+    if (ct.busy) return;
+    limparCsenha();
+    closeDialogAnimated(csenhaDialog);
+  }
+  btnCsenhaCancel.addEventListener("click", closeCsenha);
+  csenhaDialog.addEventListener("cancel", (e) => { e.preventDefault(); closeCsenha(); });
+  onBackdropClick(csenhaDialog, closeCsenha);
+  csenhaDialog.addEventListener("close", limparCsenha); // nunca guarda a senha
+
+  csenhaForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const c = ct.editando;
+    if (ct.busy || !c) return;
+    const senha = csenhaNova.value;
+    if (tamanho(senha) < SENHA_MIN || tamanho(senha) > SENHA_MAX) return showCsenhaError(contaMotivo("senha", "tamanho"), csenhaNova);
+    if (senha.trim().toLowerCase() === c.usuario) return showCsenhaError(contaMotivo("senha", "igual_usuario"), csenhaNova);
+    if (senha !== csenhaNova2.value) return showCsenhaError("As duas senhas não são iguais.", csenhaNova2);
+    showCsenhaError("");
+    const seq = ct.seq;
+    ct.busy = true;
+    contaBotaoOcupado(btnCsenhaSave, true);
+    try {
+      const { ok, status, data } = await postJSON(contaUrl(c.id), { versao: c.versao, senha }, { timeout: 20000 });
+      if (seq !== ct.seq) return;
+      if (ok && data.ok) {
+        const conta = contaLimpa(data.conta);
+        ct.busy = false;
+        limparCsenha();
+        if (conta) contaAplicar(conta);
+        fecharDialogosConta();
+        contaAvisar("Senha nova definida para " + contaRotulo(conta || c) + ". A pessoa saiu de todos os aparelhos e entra com a senha nova.");
+        return;
+      }
+      limparCsenha();
+      if (contaErroComum(status, data, (m) => showCsenhaError(m, csenhaNova))) return;
+      if (status === 400 && data.campo === "senha") showCsenhaError(contaMotivo("senha", data.codigo), csenhaNova);
+      else showCsenhaError(contaErroTexto(status, data));
+    } catch (err) {
+      limparCsenha();
+      if (seq === ct.seq && err.name !== "AuthLockedError") showCsenhaError(CONTAS_SEM_REDE_MSG);
+    } finally {
+      if (seq === ct.seq) {
+        ct.busy = false;
+        contaBotaoOcupado(btnCsenhaSave, false);
+      }
+    }
+  });
+
+  // ---- Desativar (com confirmação) e reativar ----
+  function showCdesatError(text) {
+    cdesatError.hidden = !text;
+    setText(cdesatError, text || "");
+  }
+
+  btnContaDesativar.addEventListener("click", () => {
+    const c = ct.editando;
+    if (!c || !c.ativa || cdesatDialog.open || ct.busy || authLocked) return;
+    showCdesatError("");
+    setText(cdesatTitle, "Desativar a conta de " + contaRotulo(c) + "?");
+    cdesatDialog.showModal();
+    btnCdesatCancel.focus(); // o foco começa no caminho seguro
+  });
+
+  function closeCdesat() {
+    if (ct.busy) return;
+    closeDialogAnimated(cdesatDialog);
+  }
+  btnCdesatCancel.addEventListener("click", closeCdesat);
+  cdesatDialog.addEventListener("cancel", (e) => { e.preventDefault(); closeCdesat(); });
+  onBackdropClick(cdesatDialog, closeCdesat);
+
+  /** POST {versao, ativa}. `mostrar` = onde aparece o erro (confirmação ou diálogo de edição). */
+  async function contaMudarAtiva(ativa, btn, mostrar) {
+    const c = ct.editando;
+    if (ct.busy || !c) return;
+    const seq = ct.seq;
+    ct.busy = true;
+    contaBotaoOcupado(btn, true);
+    try {
+      const { ok, status, data } = await postJSON(contaUrl(c.id), { versao: c.versao, ativa }, { timeout: 15000 });
+      if (seq !== ct.seq) return;
+      if (ok && data.ok) {
+        const conta = contaLimpa(data.conta);
+        ct.busy = false;
+        if (conta) contaAplicar(conta);
+        fecharDialogosConta();
+        contaAvisar(ativa
+          ? "Conta de " + contaRotulo(conta || c) + " reativada. Já dá para entrar de novo."
+          : "Conta de " + contaRotulo(conta || c) + " desativada. A pessoa saiu de todos os aparelhos.");
+        return;
+      }
+      if (data.codigo === "versao_mudou" && cdesatDialog.open) {
+        // volta para o diálogo de edição com os valores novos (lá aparece o aviso)
+        cdesatDialog.close();
+        contaErroComum(status, data, (m) => showCfError(m));
+        return;
+      }
+      if (contaErroComum(status, data, mostrar)) return;
+      mostrar(contaErroTexto(status, data));
+    } catch (err) {
+      if (seq === ct.seq && err.name !== "AuthLockedError") mostrar(CONTAS_SEM_REDE_MSG);
+    } finally {
+      if (seq === ct.seq) {
+        ct.busy = false;
+        contaBotaoOcupado(btn, false);
+      }
+    }
+  }
+
+  btnCdesatConfirm.addEventListener("click", () => {
+    if (btnCdesatConfirm.getAttribute("aria-disabled") === "true") return;
+    contaMudarAtiva(false, btnCdesatConfirm, showCdesatError);
+  });
+  btnContaReativar.addEventListener("click", () => {
+    if (btnContaReativar.getAttribute("aria-disabled") === "true") return;
+    contaMudarAtiva(true, btnContaReativar, (m) => showCfError(m));
+  });
+
+  /** Esquece a lista de contas e fecha os diálogos (outra pessoa, porta fechada, perfil sem "contas"). */
+  function contasEsquecer() {
+    ct.seq++;
+    ct.lista = [];
+    ct.carregada = false;
+    ct.carregando = null;
+    ct.erro = "";
+    ct.modo = "";
+    ct.editando = null;
+    ct.busy = false;
+    fecharDialogosConta();
+    limparCfSenhas();
+    limparCsenha();
+    cfNome.value = "";
+    cfFuncao.value = "";
+    cfUsuario.value = "";
+    contasBusca.value = "";
+    contasLoading.hidden = true;
+    for (const b of [btnContasAtualizar, btnContaSave, btnCsenhaSave, btnCdesatConfirm, btnContaReativar]) contaBotaoOcupado(b, false);
+    contaAvisar("");
+    contasRender();
+  }
+
+  // ======================================================================
+  // Histórico de anúncios: GET /api/historico ?de=&ate=&conta=&q=&antes= -> {ok, itens:[…], mais}
+  // ======================================================================
+  // Cada item: {t (ISO com fuso), conta_id, usuario, nome, funcao, texto, resultado, origem, tipo}. O texto do anúncio
+  // é dado do usuário: só por textContent (com white-space: pre-wrap para as quebras de linha). Sem sondagem.
+  const HIST_BUSCA_MAX = 100; // = server.HISTORICO_BUSCA_MAX
+  const HIST_RETENCAO_DIAS = 90; // = server.HISTORICO_RETENCAO_DIAS
+  const HIST_SEM_CONTA = "antes das contas"; // = server.HISTORICO_SEM_CONTA
+  const HIST_DATA_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+  const HIST_T_RE = /^([0-9]{4}-[0-9]{2}-[0-9]{2})[T ]([0-9]{2}:[0-9]{2}(?::[0-9]{2})?)(?:\.([0-9]+))?(Z|[+-][0-9]{2}:?[0-9]{2})?$/;
+  // = server.HISTORICO_RESULTADOS / _ORIGENS / _TIPOS (o que não estiver aqui não aparece)
+  const HIST_RESULTADOS = {
+    ok: ["Tocou", "badge--ok"],
+    ocupado: ["Não tocou: caixas ocupadas", "badge--warn"],
+    erro: ["Não tocou: erro", "badge--bad"],
+    sem_internet: ["Não tocou: sem internet", "badge--warn"],
+    limite: ["Não tocou: pedidos demais", "badge--warn"],
+    interrompido: ["Interrompido", "badge--warn"],
+  };
+  const HIST_ORIGENS = { local: "PC das caixas", rede: "Pela rede" };
+  const HIST_TIPOS = { digitado: "Digitado", tocar_agora: "Tocar agora", agendado: "Agendado" };
+  const temChave = (obj, k) => typeof k === "string" && Object.prototype.hasOwnProperty.call(obj, k);
+  const histDiaFmt = new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long" });
+  const histDiaAnoFmt = new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  const histHoraFmt = new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  const histCompletoFmt = new Intl.DateTimeFormat("pt-BR", { dateStyle: "full", timeStyle: "medium" });
+
+  const hs = { itens: [], mais: false, seq: 0, ctrl: null, ultimoDia: "", carregando: false, erro: false, debounce: 0 };
+
+  /** O filtro de pessoa precisa da lista de contas (capacidade "contas") e de poder ver todos. */
+  const histPodeFiltrarPessoa = () => auth.modoContas && pode("historico_todos") && pode("contas") && !!auth.conta;
+  /** O funcionário vê só os próprios (o servidor força; aqui é só o texto da tela). */
+  const histSoProprios = () => auth.modoContas && !pode("historico_todos");
+
+  /** "AAAA-MM-DD" da data local de `d`. */
+  const diaIso = (d) => d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+
+  /** Date de um "t" do servidor (ISO com fuso e microssegundos), ou null. */
+  function histData(t) {
+    const m = HIST_T_RE.exec(t);
+    if (!m) return null;
+    const ms = m[3] ? "." + (m[3] + "00").slice(0, 3) : "";
+    let tz = m[4] || "";
+    if (tz.length === 5) tz = tz.slice(0, 3) + ":" + tz.slice(3); // +0300 -> +03:00
+    const d = new Date(m[1] + "T" + m[2] + ms + tz);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  /** Item como a tela usa: só campos conhecidos, textos cortados. */
+  function histItemLimpo(x) {
+    if (!x || typeof x !== "object" || typeof x.t !== "string" || x.t.length > 40 || typeof x.texto !== "string") return null;
+    const quando = histData(x.t);
+    if (!quando) return null;
+    return {
+      t: x.t,
+      quando,
+      texto: x.texto.slice(0, MAX_CHARS * 2),
+      nome: str(x.nome, 160) || HIST_SEM_CONTA,
+      funcao: str(x.funcao, 120),
+      usuario: str(x.usuario, 80),
+      resultado: temChave(HIST_RESULTADOS, x.resultado) ? x.resultado : "",
+      origem: temChave(HIST_ORIGENS, x.origem) ? x.origem : "",
+      tipo: temChave(HIST_TIPOS, x.tipo) ? x.tipo : "",
+    };
+  }
+
+  function showHistError(text) {
+    histError.hidden = !text;
+    setText(histError, text || "");
+    hs.erro = !!text;
+  }
+
+  /** Marca o filtro recusado pelo servidor (400 "campo") ou pelo cliente. */
+  function histMarcarCampo(campo) {
+    const mapa = { q: histQ, de: histDe, ate: histAte, conta: histConta };
+    for (const el of Object.values(mapa)) el.removeAttribute("aria-invalid");
+    if (temChave(mapa, campo)) mapa[campo].setAttribute("aria-invalid", "true");
+  }
+
+  const histFiltrosAtivos = () => !!(histQ.value.trim() || histDe.value || histAte.value || (histPodeFiltrarPessoa() && histConta.value));
+
+  /** Lê e confere os filtros antes de pedir (o servidor confere de novo). */
+  function histLerFiltros() {
+    const q = histQ.value.trim();
+    if (tamanho(q) > HIST_BUSCA_MAX) return { erro: "A busca pode ter até " + HIST_BUSCA_MAX + " caracteres.", campo: "q" };
+    const de = histDe.value;
+    const ate = histAte.value;
+    if (de && !HIST_DATA_RE.test(de)) return { erro: "Data inicial inválida.", campo: "de" };
+    if (ate && !HIST_DATA_RE.test(ate)) return { erro: "Data final inválida.", campo: "ate" };
+    if (de && ate && de > ate) return { erro: "A data final vem antes da inicial.", campo: "ate" };
+    const conta = histPodeFiltrarPessoa() && CONTA_ID_RE.test(histConta.value) ? histConta.value : "";
+    return { q, de, ate, conta };
+  }
+
+  function histErroTexto(status, data) {
+    const erro = msgDoServidor(data);
+    if (status === 429) return erro || "Muitos pedidos seguidos. Aguarde um minuto.";
+    if (status === 403) return erro || "Sem permissão para ver o histórico.";
+    if (status === 404 && !erro) return "Este servidor ainda não tem o histórico de anúncios.";
+    return erro || "Não foi possível carregar o histórico. Toque em Atualizar.";
+  }
+
+  function histOcupado(append, on) {
+    contaBotaoOcupado(append ? btnHistMais : btnHistAtualizar, on);
+    histList.setAttribute("aria-busy", on ? "true" : "false");
+  }
+
+  /**
+   * Lê uma página. `append` = "Carregar mais" (antes = o "t" do último item). A query vai sempre por
+   * URLSearchParams: o "t" leva o fuso ("-03:00", "+01:00") e um "+" cru viraria espaço (400 no servidor).
+   */
+  async function histCarregar(append) {
+    if (authLocked || !histDialog.open) return;
+    if (append && (hs.carregando || !hs.mais || !hs.itens.length)) return;
+    clearTimeout(hs.debounce);
+    const f = histLerFiltros();
+    histMarcarCampo(f.campo || null);
+    if (f.erro) {
+      if (hs.ctrl) hs.ctrl.abort();
+      hs.seq++;
+      hs.carregando = false;
+      histOcupado(false, false);
+      histOcupado(true, false);
+      showHistError(f.erro);
+      histResumo();
+      return;
+    }
+    if (hs.ctrl) hs.ctrl.abort();
+    const ctrl = new AbortController();
+    hs.ctrl = ctrl;
+    const seq = ++hs.seq;
+    const params = new URLSearchParams();
+    if (f.q) params.set("q", f.q);
+    if (f.de) params.set("de", f.de);
+    if (f.ate) params.set("ate", f.ate);
+    if (f.conta) params.set("conta", f.conta);
+    if (append) params.set("antes", hs.itens[hs.itens.length - 1].t);
+    const qs = params.toString();
+    hs.carregando = true;
+    histOcupado(!append, false); // um pedido interrompido não deixa o outro botão girando
+    histOcupado(!!append, true);
+    if (!append) showHistError("");
+    histResumo();
+    try {
+      const { ok, status, data } = await getJSON("/api/historico" + (qs ? "?" + qs : ""), { timeout: 15000, signal: ctrl.signal });
+      if (seq !== hs.seq) return;
+      if (ok && data.ok && Array.isArray(data.itens)) {
+        const novos = data.itens.slice(0, 200).map(histItemLimpo).filter(Boolean);
+        if (!append) { hs.itens = []; hs.ultimoDia = ""; }
+        hs.itens = hs.itens.concat(novos);
+        hs.mais = data.mais === true && novos.length > 0;
+        showHistError("");
+        histRender(novos, !!append);
+        return;
+      }
+      if (status === 401 && authLocked) return;
+      const campo = typeof data.campo === "string" ? data.campo : "";
+      if (status === 400 && campo === "antes") {
+        hs.mais = false; // a página seguinte não vale mais: recomeça pelo "Atualizar"
+        showHistError("Não deu para continuar a lista. Toque em Atualizar.");
+        return;
+      }
+      showHistError(histErroTexto(status, data));
+      histMarcarCampo(campo);
+      if (!append) { hs.itens = []; hs.mais = false; hs.ultimoDia = ""; histList.replaceChildren(); } // nada de lista de outro filtro
+    } catch (err) {
+      if (seq !== hs.seq || err.name === "AbortError" || err.name === "AuthLockedError") return;
+      showHistError(err.name === "TimeoutError" ? "O servidor demorou para responder. Toque em Atualizar." : "Não foi possível falar com o servidor. Toque em Atualizar.");
+    } finally {
+      if (seq === hs.seq) {
+        hs.carregando = false;
+        hs.ctrl = null;
+        histOcupado(!!append, false);
+        histResumo();
+      }
+    }
+  }
+
+  function histDiaRotulo(d) {
+    const hoje = new Date();
+    const ontem = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 1);
+    const k = diaIso(d);
+    if (k === diaIso(hoje)) return "Hoje";
+    if (k === diaIso(ontem)) return "Ontem";
+    return upFirst((d.getFullYear() === hoje.getFullYear() ? histDiaFmt : histDiaAnoFmt).format(d));
+  }
+
+  /** Acrescenta (ou troca) as linhas; um cabeçalho por dia. */
+  function histRender(novos, append) {
+    const frag = document.createDocumentFragment();
+    for (const it of novos) {
+      const dia = diaIso(it.quando);
+      if (dia !== hs.ultimoDia) {
+        hs.ultimoDia = dia;
+        const li = mk("li", "hist__day");
+        li.appendChild(mk("h3", "hist__day-t", histDiaRotulo(it.quando)));
+        frag.appendChild(li);
+      }
+      frag.appendChild(histLinha(it));
+    }
+    if (append) histList.appendChild(frag);
+    else histList.replaceChildren(frag);
+  }
+
+  /** Uma entrada: hora | quem (nome, função · usuário) | texto (literal) | resultado, tipo · origem. */
+  function histLinha(it) {
+    const li = mk("li", "hrow");
+    const time = mk("time", "hrow__time", histHoraFmt.format(it.quando));
+    time.dateTime = it.quando.toISOString();
+    time.title = histCompletoFmt.format(it.quando);
+    const main = mk("div", "hrow__main");
+    const who = mk("p", "hrow__who");
+    const semConta = it.nome === HIST_SEM_CONTA && !it.usuario;
+    who.appendChild(mk("span", "hrow__nome" + (semConta ? " is-sem-conta" : ""), it.nome));
+    const extra = [it.funcao, it.usuario].filter(Boolean).join(" · ");
+    if (extra) who.appendChild(mk("span", "hrow__funcao", extra));
+    const texto = mk("p", "hrow__texto", it.texto); // textContent: "<script>" aparece como texto
+    const meta = mk("p", "hrow__meta");
+    const r = HIST_RESULTADOS[it.resultado];
+    if (r) meta.appendChild(mk("span", "badge " + r[1], r[0]));
+    const det = [HIST_TIPOS[it.tipo], HIST_ORIGENS[it.origem]].filter(Boolean).join(" · ");
+    if (det) meta.appendChild(mk("span", "hrow__det", det));
+    main.append(who, texto, meta);
+    li.append(time, main);
+    return li;
+  }
+
+  /** Linha de resumo, "Carregar mais", "Limpar filtros" e o vazio. */
+  function histResumo() {
+    const n = hs.itens.length;
+    const filtros = histFiltrosAtivos();
+    btnHistLimpar.hidden = !filtros;
+    btnHistMais.hidden = !(hs.mais && n);
+    if (hs.carregando && !n) setText(histSummary, "Carregando…");
+    else if (n) setText(histSummary, "Mostrando " + plural(n, "anúncio", "anúncios") + (hs.mais ? ". Há mais antigos." : "."));
+    else setText(histSummary, "");
+    const vazio = !n && !hs.carregando && !hs.erro;
+    histEmpty.hidden = !vazio;
+    if (vazio) {
+      setText(histEmpty, filtros ? "Nenhum anúncio com esses filtros."
+        : histSoProprios() ? "Você ainda não fez nenhum anúncio nos últimos " + HIST_RETENCAO_DIAS + " dias."
+          : "Nenhum anúncio nos últimos " + HIST_RETENCAO_DIAS + " dias.");
+    }
+  }
+
+  /** Opções do filtro de pessoa (da lista de contas; desativadas também, o histórico guarda o nome delas). */
+  function histPreencherPessoas() {
+    const mostrar = histPodeFiltrarPessoa();
+    histContaField.hidden = !mostrar;
+    const atual = histConta.value;
+    const frag = document.createDocumentFragment();
+    frag.appendChild(new Option("Todas as pessoas", ""));
+    const ordenadas = mostrar ? ct.lista.slice().sort((a, b) => contaRotulo(a).localeCompare(contaRotulo(b), "pt-BR", { sensitivity: "base" })) : [];
+    for (const c of ordenadas) frag.appendChild(new Option(contaRotulo(c) + (c.ativa ? "" : " (desativada)"), c.id));
+    histConta.replaceChildren(frag);
+    histConta.value = ordenadas.some((c) => c.id === atual) ? atual : "";
+  }
+
+  /** Texto e filtros conforme o perfil. */
+  function histAplicarPerfil() {
+    setText(histLead, histSoProprios()
+      ? "Os seus anúncios dos últimos " + HIST_RETENCAO_DIAS + " dias, do mais novo para o mais antigo. Ninguém apaga nem edita."
+      : "Os anúncios dos últimos " + HIST_RETENCAO_DIAS + " dias, do mais novo para o mais antigo, com quem fez cada um. Ninguém apaga nem edita.");
+    histPreencherPessoas();
+    const hoje = new Date();
+    const minimo = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - HIST_RETENCAO_DIAS);
+    for (const el of [histDe, histAte]) {
+      el.max = diaIso(hoje);
+      el.min = diaIso(minimo);
+    }
+  }
+
+  function openHistorico() {
+    if (authLocked || histDialog.open || shuttingDown) return;
+    histAplicarPerfil();
+    showHistError("");
+    histMarcarCampo(null);
+    histDialog.showModal();
+    btnHistClose.focus();
+    if (histPodeFiltrarPessoa() && !ct.carregada) contasCarregar(); // preenche o filtro de pessoa quando chegar
+    histCarregar(false);
+  }
+
+  function closeHistorico() {
+    clearTimeout(hs.debounce);
+    closeDialogAnimated(histDialog);
+  }
+
+  btnHistAbrir.addEventListener("click", openHistorico);
+  btnHistClose.addEventListener("click", closeHistorico);
+  histDialog.addEventListener("cancel", (e) => { e.preventDefault(); closeHistorico(); });
+  onBackdropClick(histDialog, closeHistorico);
+  histDialog.addEventListener("close", () => {
+    clearTimeout(hs.debounce);
+    if (hs.ctrl) hs.ctrl.abort();
+  });
+  histFilters.addEventListener("submit", (e) => { e.preventDefault(); histCarregar(false); });
+  histQ.addEventListener("input", () => {
+    clearTimeout(hs.debounce);
+    hs.debounce = setTimeout(() => histCarregar(false), 450); // menos pedidos enquanto digita (60/min no servidor)
+  });
+  for (const el of [histConta, histDe, histAte]) el.addEventListener("change", () => histCarregar(false));
+  btnHistLimpar.addEventListener("click", () => {
+    histQ.value = "";
+    histDe.value = "";
+    histAte.value = "";
+    histConta.value = "";
+    histCarregar(false);
+    histQ.focus();
+  });
+  btnHistAtualizar.addEventListener("click", () => {
+    if (btnHistAtualizar.getAttribute("aria-disabled") === "true") return;
+    histCarregar(false);
+  });
+  btnHistMais.addEventListener("click", () => {
+    if (btnHistMais.getAttribute("aria-disabled") === "true") return;
+    histCarregar(true);
+  });
+
+  /** Esquece o histórico mostrado e os filtros (a próxima pessoa nunca vê o da anterior). */
+  function histLimpar() {
+    clearTimeout(hs.debounce);
+    if (hs.ctrl) hs.ctrl.abort();
+    hs.seq++;
+    hs.ctrl = null;
+    hs.itens = [];
+    hs.mais = false;
+    hs.ultimoDia = "";
+    hs.carregando = false;
+    if (histDialog.open) histDialog.close();
+    histList.replaceChildren();
+    histQ.value = "";
+    histDe.value = "";
+    histAte.value = "";
+    histConta.replaceChildren(new Option("Todas as pessoas", ""));
+    histMarcarCampo(null);
+    showHistError("");
+    histOcupado(false, false);
+    histOcupado(true, false);
+    histResumo();
+  }
+
+  /** Outra pessoa / porta fechada: some a lista de contas e o histórico da anterior. */
+  function contasHistLimpar() {
+    contasEsquecer();
+    histLimpar();
+  }
+
+  /** Chamado por aplicarPermissoes(): mostra/esconde as áreas e esquece o que o perfil não pode mais ver. */
+  function contasAplicarPermissoes() {
+    contasSection.hidden = !auth.modoContas;
+    if (!contasVisiveis() && (ct.lista.length || ct.carregando || contaDialog.open || csenhaDialog.open || cdesatDialog.open)) contasEsquecer();
+    else contasRender();
+    histPreencherPessoas();
+    if (histDialog.open) histAplicarPerfil();
+  }
 
   // ======================================================================
   // 17c. Som da loja (tile, avisos e assistente "Minhas saídas de som")

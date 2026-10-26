@@ -1,5 +1,5 @@
 """
-Testes estáticos do painel por perfil (v2.8 B7): o que o static/ promete bate com o servidor.
+Testes estáticos do painel por perfil (v2.8 B7 + B8 contas e histórico): o que o static/ promete bate com o servidor.
 
   * Toda capacidade usada em data-perm / data-perm-sem do index.html existe em contas.CAPACIDADES, e a lista fixa
     CAPACIDADES do app.js é exatamente a do servidor (uma capacidade com erro de digitação esconderia a área de
@@ -66,9 +66,10 @@ class TestePermissoesNoHtml(unittest.TestCase):
                 self.assertFalse(contas.pode("funcionario", capacidade))
         # o tile da voz não tem id: confere pela classe
         self.assertRegex(HTML, r'<div class="tile tile--voice" data-perm="voz">')
-        # Configurações: só itens do ADM
-        self.assertEqual(set(re.search(r'\bdata-perm="([^"]*)"', _tag_com_id("btn-settings")).group(1).split()),
-                         {"spotify_config", "som", "seguranca"})
+        # Configurações: itens do ADM + a seção Contas (B8, gerente e ADM); nada que o funcionário tenha
+        caps = set(re.search(r'\bdata-perm="([^"]*)"', _tag_com_id("btn-settings")).group(1).split())
+        self.assertEqual(caps, {"spotify_config", "som", "seguranca", "contas"})
+        self.assertFalse(any(contas.pode("funcionario", c) for c in caps))
 
     def test_painel_musica_continua_renderizado_quando_escondido(self) -> None:
         self.assertIn("data-perm-manter", _tag_com_id("panel-music"))
@@ -181,6 +182,110 @@ class TesteTrocaDePessoa(unittest.TestCase):
     def test_sem_barra_de_abas_sem_tabpanel(self) -> None:
         self.assertIn('!tabbar.classList.contains("perm-off")', _funcao_js("syncTabSemantics"))
         self.assertIn("syncTabSemantics()", _funcao_js("aplicarPermissoes"))
+
+
+def _objeto_js(nome: str) -> str:
+    """Texto de `const NOME = {...};` (uma linha ou várias) do app.js."""
+    m = re.search(r"\n  const " + re.escape(nome) + r" = (\{.*?\});\n", JS, re.S)
+    if m is None:
+        raise AssertionError(f"const {nome} não encontrada no app.js")
+    return m.group(1)
+
+
+class TesteContasNoPainel(unittest.TestCase):
+    """B8: seção Contas (Configurações) e diálogos: o que a tela promete bate com contas.py/server.py."""
+
+    def test_secao_contas_e_historico_marcados(self) -> None:
+        self.assertIn('data-perm="contas"', _tag_com_id("contas-section"))
+        self.assertIn('data-perm="historico_todos"', _tag_com_id("hist-conta-field"))
+        self.assertNotIn("data-perm", _tag_com_id("btn-hist-abrir"))   # todos os perfis abrem o histórico
+        self.assertFalse(contas.pode("funcionario", "contas"))
+        self.assertFalse(contas.pode("funcionario", "historico_todos"))
+        # a seção só existe em modo contas (em modo PIN pode() vale tudo)
+        self.assertIn("contasSection.hidden = !auth.modoContas", _funcao_js("contasAplicarPermissoes"))
+        self.assertIn('"contas"', JS[JS.index("async function openSettings"):][:600])
+
+    def test_perfis_gerenciaveis_espelham_pode_gerenciar(self) -> None:
+        obj = _objeto_js("PERFIS_GERENCIAVEIS")
+        for ator in contas.PERFIS:
+            with self.subTest(ator=ator):
+                m = re.search(r"\b" + ator + r": \[([^\]]*)\]", obj)
+                self.assertIsNotNone(m, ator)
+                self.assertEqual(set(re.findall(r'"([a-z]+)"', m.group(1))),
+                                 {alvo for alvo in contas.PERFIS if contas.pode_gerenciar(ator, alvo)})
+
+    def test_constantes_espelhadas(self) -> None:
+        self.assertIn(f"const CONTAS_MAX = {contas.CONTAS_MAX};", JS)
+        m = re.search(r"const CONTA_ID_RE = /(.*?)/;", JS)
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), server._CONTA_ID_RE.pattern)
+        self.assertIn(f"const HIST_BUSCA_MAX = {server.HISTORICO_BUSCA_MAX};", JS)
+        self.assertIn(f"const HIST_RETENCAO_DIAS = {server.HISTORICO_RETENCAO_DIAS};", JS)
+        self.assertIn(f'const HIST_SEM_CONTA = "{server.HISTORICO_SEM_CONTA}";', JS)
+        for nome, conjunto in (("HIST_RESULTADOS", server.HISTORICO_RESULTADOS),
+                               ("HIST_ORIGENS", server.HISTORICO_ORIGENS), ("HIST_TIPOS", server.HISTORICO_TIPOS)):
+            with self.subTest(constante=nome):
+                chaves = set(re.findall(r"^\s*([a-z_]+):", _objeto_js(nome), re.M)) | set(
+                    re.findall(r"[{,]\s*([a-z_]+):", _objeto_js(nome)))
+                self.assertEqual(chaves, set(conjunto))
+
+    def test_codigos_de_erro_tratados_existem_no_servidor(self) -> None:
+        fonte = (RAIZ / "server.py").read_text(encoding="utf-8")
+        for codigo in ("versao_mudou", "nao_encontrada", "propria_conta", "ultimo_adm", "limite_contas",
+                       "usuario_repetido", "sem_permissao"):
+            with self.subTest(codigo=codigo):
+                self.assertIn(f'"{codigo}"', fonte)
+                self.assertIn(f'"{codigo}"', JS)
+
+    def test_tamanhos_em_code_points_nos_formularios_de_conta(self) -> None:
+        for funcao in ("contaForm", "csenhaForm"):
+            with self.subTest(form=funcao):
+                trecho = JS[JS.index(funcao + '.addEventListener("submit"'):]
+                trecho = trecho[:trecho.index("postJSON(")]
+                self.assertNotRegex(trecho, r"\b(nome|funcao|senha)\.length\b")
+                self.assertIn("tamanho(", trecho)
+
+    def test_senhas_nunca_ficam_nos_dialogos(self) -> None:
+        for elemento_id in ("cf-senha", "cf-senha2", "csenha-nova", "csenha-nova2"):
+            with self.subTest(campo=elemento_id):
+                tag = _tag_com_id(elemento_id)
+                self.assertIn('type="password"', tag)
+                self.assertIn('autocomplete="new-password"', tag)
+        self.assertIn('csenhaDialog.addEventListener("close", limparCsenha)', JS)
+        self.assertIn("limparCfSenhas(); // a senha nunca fica num diálogo fechado", JS)
+
+
+class TesteHistoricoNoPainel(unittest.TestCase):
+    """B8: histórico de anúncios: texto só por textContent, query por URLSearchParams, sem sondagem."""
+
+    def test_query_por_urlsearchparams(self) -> None:
+        corpo = _funcao_js("histCarregar")
+        self.assertIn("new URLSearchParams()", corpo)
+        self.assertIn('params.set("antes", hs.itens[hs.itens.length - 1].t)', corpo)
+        self.assertNotRegex(corpo, r'"[?&]antes="')   # nada de concatenar o "t" (o "+" do fuso viraria espaço)
+
+    def test_texto_do_anuncio_so_por_textcontent(self) -> None:
+        corpo = _funcao_js("histLinha")
+        self.assertIn('mk("p", "hrow__texto", it.texto)', corpo)
+        self.assertIn("e.textContent = text", _funcao_js("mk"))
+        self.assertNotRegex(JS, r"\.(innerHTML|outerHTML)\s*=|insertAdjacentHTML|document\.write")
+        css = (RAIZ / "static" / "styles.css").read_text(encoding="utf-8")
+        bloco = re.search(r"\.hrow__texto \{([^}]*)\}", css)
+        self.assertIsNotNone(bloco)
+        self.assertIn("white-space: pre-wrap", bloco.group(1))
+
+    def test_sem_sondagem_do_historico_nem_das_contas(self) -> None:
+        self.assertNotRegex(JS, r'scheduler\.add\("[^"]*",\s*(histCarregar|contasCarregar)')
+
+    def test_outra_pessoa_nao_ve_os_dados_da_anterior(self) -> None:
+        self.assertIn("contasHistLimpar()", _funcao_js("pararMenosTocadorComum"))   # toda porta fechada
+        self.assertIn("contasHistLimpar()", _funcao_js("limparComposerEHistorico"))  # Sair / outra pessoa
+        limpar = _funcao_js("histLimpar")
+        for trecho in ("hs.itens = []", "histList.replaceChildren()", 'histQ.value = ""', "hs.seq++"):
+            self.assertIn(trecho, limpar)
+        esquecer = _funcao_js("contasEsquecer")
+        for trecho in ("ct.lista = []", "ct.seq++", "fecharDialogosConta()"):
+            self.assertIn(trecho, esquecer)
 
 
 class TesteCspDoHtml(unittest.TestCase):
