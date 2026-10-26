@@ -44,6 +44,8 @@ CORPOS: dict[tuple[str, str], dict] = {
     ("POST", "/api/voz/ouvir"): {"aviso": "sino"},
     ("POST", "/api/sistema/desligar"): {"campo_que_nao_existe": 1},
     ("POST", "/api/musicas/abrir-pasta"): {"campo_que_nao_existe": 1},
+    # S4: com {} a rota encerraria as sessões da própria conta (a matriz perderia o token no meio)
+    ("POST", "/api/conta/sair-de-todos"): {"campo_que_nao_existe": 1},
 }
 
 
@@ -199,10 +201,12 @@ class TesteMatriz(BasePermissoes):
             return {rota for rota in rotas_protegidas() if not deve_negar(perfil, *rota)}
 
         # funcionário: só o anúncio, as mensagens prontas, ler a voz da loja, trocar a própria senha, o próprio
-        # histórico (B6: a rota força o filtro da conta) e as que a própria rota decide
+        # histórico (B6: a rota força o filtro da conta), sair de todos os aparelhos (S4: só as próprias sessões) e as
+        # que a própria rota decide
         self.assertEqual(liberadas("funcionario"), {
             ("POST", "/api/announce"), ("GET", "/api/mensagens"), ("GET", "/api/voz"), ("GET", "/api/voices"),
             ("POST", "/api/auth/primeiro-adm"), ("POST", "/api/conta/senha"), ("GET", "/api/historico"),
+            ("POST", "/api/conta/sair-de-todos"),
         })
         # gerente: tudo menos saídas de som (mudar), segurança/rede e credenciais/conexão do Spotify
         self.assertEqual(set(rotas_protegidas()) - liberadas("gerente"), {

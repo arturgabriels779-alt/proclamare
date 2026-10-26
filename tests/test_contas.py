@@ -136,11 +136,12 @@ class ValidacaoTests(unittest.TestCase):
 
 
 class HashFormatoTests(unittest.TestCase):
-    def test_hash_formato_pbkdf2_200k(self):
+    def test_hash_formato_pbkdf2_600k(self):
+        # v2.8 (revisão final S6): 600.000 iterações nas senhas novas (o PIN continua com 200.000)
         partes = contas.hash_senha(SENHA).split("$")
         self.assertEqual(len(partes), 4)
         self.assertEqual(partes[0], "pbkdf2_sha256")
-        self.assertEqual(partes[1], "200000")
+        self.assertEqual(partes[1], "600000")
         self.assertEqual(len(contas._b64u_dec(partes[2])), 16)
         self.assertEqual(len(contas._b64u_dec(partes[3])), 32)
         self.assertNotIn("=", partes[2] + partes[3])

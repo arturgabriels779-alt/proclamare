@@ -15,6 +15,8 @@ import hashlib
 import hmac
 import re
 import secrets
+import threading
+import unicodedata
 from typing import Any
 
 import programacao
@@ -30,8 +32,12 @@ USUARIO_MIN = 3
 USUARIO_MAX = 30
 _USUARIO_RE = re.compile(r"^[a-z0-9._]+$")
 
-# Mesmo formato e custo do PIN: pbkdf2_sha256$<it>$<sal b64url>$<hash b64url>.
-ITERACOES = 200_000
+# Mesmo formato do PIN: pbkdf2_sha256$<it>$<sal b64url>$<hash b64url>. v2.8 (revisão final, S6): 600.000
+# iterações nas senhas NOVAS (o PIN continua com as dele). Hashes antigos (200.000) continuam valendo e são regravados
+# com as iterações novas no próximo login certo (precisa_atualizar_hash; o servidor faz isso sob o lock das contas).
+# Os testes trocam ITERACOES por um valor pequeno (mock.patch.object) só para ganhar tempo; nunca há variável de
+# ambiente para isso em produção.
+ITERACOES = 600_000
 _SAL_BYTES = 16
 _ITER_MAX_ACEITA = 5_000_000  # mesmo teto do PIN: um valor armazenado absurdo não trava o servidor
 
@@ -77,8 +83,89 @@ def normalizar_usuario(valor: Any) -> str | None:
     return u
 
 
-def _validar_senha(senha: Any, usuario: str | None) -> str | None:
-    """Motivo do erro da senha ou None. Não faz strip (espaços fazem parte da senha)."""
+# --- Senha fraca (v2.8, revisão final S2) -------------------------------------------------------------------
+# Lista embutida das senhas mais comuns (em minúsculas e sem acentos; a comparação não diferencia maiúsculas). Vale a
+# senha inteira OU o "miolo" dela sem os números/símbolos das pontas ("Brasil@2026" -> "brasil", "senha123" ->
+# "senha"). Só vale para senhas NOVAS (criar conta, primeiro ADM, definir e trocar senha, CLI): uma senha já gravada
+# continua entrando.
+SENHAS_COMUNS = frozenset("""
+12345678 123456789 1234567890 0123456789 01234567 87654321 987654321 9876543210 11111111 00000000 22222222 88888888
+99999999 12121212 11223344 12341234 123123123 12344321 1234554321 147258369 159753456 741852963 963852741 789456123
+123654789 147852369 13579246 24682468 102030405 1020304050 20202020 10203040 112233445566 123456123456 123321123
+159357456 852456789 951753852 321654987 1q2w3e4r 1q2w3e4r5t 1qaz2wsx zaq12wsx qazwsxedc qwe123456 qwerty qwerty123
+qwerty1234 qwertyuiop qwertyui asdfghjkl asdfghjk asdf1234 zxcvbnm zxcvbnm123 abc12345 abc123456 abcd1234 abcd12345
+abcdefgh abcdefg1 a1b2c3d4 a1b2c3d4e5 aa123456 aaa11111 abc123abc 1a2b3c4d asd12345 asd123456 qwe12345 abc abcd
+password password1 password12 password123 passw0rd p@ssw0rd p@ssword pass1234 pass12345 passpass senhasenha
+iloveyou iloveyou1 sunshine princess football baseball welcome welcome1 welcome123 letmein letmein123 monkey
+monkey123 dragon dragon123 master master123 shadow shadow123 superman batman batman123 starwars whatever computer
+internet michael michael1 jennifer jordan23 charlie charlie1 freedom freedom1 killer killer123 hello hello123
+hellohello loveyou loveyou1 lovely lovely123 secret secret123 default default1 guest guest1234 test test1234 teste
+teste123 teste1234 testando trustno1 changeme admin admin123 admin1234 adminadmin administrator administrador
+administrador123 root1234 user1234 usuario usuario123 usuario1234 senha senha1 senha12 senha123 senha1234
+senha12345 senha@123 minhasenha minhasenha123 suasenha novasenha senhanova mudar mudar123 mudar1234 mudar@123
+mudarsenha mudeasenha trocar trocar123 trocarsenha alterar alterar123 brasil brasil1 brasil123 brasil2022
+brasil2023 brasil2024 brasil2025 brasil2026 brasileiro brasileira flamengo flamengo123 mengao corinthians
+corinthians123 timao palmeiras palmeiras123 verdao saopaulo saopaulo123 spfc vasco vasco123 vascodagama gremio
+gremio123 cruzeiro cruzeiro123 botafogo botafogo123 fluminense internacional atletico atleticomg santos santos123
+bahia bahia123 sport sport123 fortaleza vitoria vitoria123 coritiba jesus jesus123 jesuscristo jesusteama
+jesusmeama cristo cristo123 deus deus123 deusefiel deuseamor deusmeama deuseminhavida amor amor123 amor1234
+amorzinho amoreterno meuamor meuamor123 teamo teamo123 teamo1234 teamomuito saudade felicidade familia familia123
+minhafamilia princesa princesa123 gatinha gatinha123 gatinho cachorro bebezinho estrela estrela123 flores
+carlos carlos123 maria maria123 mariana juliana fernanda gabriela beatriz leticia amanda amanda123 joao joao1234
+jose jose1234 pedro pedro123 lucas lucas123 gabriel gabriel123 rafael rafael123 mateus mateus123 matheus
+matheus123 felipe felipe123 bruno bruno123 rodrigo rodrigo123 eduardo eduardo123 marcos marcos123 paulo paulo123
+ana12345 loja loja1234 loja12345 mercado mercado123 caixa caixa123 caixa1234 gerente gerente123 gerente1234
+funcionario funcionario123 empresa empresa123 empresa1234 financeiro financeiro123 vendas vendas123 escritorio
+proclamare proclamare1 proclamare123 anuncio anuncio123 anuncios musica musica123 natal natal123 pascoa
+""".split())
+# Sequências simples (a senha inteira, sem espaços, contida numa delas, nos dois sentidos): 12345678, abcdefgh,
+# qwertyui, 87654321, 1qaz2wsx...
+_SEQUENCIAS = ("0123456789" * 3, "abcdefghijklmnopqrstuvwxyz" * 2, "qwertyuiop", "asdfghjkl", "zxcvbnm",
+               "1qaz2wsx3edc4rfv5tgb6yhn7ujm", "qazwsxedcrfvtgbyhnujmikolp", "1q2w3e4r5t6y7u8i9o0p")
+_CONTIDO_MIN = 4   # o usuário ou o 1º nome, com 4+ letras, não pode estar dentro da senha
+_PONTAS_RE = re.compile(r"^[\W\d_]+|[\W\d_]+$")
+
+
+def _dobrar(texto: str) -> str:
+    """Minúsculas e sem acentos (para comparar "João" com "joao")."""
+    decomposto = unicodedata.normalize("NFKD", texto.lower())
+    return "".join(c for c in decomposto if not unicodedata.combining(c))
+
+
+def senha_fraca(senha: str, usuario: str | None = None, nome: str | None = None) -> bool:
+    """
+    Senha fácil de adivinhar? Só espaços; da lista SENHAS_COMUNS (inteira ou o miolo sem números/símbolos nas
+    pontas); todos os caracteres iguais; bloco de até 4 caracteres repetido (12121212, abcabcab); sequência simples
+    (12345678, abcdefgh, qwertyui, 87654321); ou que contém o usuário (inteiro) ou o primeiro nome da pessoa (só com
+    4+ letras: "ana" dentro de "bananada" não conta). Sem diferenciar maiúsculas nem acentos.
+    """
+    if not senha.strip():
+        return True
+    compacta = "".join(_dobrar(senha).split())
+    miolo = _PONTAS_RE.sub("", compacta)
+    if compacta in SENHAS_COMUNS or (miolo and miolo in SENHAS_COMUNS):
+        return True
+    for k in (1, 2, 3, 4):   # 1 = todos iguais; 2..4 = bloco repetido (12121212, abcabcab, 12341234)
+        if len(compacta) > k and compacta == (compacta[:k] * len(compacta))[:len(compacta)]:
+            return True
+    if any(compacta in seq or compacta in seq[::-1] for seq in _SEQUENCIAS):
+        return True
+    proibidos: set[str] = set()
+    if usuario:
+        proibidos.add(_dobrar(usuario))
+    if nome:
+        partes = _dobrar(nome).split()
+        if partes:
+            proibidos.add(partes[0])
+    return any(len(p) >= _CONTIDO_MIN and p in compacta for p in proibidos)
+
+
+def _validar_senha(senha: Any, usuario: str | None, nome: str | None = None) -> str | None:
+    """
+    Motivo do erro da senha ou None. Não faz strip (espaços fazem parte da senha). "fraca" (S2) = senha_fraca; o
+    usuário e o nome só entram quando quem chama os conhece (validar_alteracao não os conhece: alterar_conta, a troca
+    da própria senha e a CLI conferem de novo com motivo_senha_da_conta).
+    """
     if not isinstance(senha, str):
         return "tipo"
     if not SENHA_MIN <= len(senha) <= SENHA_MAX:
@@ -89,6 +176,17 @@ def _validar_senha(senha: Any, usuario: str | None) -> str | None:
         return "caractere"
     if usuario is not None and senha.strip().lower() == usuario:
         return "igual_usuario"
+    if senha_fraca(senha, usuario, nome):
+        return "fraca"
+    return None
+
+
+def motivo_senha_da_conta(senha: str, usuario: str, nome: str | None) -> str | None:
+    """Regras que dependem da conta (depois de validar_alteracao): "igual_usuario" ou "fraca" (usuário/nome dentro)."""
+    if senha.strip().lower() == usuario:
+        return "igual_usuario"
+    if senha_fraca(senha, usuario, nome):
+        return "fraca"
     return None
 
 
@@ -124,7 +222,7 @@ def validar_conta_nova(dados: Any, existentes: list[dict]) -> tuple[dict | None,
         return None, "funcao", motivo
     if dados["perfil"] not in PERFIS:
         return None, "perfil", "invalido"
-    motivo = _validar_senha(dados["senha"], usuario)
+    motivo = _validar_senha(dados["senha"], usuario, nome)
     if motivo:
         return None, "senha", motivo
 
@@ -181,7 +279,7 @@ def _b64u_dec(texto: str) -> bytes:
 
 
 def hash_senha(senha: str) -> str:
-    """'pbkdf2_sha256$<it>$<sal>$<hash>' com sal aleatório de 16 bytes (mesmo formato do PIN)."""
+    """'pbkdf2_sha256$<it>$<sal>$<hash>' com sal aleatório de 16 bytes (mesmo formato do PIN) e as ITERACOES atuais."""
     sal = secrets.token_bytes(_SAL_BYTES)
     it = ITERACOES
     h = hashlib.pbkdf2_hmac("sha256", senha.encode("utf-8"), sal, it)
@@ -218,11 +316,36 @@ def conferir_senha(senha: Any, armazenado: Any) -> bool:
     return hmac.compare_digest(calc, esperado)
 
 
+def precisa_atualizar_hash(armazenado: Any) -> bool:
+    """O hash guardado é válido mas tem MENOS iterações que as atuais (ex.: 200.000, de antes da S6)? Então o login
+    certo regrava a senha com as ITERACOES de agora (sem mudar sessao_v nem versao da conta)."""
+    lido = _ler_hash(armazenado)
+    return lido is not None and lido[0] < ITERACOES
+
+
 # Hash de um valor aleatório descartado: usuário inexistente também paga o PBKDF2 (iguala o tempo de resposta).
-# ATENÇÃO: só iguala o tempo se usar as MESMAS iterações dos hashes guardados (é calculado no import, com o
-# ITERACOES de agora). Se ITERACOES mudar, os hashes antigos continuam com o valor velho até cada senha ser trocada:
-# reavalie então (ex.: calcular o fictício com as iterações mais comuns no contas.json).
-HASH_FICTICIO = hash_senha(secrets.token_urlsafe(24))
+# Calculado na PRIMEIRA vez que é pedido, com as ITERACOES de agora (e de novo se elas mudarem: os testes as
+# rebaixam), não no import: a CLI e os testes não pagam 600.000 iterações só por importar o módulo. Uma conta com
+# hash antigo (200.000) responde mais rápido que o fictício só até o próximo login certo dela (precisa_atualizar_hash).
+_ficticio: dict[int, str] = {}
+_ficticio_lock = threading.Lock()
+
+
+def hash_ficticio() -> str:
+    """O hash fictício com as ITERACOES atuais (cache por número de iterações)."""
+    it = ITERACOES
+    with _ficticio_lock:
+        if it not in _ficticio:
+            _ficticio.clear()
+            _ficticio[it] = hash_senha(secrets.token_urlsafe(24))
+        return _ficticio[it]
+
+
+def __getattr__(nome: str) -> Any:
+    """`contas.HASH_FICTICIO` continua existindo (PEP 562), agora calculado sob demanda (hash_ficticio)."""
+    if nome == "HASH_FICTICIO":
+        return hash_ficticio()
+    raise AttributeError(nome)
 
 
 # --- Regra do último ADM ----------------------------------------------------------------------------------

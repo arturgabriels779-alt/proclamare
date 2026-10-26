@@ -58,6 +58,7 @@ Inventário de rotas (v2.8)
   POST /api/contas                         pin | 20/min por IP e conta | {"usuario","nome","funcao","perfil","senha"}
   POST /api/contas/<conta_id>              pin | 20/min por IP e conta | {"versao","nome"?,"funcao"?,"perfil"?,"ativa"?,"senha"?}
   POST /api/conta/senha                    pin | 10/min por IP e conta; 5 erros/15 min por conta | {"senha_atual","senha_nova"}
+  POST /api/conta/sair-de-todos            pin | 10/min por IP e conta | {} (modo PIN: 409 "modo_pin")
   GET  /api/historico                      pin | 60/min por IP e conta | ?de=&ate=&conta=&q=&antes= (só leitura: nada apaga nem edita)
   GET  /api/seguranca/remotos              local | - | -
   POST /api/seguranca/remotos/aprovar      local | - | {"tipo","id"} | {"todos":true}
@@ -128,9 +129,19 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
   login por usuário e senha; o PC das caixas também precisa entrar (rotas "só local" continuam por cima).
   Passagem PIN -> contas: o primeiro ADM nasce SÓ por POST /api/auth/primeiro-adm no PC das caixas (o painel oferece
   o aviso "Criar conta de administrador" e o bloco em Configurações; nada trava enquanto ninguém criar). Ao nascer, o
-  PIN deixa de valer e as sessões de PIN caem. FALHA PARA O MODO PIN: contas.json apagado ou ilegível (o armazém guarda
-  a cópia "contas.json.corrompido-*" e segue com a lista vazia) = modo PIN SEM PIN: o PC das caixas fica livre e a rede
-  bloqueada (nenhuma conta, nenhum PIN). Recuperar = restaurar o backup do contas.json ou criar o ADM de novo.
+  PIN deixa de valer e as sessões de PIN caem. FALHA FECHADA (revisão final S1): o primeiro ADM grava no config.json o
+  marcador CONTAS_MARCADOR ("contas_desde": ISO com fuso; na partida, _garantir_marcador_contas() o grava se já há
+  contas sem ele). Com o marcador, contas.json apagado, vazio, sem contas ou ilegível (o armazém guarda a cópia
+  "contas.json.corrompido-*") NUNCA volta ao modo PIN: modo_contas() continua True, contas_indisponiveis() = True e
+  toda rota responde 503 {"ok":false,"codigo":"contas_indisponivel","error":MSG_CONTAS_INDISPONIVEIS} - menos
+  /api/status, /api/auth/status (ganha "contas_indisponivel": true; precisa_criar_adm false, autenticado false,
+  permissoes []), /api/auth/logout, o que não é /api/ (painel e arquivos; o /spotify/login dá 503) e, SÓ no PC das
+  caixas, as chamadas da aba Tocador (ROTAS_TOCADOR_LOCAL: a música não para). Também dão 503: login, primeiro-adm,
+  /api/auth/pin e /revogar (ninguém cria ADM nem PIN por cima). Os horários continuam (rodam no servidor). O log avisa
+  no máximo 1 vez a cada 10 min. Recuperar = restaurar a cópia do contas.json ou, no PC das caixas e com o servidor
+  desligado, python server.py --esquecer-contas (pede para digitar ESQUECER; apaga o marcador e o painel volta a
+  pedir "Criar conta de administrador"; recusa se houver contas legíveis; auditoria contas_esquecidas_cli). Com o
+  marcador e sem contas, --definir-pin/--remover-pin também recusam.
   PROCLAMARE_CONFIAR_LOOPBACK=0 (ninguém é "o PC das caixas") impede criar o primeiro ADM (a rota é só local).
   Perfis (contas.PERFIS) e capacidades (contas.PODE; contas.pode(perfil, capacidade) falha fechado):
     funcionario = anunciar
@@ -138,7 +149,17 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
     adm         = as do gerente + som, seguranca, spotify_config
   Hierarquia (contas.pode_gerenciar): ADM gerencia qualquer perfil; gerente só funcionário; funcionário ninguém.
   Limites de conta (contas.py): até CONTAS_MAX 50; usuário 3..30 [a-z0-9._]; senha 8..128 e diferente do usuário; nome
-  até 60; função até 40; PBKDF2 (ITERACOES 200000).
+  até 60; função até 40; PBKDF2 (contas.ITERACOES 600000 nas senhas novas, revisão final S6; o PIN segue com
+  PBKDF2_ITERACOES 200000). Login CERTO de uma conta com hash de menos iterações regrava o hash com as atuais, sob o
+  lock, sem mudar sessao_v nem versao (_atualizar_hash_antigo). Usuário inexistente confere contra
+  contas.hash_ficticio() (calculado sob demanda com as ITERACOES atuais). Os testes rebaixam ITERACOES por mock
+  (nunca por variável de ambiente).
+  Senha fraca (revisão final S2, contas.senha_fraca): lista embutida SENHAS_COMUNS (inteira ou o miolo sem números/
+  símbolos nas pontas, sem diferenciar maiúsculas nem acentos), só espaços, todos os caracteres iguais, bloco de até 4
+  repetido, sequência simples (12345678, abcdefgh, qwertyui, 87654321) ou que contém o usuário inteiro ou o 1º nome
+  (4+ letras). Vale para criar conta, primeiro ADM, definir senha (POST /api/contas/<id>), trocar a própria e a CLI
+  --redefinir-senha; NÃO invalida senhas já gravadas. Resposta: 400 {"ok":false,"codigo":"fraca","campo":"senha"
+  (ou "senha_nova" em /api/conta/senha),"error":MSG_SENHA_FRACA}. "igual_usuario" continua com o código de sempre.
   Permissões (B4, SÓ em modo contas; modo PIN = nenhum 403 novo). before_request: _exigir_sessao() e, logo depois,
   _exigir_permissao(): PERMISSOES_ROTAS[(método, regra do url_map)] = capacidade de contas.CAPACIDADES (None = basta
   estar logado). Perfil sem a capacidade = 403 {"ok":false,"codigo":"sem_permissao","error"} (vale chamando a API
@@ -162,8 +183,8 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
   /api/voices: o que a aba ytMode "player" do app.js chama sozinha. Nenhuma anuncia nem muda configuração; pela rede
   nunca valem sem sessão. No PC, as mesmas rotas/op valem também com a sessão de um perfil sem "musica" (o cookie é
   do navegador inteiro: um funcionário logado não pode parar a aba Tocador; ele não ganha nada além do PC sem login).
-  O "pop" que entra por essa isenção tem teto próprio: POP_TOCADOR_MAX_POR_MIN (20/min no total, "pop_tocador") ->
-  429. Quem tem "musica" segue sem esse teto.
+  O "pop" que entra por essa isenção tem teto próprio: POP_TOCADOR_MAX_POR_MIN (120/min no total desde a revisão
+  final S9, "pop_tocador") -> 429 {"ok":false,"error"}. Quem tem "musica" segue sem esse teto.
   Envio de músicas (filtro de corpo grande do waitress, _corpo_grande_permitido): em modo contas o teto de ~100 MB só
   vale para a sessão de um perfil com a capacidade da rota ("musica"); funcionário fica em 64 KB (413) antes do 403.
   Texto do 403: "Peça a um administrador." quando nem o gerente tem a capacidade (som, seguranca, spotify_config) ou
@@ -173,10 +194,14 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
   Limites de taxa de /api/announce (rede), /api/voz e /api/voz/ouvir (rede) valem por IP E por conta
   ("<prefixo>conta:<id>", mesmo teto). Auditoria de anuncio/voz_salvar/voz_ouvir ganha conta=c<10 hex> (HMAC do id
   com a acesso_chave: a mesma conta tem o mesmo token; nunca id, usuário ou nome).
-  Token (cookie proclamare_sessao, HttpOnly, SameSite=Strict, assinado com a acesso_chave): {exp, iat, v} + em modo
+  Token (cookie proclamare_sessao, HttpOnly, SameSite=Strict, assinado com a acesso_chave): {exp, iat, v, n} ("n" =
+  aleatório: todo token é único) + em modo
   contas "c" (id da conta), "sv" (sessao_v da conta) e "l": 1 se foi emitido para o PC das caixas. É recusado:
   token sem "c" (de PIN) em modo contas; conta inexistente ou desativada; "sv" diferente (senha/perfil/ativa
-  mudaram); "l" que não bate com a origem da requisição (token do PC não vale pela rede e vice-versa). A conta é
+  mudaram); "l" que não bate com a origem da requisição (token do PC não vale pela rede e vice-versa); token na lista
+  de revogados (revisão final S4: POST /api/auth/logout revoga o token apresentado até o exp dele, em memória, até
+  TOKENS_REVOGADOS_MAX 5000 entradas, descartando as vencidas; UM REINÍCIO DO SERVIDOR ESQUECE A LISTA - para
+  derrubar de vez use "Sair de todos os aparelhos"; vale também em modo PIN). A conta é
   RELIDA do contas.json a cada requisição (conta_da_requisicao(), guardada em flask.g; perfil_da_requisicao():
   perfil da conta; em modo PIN "adm" para o PC da loja (livre, pode tudo, como hoje) e "gerente" para sessões de
   PIN pela rede; None sem sessão).
@@ -190,7 +215,8 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
                      before_request já responde 401, porque a rota não é pública). 201 {ok, conta,
                      permissoes} + cookie de sessão do PC (5 min) para o novo ADM. Apaga o acesso_pin_hash, gira a
                      acesso_chave e sobe a acesso_versao (todas as sessões de PIN e cookies de aparelho caem) e zera
-                     os bloqueios de login. Erros de validação: 400/409 com "codigo"/"campo" (como as contas).
+                     os bloqueios de login e grava o marcador "contas_desde" (S1). Erros de validação: 400/409 com
+                     "codigo"/"campo" (como as contas; senha fraca = "fraca").
   POST /api/auth/login (modo contas) {"usuario","senha"} (estrito; {"pin"} = 400 "codigo":"modo_contas"; tipo/
                      tamanho errado = 400). Usuário em minúsculas sem espaços nas pontas. Ordem: bloqueio por usuário
                      -> limite do PC (30/5 min) ou reserva por IP/faixa/trava (rede, cookie de aparelho como sempre)
@@ -200,17 +226,29 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
                      existem), com contadores SEPARADOS para a rede e para o PC das caixas (erros pela rede nunca
                      travam a pessoa no PC): CONTA_MAX_ERROS 10 em CONTA_JANELA_S 900 s -> CONTA_BLOQUEIO_S
                      900 s, respondido com o MESMO 429 do bloqueio por IP ("Muitas tentativas. Tente novamente em
-                     N min."); acerto zera o contador do usuário; "liberar" e revogar também. Sucesso: {ok, conta,
+                     N min."); acerto zera o contador do usuário; "liberar" e revogar também. Revisão final S3:
+                     aparelho CONHECIDO (cookie de aparelho válido) que JÁ entrou com sucesso nesta conta tem um
+                     contador PRÓPRIO ("d:<aparelho>:<usuario>", mesmos 10/900 s), separado do "r:" anônimo: senhas
+                     erradas de outros aparelhos não tiram o dono do ar. A ligação aparelho-conta vai no próprio
+                     cookie de aparelho (assinado; "c": até APARELHO_CONTAS_MAX 5 ids de conta, as mais recentes;
+                     mantida na renovação). Senha errada NO PC das caixas também conta no painel de segurança
+                     (S2: seguranca.falhas_local, "falhas_local_24h" e somada em falhas_24h/falhas_novas; não entra
+                     na trava diária da rede). Sucesso: {ok, conta,
                      permissoes} + cookie (rede 14 d; PC 5 min) + cookie de aparelho (só rede).
   GET  /api/auth/status ganha "modo_contas", "precisa_criar_adm" (PC da loja e nenhuma conta), "conta" (pública:
                      sem senha_hash/sessao_v; null sem sessão), "permissoes" (capacidades do perfil efetivo, em ordem;
                      [] sem sessão; modo PIN: todas no PC da loja, as do gerente numa sessão de PIN) e, em modo contas, "pode_desligar" = PC das caixas E perfil com "desligar"
                      (gerente/ADM). "autenticado" em modo contas = há conta logada válida. "pin_configurado" = false
                      em modo contas. O bloco "seguranca" (falhas, IPs, túneis) em modo contas só para o ADM no PC.
+                     Revisão final: "contas_indisponivel" (bool, S1) em todo status; "seguranca" ganha
+                     "falhas_local_24h" (S2).
   POST /api/auth/pin (modo contas) -> 409 "codigo":"modo_contas". POST /api/auth/revogar, /api/auth/liberar e
                      /api/auth/alertas/visto (modo contas) -> SÓ LOCAL e só ADM logado (403 "sem_permissao" para
                      gerente/funcionário/sem sessão); revogar encerra TODAS as sessões (acesso_versao + 1), inclusive
-                     a de quem revogou, e mantém as opções de revisão.
+                     a de quem revogou, e mantém as opções de revisão. Revisão final S8: em modo contas TODAS as
+                     opções de revisão têm padrão false (só valem se vierem true; o painel manda {} e mostra
+                     "revisao" se vier) e itens com "autor_id" (conta conhecida) NUNCA são pendentes: não entram em
+                     _prog_pendentes, nos contadores/alertas de Segurança nem no remover_remotos.
   Rotas de contas (B5). SÓ em modo contas: em modo PIN as quatro dão 409 {"codigo":"modo_pin"} para todos (o PC
                      das caixas e as sessões de PIN também; o primeiro ADM nasce SÓ por /api/auth/primeiro-adm).
                      Quem age é sempre a conta logada (relida a cada requisição). Erros de contas: {"ok":false,
@@ -232,30 +270,41 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
                      apagadas, só desativadas ("ativa": false). 20/min por IP e por conta.
   POST /api/conta/senha (qualquer conta logada) {"senha_atual","senha_nova"} (estrito) -> {ok}. 10/min por IP e por
                      conta; senha nova inválida = 400 campo "senha_nova" ("tamanho", "tipo", "igual_usuario",
-                     "mesma_senha"); senha atual errada = 400 {"codigo":"senha_errada","campo":"senha_atual"}; 5 erros
+                     "mesma_senha", "fraca"); senha atual errada = 400 {"codigo":"senha_errada","campo":"senha_atual"}; 5 erros
                      em 15 min por conta = 429 {"codigo":"muitas_tentativas","bloqueado_por_s"} sem PBKDF2. Sucesso:
                      sessao_v + 1 (TODAS as outras sessões da conta caem) e o cookie DESTA sessão é reemitido com o
                      mesmo iat (teto de 90 dias desde o login) e a mesma origem (PC das caixas: "l": 1, 5 min; rede:
                      14 dias).
+  POST /api/conta/sair-de-todos (revisão final S4; qualquer conta logada, capacidade None) {} (outra chave = 400) ->
+                     {ok} com o cookie desta sessão APAGADO. sessao_v + 1 da PRÓPRIA conta, sob o lock e com o ator
+                     relido (sessão velha = 403 "sem_permissao"): todas as sessões dela caem, inclusive esta e a do PC;
+                     versao da conta e as outras contas não mudam. Modo PIN = 409 "modo_pin"; 10/min por IP e conta
+                     (429 "limite"). Auditoria conta_sair_de_todos com resultado, perfil e conta.
   Limites de taxa das três rotas POST: 429 {"codigo":"limite"} (auditado com resultado=limite). criar_conta e
   alterar_conta RELEEM o ator sob o lock (existe, ativo, mesma sessao_v; senão 403) e usam o perfil relido.
   Auditoria das rotas de contas: contas_criar / contas_alterar / conta_senha com resultado (ok, sem_permissao,
   propria_conta, versao_mudou, ultimo_adm, usuario_repetido, limite_contas, nao_encontrada, senha_errada, limite,
-  invalido), perfil (da conta criada/alterada; o da própria em conta_senha), conta=c<10 hex> (quem agiu) e, em
+  invalido; senha fraca = invalido), perfil (da conta criada/alterada; o da própria em conta_senha), conta=c<10 hex> (quem agiu) e, em
   contas_alterar, campos=N e sessoes_derrubadas=0|1. NUNCA nome, usuário, senha ou id.
   CLI python server.py --redefinir-senha <usuario>: só com o servidor desligado; lê a senha nova duas vezes (sem
-                     eco; uma linha cada com stdin em pipe), mesmas regras do painel, sessao_v + 1 (derruba as sessões
-                     da conta). Em modo contas --definir-pin/--remover-pin recusam (código 1).
+                     eco; uma linha cada com stdin em pipe), mesmas regras do painel (inclusive "fraca"), sessao_v + 1
+                     (derruba as sessões da conta). Em modo contas --definir-pin/--remover-pin recusam (código 1).
+  CLI python server.py --esquecer-contas (S1): veja "FALHA FECHADA" acima. --redefinir-senha e --esquecer-contas com
+                     stdin que não é terminal avisam em stderr que o digitado pode aparecer na tela (S7; não recusam).
   Auditoria: login com resultado (ok, senha_errada, usuario_inexistente, conta_inativa, limite) e perfil no
-  sucesso; primeiro_adm; senha_redefinida_cli (a CLI grava no mesmo logs/auditoria.log). NUNCA usuário, nome, senha
+  sucesso; primeiro_adm; senha_redefinida_cli e contas_esquecidas_cli (a CLI grava no mesmo logs/auditoria.log).
+  Revisão final S10: auditar() acrescenta sozinho conta=c<10 hex> em toda linha de uma requisição com conta logada, e
+  as linhas montadas à mão (mensagens, listas/atalhos, programação, som testar/saida/preferencias) também (_sufixo_conta).
+  NUNCA usuário, nome, senha
   ou id de conta no log ou na auditoria. criar_conta/alterar_conta sem ator só com marca explícita
   (primeiro_adm=True / sistema=True); ator None sem a marca = 403 "sem_permissao".
   Histórico de anúncios (B6). anuncios.jsonl AO LADO do config.json (_anuncios_path(); nunca versionado; ACL
                      restrita ao nascer; só append sob _historico_lock, ensure_ascii=False, uma linha JSON por
                      anúncio): {"t" (INÍCIO do anúncio: ISO com fuso, relógio do PC, microssegundos), "conta_id", "usuario", "nome",
                      "funcao", "texto", "resultado" (ok|ocupado|erro|sem_internet|limite|interrompido), "origem"
-                     (local|rede), "tipo" (digitado|tocar_agora|agendado)}. Sem conta (modo PIN ou horário sem
-                     autor): conta_id/usuario/funcao null e nome "antes das contas". É o ÚNICO lugar do
+                     (local|rede), "tipo" (digitado|tocar_agora|agendado)}. Revisão final S11: em MODO PIN (sem
+                     contas) NADA é gravado (o GET continua listando o que houver); em modo contas, horário sem autor
+                     (de antes das contas): conta_id/usuario/funcao null e nome "antes das contas". É o ÚNICO lugar do
                      texto falado: logs/auditoria.log e o log comum continuam SEM texto. Entram: POST /api/announce
                      (digitado e Mensagens prontas; ok, 409 ocupado, 500 erro, 503 sem_internet, 429 limite - este só
                      HISTORICO_LIMITE_MAX_POR_MIN = 5 por IP/conta, para um aparelho insistente não encher o disco;
@@ -265,7 +314,10 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
                      ocupado/sem_internet/erro e o "Parar" vira interrompido. Áudio, lista e Spotify não são anúncios.
                      Falha de disco ao gravar não derruba o anúncio (o log leva só o nome do erro; o mesmo para uma
                      falha ao achar o autor de um horário, que nunca troca o resultado do horário). Arquivo que termina
-                     sem "\n" (processo morto no meio de uma escrita) = a próxima linha começa numa linha nova. Retenção:
+                     sem "\n" (processo morto no meio de uma escrita) = a próxima linha começa numa linha nova. Teto
+                     (S5): com o arquivo em HISTORICO_TETO_BYTES (50 MB) ou mais, "ocupado" e "limite" deixam de ser
+                     gravados (aviso "histórico cheio" no log no máximo 1 vez por hora); ok, erro, sem_internet e
+                     interrompido continuam. Retenção:
                      HISTORICO_RETENCAO_DIAS = 90; podar_historico() regrava de forma atômica (temporário ".anuncios.*"
                      com ACL antes dos dados) sem as linhas vencidas nem as ilegíveis, logo ao ligar e a cada 6 h
                      (laço da vigia de túneis; falhou = tenta na próxima volta). A leitura já esconde o que passou de
@@ -440,7 +492,9 @@ Contrato v2.7.1 (correções da auditoria de segurança)
     novo pode levar até 60 s para suspender a confiança no loopback (e, ao ser fechado, até 60 s para voltar).
     MSG_LOOPBACK_SUSPENSO: (1) feche o encaminhamento; (2) para definir PIN desligue o Proclamare, rode
     .venv\\Scripts\\python.exe server.py --definir-pin e ligue de novo; (3) PROCLAMARE_CONFIAR_LOOPBACK=1 só com o
-    alerta de que quem entrar pelo encaminhamento terá acesso total sem PIN.
+    alerta de que quem entrar pelo encaminhamento terá acesso total sem PIN. v2.8 (revisão final S12): em modo contas o
+    texto (429 de login e log da vigia) é MSG_LOOPBACK_SUSPENSO_CONTAS: feche o encaminhamento ou entre com uma conta
+    (não há PIN; a CLI --definir-pin recusa).
   * Os carimbos só mudam quando o CONTEÚDO muda: salvar uma lista/atalho/mensagem igual não marca ninguém. O teto
     de PROG_REMOTO_LISTAS_DIA_MAX (10 por dia) também conta horários ativos que tocam lista/playlist ALTERADA por
     remoto, e um remoto que edita o conteúdo de uma lista/playlist agendada pode estourá-lo (400 "limite_diario").
@@ -448,7 +502,8 @@ Contrato v2.7.1 (correções da auditoria de segurança)
     revogadas pode terminar de gravar DEPOIS da revisão (janela de milissegundos). O que ela deixar aparece como
     pendente em GET /api/seguranca/remotos; a revisão pode ser repetida.
   * POST /api/auth/pin e POST /api/auth/revogar aceitam, além do que já tinham, as OPÇÕES DE REVISÃO (todas bool;
-    chave desconhecida ou não-bool = 400, antes de gravar qualquer coisa): "desativar_remotos" (padrão TRUE:
+    chave desconhecida ou não-bool = 400, antes de gravar qualquer coisa; v2.8 S8: em modo contas o padrão de TODAS
+    é false): "desativar_remotos" (padrão TRUE em modo PIN:
     horários pendentes ficam inativos, saem da fila de execução e, se um está tocando, é interrompido),
     "remover_remotos" (padrão false: apaga SÓ mensagens, listas e atalhos CRIADOS por remoto, criado_por
     "remoto"; o que é do dono e foi só alterado por remoto fica pendente; mensagens: se não sobrar nenhuma volta à fábrica), "restaurar_mensagens" (padrão false: todas as mensagens voltam à fábrica),
@@ -1502,7 +1557,13 @@ def _atualizar_tuneis() -> None:
     _tuneis_estado.update(fortes=achado["fortes"], fracos=achado["fracos"], em=time.time())
     if achado["fortes"] == anterior:
         return
-    if achado["fortes"] and _modo_loopback() == "auto":
+    if achado["fortes"] and _modo_loopback() == "auto" and modo_contas():   # S12: em modo contas não há PIN
+        log.warning("Encaminhamento de rede para a porta do Proclamare detectado (%s): o navegador do PC das caixas "
+                    "passou a valer como um aparelho da rede. (1) Feche o encaminhamento (volta sozinho em até 1 "
+                    "min). (2) Ou entre com uma conta (usuário e senha). (3) PROCLAMARE_CONFIAR_LOOPBACK=1 só se o "
+                    "encaminhamento for seu: quem entrar por ele será tratado como o PC das caixas.",
+                    ", ".join(achado["fortes"]))
+    elif achado["fortes"] and _modo_loopback() == "auto":
         log.warning("Encaminhamento de rede para a porta do Proclamare detectado (%s): o acesso pelo "
                     "loopback deixou de valer como o PC da loja; todos precisam de PIN. (1) Feche o "
                     "encaminhamento (volta sozinho em até 1 min). (2) Para definir um PIN: desligue o Proclamare, "
@@ -1593,9 +1654,25 @@ def auditar(acao: str, **campos: Any) -> None:
     valores passam por _token_auditoria. Campos com None são omitidos.
     """
     ip, origem = _quem()
+    if "conta" not in campos:   # v2.8 (revisão final S10): toda linha de uma requisição de conta leva o token dela
+        campos["conta"] = _conta_auditoria_segura()
     partes = [f"acao={_token_auditoria(acao)}", f"ip={ip}", f"origem={origem}"]
     partes += [f"{_token_auditoria(k)}={_token_auditoria(v)}" for k, v in campos.items() if v is not None]
     auditoria.info("%s", " ".join(partes))
+
+
+def _conta_auditoria_segura() -> str | None:
+    """_conta_auditoria() que nunca levanta (a auditoria nunca derruba uma rota) e é None fora de requisição."""
+    try:
+        return _conta_auditoria() if has_request_context() else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _sufixo_conta() -> str:
+    """" conta=c<10 hex>" para as linhas de auditoria montadas à mão (mensagens, listas, programação, som); "" sem conta."""
+    token = _conta_auditoria_segura()
+    return f" conta={token}" if token else ""
 
 
 def auditar_agregado(acao: str) -> None:
@@ -1667,6 +1744,10 @@ def _verificar_requisicao() -> tuple[Response, int] | None:
                 return erro
         elif request.mimetype != "application/json":
             return _resp_erro("Content-Type deve ser application/json.", 415)
+    # v2.8 (revisão final S1): contas ativadas e contas.json sumido = 503 (nunca volta ao modo PIN sem PIN).
+    erro = _exigir_contas_disponiveis()
+    if erro is not None:
+        return erro
     # v2.2: depois de todas as checagens acima, /api/* (exceto as públicas)
     # exige PIN quando o cliente não está no próprio computador.
     erro = _exigir_sessao()
@@ -1938,6 +2019,14 @@ _login_trava_orcamento: dict[str, int] = {}   # id do aparelho conhecido -> erro
 _login_travas: list[float] = []      # epoch de cada trava (histórico, também gravado em seguranca.travas)
 _login_falhas: deque = deque(maxlen=5000)  # time.time() de cada PIN errado (remoto), p/ o painel
 _versao_vista: int | None = None
+# v2.8 (revisão final S4): "Sair" revoga o token no servidor. Assinatura do token -> exp (epoch). Só memória: um
+# reinício do servidor ESQUECE a lista (o token volta a valer até o exp dele; para derrubar de vez, "Sair de todos os
+# aparelhos" sobe a sessao_v da conta). No máximo TOKENS_REVOGADOS_MAX; os vencidos saem antes, e se ainda faltar
+# lugar sai o que vence primeiro.
+TOKENS_REVOGADOS_MAX = 5000
+_tokens_revogados: dict[str, float] = {}
+_tokens_revogados_lock = threading.Lock()
+
 
 def _b64u(dados: bytes) -> str:
     return base64.urlsafe_b64encode(dados).decode("ascii").rstrip("=")
@@ -2037,7 +2126,9 @@ def _emitir_token(cfg: dict, iat: float | None = None, conta: dict | None = None
     iat_i = agora if iat is None else int(iat)
     vida = SESSAO_LOCAL_OCIOSA_S if (conta is not None and local) else SESSAO_DURACAO_S
     exp = min(agora + vida, iat_i + SESSAO_TETO_S)
-    dados: dict[str, Any] = {"exp": exp, "iat": iat_i, "v": _versao_acesso(cfg)}
+    # v2.8 (S4): "n" aleatório = todo token é único (dois logins no mesmo segundo não saem iguais), para o "Sair"
+    # revogar SÓ a sessão que saiu
+    dados: dict[str, Any] = {"exp": exp, "iat": iat_i, "v": _versao_acesso(cfg), "n": secrets.token_urlsafe(6)}
     if conta is not None:
         dados["c"] = conta["id"]
         dados["sv"] = conta["sessao_v"]
@@ -2075,7 +2166,7 @@ def _carga_completa(token: str | None, cfg: dict, local: bool | None = None) -> 
         carga = json.loads(_b64u_dec(partes[0]))
     except (ValueError, TypeError, UnicodeError):
         return None
-    if not isinstance(carga, dict):
+    if not isinstance(carga, dict) or partes[1] in _tokens_revogados:   # S4: "Sair" revogou este token
         return None
     exp, iat, v = carga.get("exp"), carga.get("iat"), carga.get("v")
     for n in (exp, iat):
@@ -2223,6 +2314,7 @@ PERMISSOES_ROTAS: dict[tuple[str, str], str | None] = {
     ("POST", "/api/contas"): "contas",
     ("POST", "/api/contas/<conta_id>"): "contas",
     ("POST", "/api/conta/senha"): None,
+    ("POST", "/api/conta/sair-de-todos"): None,       # S4: qualquer conta logada encerra as PRÓPRIAS sessões
     # Histórico de anúncios (B6): qualquer conta logada; sem "historico_todos" (funcionário) só os próprios
     ("GET", "/api/historico"): None,
     # Saídas de som: ler os blocos = quem mexe na música; mudar = só ADM
@@ -2309,10 +2401,10 @@ def rota_do_tocador(metodo: str, regra: str, corpo: Any) -> bool:
     return True
 
 
-def _tocador_local_liberado() -> bool:
-    """Modo contas + PC das caixas + rota/op do Tocador (ROTAS_TOCADOR_LOCAL). Pela rede: nunca."""
+def _e_chamada_do_tocador() -> bool:
+    """A requisição atual é uma das que a aba Tocador faz sozinha (rota_do_tocador; na fila, só o "pop")?"""
     regra = request.url_rule
-    if regra is None or not modo_contas() or not _requisicao_local():
+    if regra is None:
         return False
     corpo: Any = None
     if regra.rule == ROTA_FILA_YOUTUBE:
@@ -2321,6 +2413,47 @@ def _tocador_local_liberado() -> bool:
         except RecursionError:   # JSON aninhado demais: não é o "pop" do Tocador
             return False
     return rota_do_tocador(request.method, regra.rule, corpo)
+
+
+def _tocador_local_liberado() -> bool:
+    """Modo contas + PC das caixas + rota/op do Tocador (ROTAS_TOCADOR_LOCAL). Pela rede: nunca."""
+    if request.url_rule is None or not modo_contas() or not _requisicao_local():
+        return False
+    return _e_chamada_do_tocador()
+
+
+# --- v2.8 (revisão final S1): contas indisponíveis = falha FECHADA ---------------------------------------------
+# Com o marcador "contas_desde" no config.json (gravado ao nascer o 1º ADM) e o contas.json ausente, vazio, sem contas
+# ou ilegível, o Proclamare NUNCA volta ao modo PIN (modo_contas() continua True): toda rota protegida responde 503
+# "contas_indisponivel". Passam só /api/status, /api/auth/status (com "contas_indisponivel": true, para o painel
+# mostrar a mensagem), /api/auth/logout (só apaga o cookie), o que não é /api/ (o painel e os arquivos dele; o
+# /spotify/callback, cujo state de uso único só nasce no /spotify/login, que fica barrado) e, NO PC DAS CAIXAS, as
+# chamadas da aba Tocador (ROTAS_TOCADOR_LOCAL): a música não para. Os horários seguem (rodam no servidor). Saída:
+# restaurar a cópia do contas.json ou, no PC das caixas, `python server.py --esquecer-contas`.
+MSG_CONTAS_INDISPONIVEIS = (
+    "As contas do Proclamare sumiram (o arquivo contas.json está faltando ou estragado). Restaure a cópia do "
+    "contas.json na pasta do programa ou use a recuperação no PC das caixas (python server.py --esquecer-contas).")
+ROTAS_LIVRES_SEM_CONTAS = frozenset({"/api/status", "/api/auth/status", "/api/auth/logout"})
+CONTAS_INDISPONIVEIS_LOG_S = 600.0
+_contas_indisponiveis_logado: float | None = None   # monotonic do último aviso no log (no máximo 1 a cada 10 min)
+
+
+def _exigir_contas_disponiveis() -> tuple[Response, int] | None:
+    """before_request (antes da sessão): 503 "contas_indisponivel" enquanto contas_indisponiveis() (veja acima)."""
+    global _contas_indisponiveis_logado
+    if not contas_indisponiveis():
+        return None
+    caminho = request.path
+    if caminho in ROTAS_LIVRES_SEM_CONTAS or (not caminho.startswith("/api/") and caminho != "/spotify/login"):
+        return None
+    if _requisicao_local() and _e_chamada_do_tocador():
+        return None
+    agora = time.monotonic()
+    if _contas_indisponiveis_logado is None or agora - _contas_indisponiveis_logado >= CONTAS_INDISPONIVEIS_LOG_S:
+        _contas_indisponiveis_logado = agora
+        log.error("contas.json ausente, vazio ou ilegível com as contas já ativadas: o painel fica bloqueado até "
+                  "restaurar a cópia do contas.json ou rodar python server.py --esquecer-contas no PC das caixas.")
+    return jsonify({"ok": False, "codigo": "contas_indisponivel", "error": MSG_CONTAS_INDISPONIVEIS}), 503
 
 
 def _resp_sem_permissao(capacidade: str | None = None) -> tuple[Response, int]:
@@ -2382,7 +2515,10 @@ def _exigir_permissao() -> tuple[Response, int] | None:
     return _resp_sem_permissao(capacidade)
 
 
-POP_TOCADOR_MAX_POR_MIN = 20   # "pop" da fila pela isenção do Tocador (o player real tira 1 por fim/erro de faixa)
+# "pop" da fila pela isenção do Tocador (o player real tira 1 por fim/erro de faixa). v2.8 (revisão final S9): 120/min
+# (era 20): uma lista com vários vídeos indisponíveis seguidos tira um item por erro, em rajada, e a música não pode
+# parar por causa do teto; o painel respeita o 429 (tenta de novo depois do Retry-After).
+POP_TOCADOR_MAX_POR_MIN = 120
 
 
 def _limitar_pop_tocador() -> tuple[Response, int] | None:
@@ -2437,6 +2573,19 @@ MSG_LOOPBACK_SUSPENSO = (
     ".venv\\Scripts\\python.exe server.py --definir-pin na pasta do programa e ligue de novo. "
     "(3) Só se você tem certeza de que o encaminhamento é seu: inicie com PROCLAMARE_CONFIAR_LOOPBACK=1 - "
     "ATENÇÃO: quem entrar pelo encaminhamento terá acesso total sem PIN.")
+# v2.8 (revisão final S12): em modo contas não há PIN (a CLI --definir-pin recusa): a saída é fechar o encaminhamento ou
+# entrar com uma conta (este navegador vira "um aparelho da rede" enquanto o túnel existir).
+MSG_LOOPBACK_SUSPENSO_CONTAS = (
+    "O Proclamare detectou um encaminhamento de rede (túnel) para este computador: por segurança, este navegador "
+    "passou a ser tratado como um aparelho da rede. (1) Feche o encaminhamento: o acesso volta ao normal em até 1 "
+    "minuto. (2) Ou entre com uma conta (usuário e senha), como num celular. (3) Só se você tem certeza de que o "
+    "encaminhamento é seu: inicie com PROCLAMARE_CONFIAR_LOOPBACK=1 - ATENÇÃO: quem entrar por ele será tratado "
+    "como o PC das caixas.")
+
+
+def _msg_loopback_suspenso() -> str:
+    """S12: o aviso do túnel conforme o modo (PIN: --definir-pin; contas: feche o encaminhamento ou entre com uma conta)."""
+    return MSG_LOOPBACK_SUSPENSO_CONTAS if modo_contas() else MSG_LOOPBACK_SUSPENSO
 
 
 def _resp_sem_sessao(cfg: dict) -> tuple[Response, int]:
@@ -2611,12 +2760,22 @@ def _chave_aparelho(cfg: dict) -> bytes | None:
     return None if chave is None else hmac.new(chave, b"proclamare-aparelho-v1", hashlib.sha256).digest()
 
 
-def _emitir_cookie_aparelho(cfg: dict, aparelho_id: str | None = None) -> str:
-    """Token do aparelho: {id, exp, v}. Reaproveita o id de um cookie válido (a identidade do aparelho não muda)."""
+APARELHO_CONTAS_MAX = 5   # S3: contas ligadas a um aparelho (as mais recentes)
+
+
+def _emitir_cookie_aparelho(cfg: dict, aparelho_id: str | None = None, contas_ids: tuple[str, ...] = ()) -> str:
+    """
+    Token do aparelho: {id, exp, v} + (S3, modo contas) "c": ids das contas que JÁ entraram por este aparelho (até
+    APARELHO_CONTAS_MAX; assinado: o cliente não consegue se ligar a outra conta). Reaproveita o id de um cookie
+    válido (a identidade do aparelho não muda).
+    """
     chave = _chave_aparelho(cfg)
     assert chave is not None
-    carga = json.dumps({"id": aparelho_id or secrets.token_hex(8), "exp": int(time.time()) + APARELHO_DURACAO_S,
-                        "v": _versao_acesso(cfg)}, separators=(",", ":"))
+    dados: dict[str, Any] = {"id": aparelho_id or secrets.token_hex(8), "exp": int(time.time()) + APARELHO_DURACAO_S,
+                             "v": _versao_acesso(cfg)}
+    if contas_ids:
+        dados["c"] = list(contas_ids)[-APARELHO_CONTAS_MAX:]
+    carga = json.dumps(dados, separators=(",", ":"))
     parte = _b64u(carga.encode("utf-8"))
     return parte + "." + _assinar(chave, parte)
 
@@ -2629,7 +2788,24 @@ def _aparelho_valido(token: str | None, cfg: dict) -> str | None:
 
 def _aparelho_info(token: str | None, cfg: dict) -> tuple[str, float] | None:
     """(id, exp) do cookie de aparelho legítimo (assinatura, validade, versão de acesso); senão None."""
-    if not token or len(token) > 300 or not _sessoes_possiveis(cfg):
+    carga = _aparelho_carga(token, cfg)
+    return None if carga is None else (carga["id"], carga["exp"])
+
+
+def _aparelho_contas(token: str | None, cfg: dict) -> tuple[str, ...]:
+    """S3: ids das contas ligadas ao cookie de aparelho legítimo (vazio sem cookie válido ou sem contas)."""
+    carga = _aparelho_carga(token, cfg)
+    return () if carga is None else carga["c"]
+
+
+def _ligar_conta(ligadas: tuple[str, ...], conta_id: str) -> tuple[str, ...]:
+    """S3: a lista de contas do aparelho com `conta_id` no fim (a mais recente), sem repetir, no máximo 5."""
+    return (tuple(c for c in ligadas if c != conta_id) + (conta_id,))[-APARELHO_CONTAS_MAX:]
+
+
+def _aparelho_carga(token: str | None, cfg: dict) -> dict[str, Any] | None:
+    """{"id", "exp", "c"} do cookie de aparelho legítimo (assinatura, validade, versão de acesso); senão None."""
+    if not token or len(token) > 400 or not _sessoes_possiveis(cfg):
         return None
     chave = _chave_aparelho(cfg)
     partes = token.split(".")
@@ -2648,7 +2824,10 @@ def _aparelho_info(token: str | None, cfg: dict) -> tuple[str, float] | None:
             or not isinstance(exp, (int, float)) or time.time() >= exp
             or not (isinstance(v, int) and not isinstance(v, bool) and v == _versao_acesso(cfg))):
         return None
-    return ident, float(exp)
+    ligadas = carga.get("c", [])
+    ligadas = tuple(c for c in ligadas if isinstance(c, str) and _CONTA_ID_RE.fullmatch(c))[
+        -APARELHO_CONTAS_MAX:] if isinstance(ligadas, list) else ()
+    return {"id": ident, "exp": float(exp), "c": ligadas}
 
 
 def _renovar_cookie_aparelho(resp: Response, cfg: dict) -> None:
@@ -2657,9 +2836,10 @@ def _renovar_cookie_aparelho(resp: Response, cfg: dict) -> None:
     emite/renova (mantendo o id se o cookie atual ainda é válido). Cobre sessões abertas antes desta função
     existir e o teto de 90 dias da sessão (que antes derrubava o cookie junto). Chamado no GET /api/auth/status.
     """
-    info = _aparelho_info(request.cookies.get(COOKIE_APARELHO), cfg)
-    if info is None or info[1] - time.time() < APARELHO_RENOVAR_ABAIXO_S:
-        _definir_cookie_aparelho(resp, _emitir_cookie_aparelho(cfg, info[0] if info else None))
+    info = _aparelho_carga(request.cookies.get(COOKIE_APARELHO), cfg)
+    if info is None or info["exp"] - time.time() < APARELHO_RENOVAR_ABAIXO_S:   # S3: mantém as contas ligadas
+        _definir_cookie_aparelho(resp, _emitir_cookie_aparelho(cfg, info["id"] if info else None,
+                                                               info["c"] if info else ()))
 
 
 def _definir_cookie_aparelho(resp: Response, token: str) -> None:
@@ -2894,12 +3074,13 @@ def _login_sucesso(ip: str, aparelho: str | None = None) -> None:
 
 
 # --- v2.8 (B3): bloqueio por usuário digitado ------------------------------------------------------------------
-def _usuario_chave(usuario: Any, local: bool) -> str:
+def _usuario_chave(usuario: Any, local: bool, aparelho: str | None = None) -> str:
     """
-    Chave do bloqueio por usuário: origem ("l:" PC das caixas | "r:" rede) + o login normalizado; formato impossível
-    vira uma chave própria (curta). A origem separa os contadores (veja CONTA_MAX_ERROS).
+    Chave do bloqueio por usuário: origem ("l:" PC das caixas | "r:" rede | S3: "d:<aparelho>:" = aparelho conhecido
+    que JÁ entrou nesta conta) + o login normalizado; formato impossível vira uma chave própria (curta). A origem
+    separa os contadores (veja CONTA_MAX_ERROS): os mesmos 10 erros/15 min -> 15 min, cada um no seu.
     """
-    origem = "l:" if local else "r:"
+    origem = "l:" if local else ("d:" + aparelho + ":" if aparelho else "r:")
     normal = contas.normalizar_usuario(usuario)
     if normal is not None:
         return origem + "u:" + normal
@@ -3041,7 +3222,7 @@ def _resp_429(segundos: int, travado: bool = False, motivo: str | None = None,
         corpo["error"] = f"Muitas tentativas. Tente novamente em {minutos} min."
     if suspenso:
         corpo["codigo"] = "loopback_suspenso"
-        corpo["error"] += " " + MSG_LOOPBACK_SUSPENSO
+        corpo["error"] += " " + _msg_loopback_suspenso()
     return jsonify(corpo), 429
 
 
@@ -3081,6 +3262,9 @@ def _seg_sanear(bruto: Any, agora: float | None = None) -> dict[str, Any]:
     lista_f = bruto.get("falhas") if isinstance(bruto.get("falhas"), list) else []
     falhas = sorted(t for t in (_numero_epoch(x) for x in lista_f[-SEG_FALHAS_MAX * 2:])
                     if t is not None and agora - t <= FALHAS_JANELA_S)[-SEG_FALHAS_MAX:]
+    lista_fl = bruto.get("falhas_local") if isinstance(bruto.get("falhas_local"), list) else []
+    falhas_local = sorted(t for t in (_numero_epoch(x) for x in lista_fl[-SEG_FALHAS_MAX * 2:])
+                          if t is not None and agora - t <= FALHAS_JANELA_S)[-SEG_FALHAS_MAX:]
     logins: list[dict[str, Any]] = []
     for e in (bruto.get("logins") if isinstance(bruto.get("logins"), list) else [])[-SEG_LOGINS_MAX:]:
         t = _numero_epoch(e.get("t")) if isinstance(e, dict) else None
@@ -3118,8 +3302,8 @@ def _seg_sanear(bruto: Any, agora: float | None = None) -> dict[str, Any]:
         # a trava MANUAL vigente (depois da última liberação) nunca cai pelo corte de 30 dias: só o dono a tira
         if agora - t <= 30 * 24 * 3600.0 or (manual and t > liberado_em):
             travas.append({"t": t, "manual": manual})
-    return {"falhas": falhas, "logins": logins, "ips": ips, "visto_ate": visto_ate, "novos": novos,
-            "niveis": niveis, "liberado_em": liberado_em, "travas": travas}
+    return {"falhas": falhas, "falhas_local": falhas_local, "logins": logins, "ips": ips, "visto_ate": visto_ate,
+            "novos": novos, "niveis": niveis, "liberado_em": liberado_em, "travas": travas}
 
 
 def _seg_ler(cfg: dict | None = None) -> dict[str, Any]:
@@ -3141,20 +3325,23 @@ def _seg_mutar(fn: Callable[[dict[str, Any]], None]) -> None:
 
 _seg_pend_lock = threading.Lock()
 _seg_falhas_pend: list[float] = []     # PINs errados ainda não gravados no config.json
+_seg_falhas_local_pend: list[float] = []   # S2: senhas erradas NO PC das caixas ainda não gravadas
 _seg_flush_ultimo = 0.0                # monotonic da última gravação em lote
 _seg_flush_timer: threading.Timer | None = None
 
 
-def _seg_registrar_falha() -> None:
+def _seg_registrar_falha(local: bool = False) -> None:
     """
     Anota um PIN errado. Gravar o config.json (que tem os segredos) a cada erro de um ataque seria uma gravação
     por tentativa: os erros ficam em memória e vão ao disco em LOTE, no máximo 1 gravação a cada
     SEG_FALHAS_FLUSH_S (e no desligamento: _seg_flush_falhas). A contagem do painel inclui os pendentes.
+    v2.8 (revisão final S2): `local` = senha errada NO PC das caixas (modo contas). Conta no painel de segurança, mas
+    fica em "falhas_local": a trava diária da rede, refeita das "falhas" ao ligar, não a enxerga.
     """
     global _seg_flush_timer
     agora = time.time()
     with _seg_pend_lock:
-        _seg_falhas_pend.append(agora)
+        (_seg_falhas_local_pend if local else _seg_falhas_pend).append(agora)
         vencido = time.monotonic() - _seg_flush_ultimo >= SEG_FALHAS_FLUSH_S
         if not vencido and _seg_flush_timer is None:
             _seg_flush_timer = threading.Timer(SEG_FALHAS_FLUSH_S, _seg_flush_falhas)
@@ -3169,13 +3356,16 @@ def _seg_flush_falhas() -> None:
     global _seg_flush_timer, _seg_flush_ultimo
     with _seg_pend_lock:
         itens = list(_seg_falhas_pend)
+        locais = list(_seg_falhas_local_pend)
         _seg_falhas_pend.clear()
+        _seg_falhas_local_pend.clear()
         _seg_flush_ultimo = time.monotonic()
         if _seg_flush_timer is not None:
             _seg_flush_timer.cancel()
             _seg_flush_timer = None
-    if itens:
-        _seg_mutar(lambda seg: seg.update(falhas=(seg["falhas"] + itens)[-SEG_FALHAS_MAX:]))
+    if itens or locais:
+        _seg_mutar(lambda seg: seg.update(falhas=(seg["falhas"] + itens)[-SEG_FALHAS_MAX:],
+                                          falhas_local=(seg["falhas_local"] + locais)[-SEG_FALHAS_MAX:]))
 
 
 def _seg_reset_pendentes() -> None:
@@ -3183,6 +3373,7 @@ def _seg_reset_pendentes() -> None:
     global _seg_flush_timer, _seg_flush_ultimo
     with _seg_pend_lock:
         _seg_falhas_pend.clear()
+        _seg_falhas_local_pend.clear()
         _seg_flush_ultimo = 0.0
         if _seg_flush_timer is not None:
             _seg_flush_timer.cancel()
@@ -3196,8 +3387,9 @@ def _seg_marcar_liberado(zerar_niveis: bool, zerar_travas: bool = False) -> None
     """
     with _seg_pend_lock:
         _seg_falhas_pend.clear()
+        _seg_falhas_local_pend.clear()
     seg = _seg_ler()
-    if not (seg["falhas"] or seg["travas"] or (zerar_niveis and seg["niveis"])):
+    if not (seg["falhas"] or seg["falhas_local"] or seg["travas"] or (zerar_niveis and seg["niveis"])):
         return   # nada a esquecer: não regrava o config à toa
     agora = time.time()
 
@@ -3271,7 +3463,10 @@ def _seg_resumo(cfg: dict, bloqueio_global_s: int | None, travado: bool = False,
     seg = _seg_ler(cfg)
     with _seg_pend_lock:
         seg["falhas"] = sorted(seg["falhas"] + list(_seg_falhas_pend))   # (os ainda não gravados também contam)
+        locais = sorted(seg["falhas_local"] + list(_seg_falhas_local_pend))
     visto = seg["visto_ate"]
+    # S2: as senhas erradas no PC das caixas também contam no painel (e no alerta), além de aparecerem à parte
+    seg["falhas"] = sorted(seg["falhas"] + locais)
     falhas_novas = sum(1 for t in seg["falhas"] if t > visto)
     novos = [e for e in seg["novos"] if e["t"] > visto]
     tuneis = {"fortes": list(_tuneis_estado["fortes"]), "fracos": list(_tuneis_estado["fracos"]),
@@ -3285,6 +3480,7 @@ def _seg_resumo(cfg: dict, bloqueio_global_s: int | None, travado: bool = False,
         "bloqueios_ativos": bloqueados,
         "pendentes": pendentes,
         "falhas_24h": sum(1 for t in seg["falhas"] if agora - t <= FALHAS_JANELA_S),
+        "falhas_local_24h": sum(1 for t in locais if agora - t <= FALHAS_JANELA_S),   # S2: no PC das caixas
         "falhas_novas": falhas_novas,
         "bloqueio_global_s": bloqueio_global_s,
         "logins_novos": [{"em": _iso_local(e["t"]), "ip": e["ip"]} for e in novos[-10:]],
@@ -3316,6 +3512,9 @@ def auth_status() -> Response:
         # efetivo (modo PIN: TODAS para o PC da loja, que é livre; as do gerente para sessões de PIN; [] sem sessão).
         "modo_contas": modo,
         "precisa_criar_adm": local and not modo,
+        # v2.8 (revisão final S1): as contas já existiram mas o contas.json sumiu/estragou: o resto da API dá 503
+        # "contas_indisponivel" e o painel mostra a mensagem (restaurar a cópia ou --esquecer-contas no PC).
+        "contas_indisponivel": contas_indisponiveis(),
         "conta": conta_publica(conta) if conta is not None else None,
         "permissoes": _permissoes(perfil),
         # v2.7.1: True quando o endereço E o Host são de loopback mas o painel NÃO é tratado como o PC da loja
@@ -3376,7 +3575,12 @@ def _login_por_conta(dados: dict) -> Any:
     aparelho = _aparelho_valido(request.cookies.get(COOKIE_APARELHO), cfg) if not local else None
     suspenso = (not local and _tunel_suspende_loopback() and _local_por(
         ip, request.host, any(h in request.headers for h in CABECALHOS_DE_PROXY), ignorar_tunel=True))
-    chave = _usuario_chave(usuario, local)
+    conta = conta_por_usuario(usuario)
+    # S3: aparelho conhecido (cookie válido) que JÁ entrou nesta conta tem um contador próprio ("d:"), separado do
+    # "r:" anônimo: 10 senhas erradas de outros aparelhos não tiram o dono do ar no celular dele.
+    ligado = bool(aparelho and conta is not None and conta["id"] in _aparelho_contas(
+        request.cookies.get(COOKIE_APARELHO), cfg))
+    chave = _usuario_chave(usuario, local, aparelho if ligado else None)
     espera = _usuario_reservar(chave)
     if espera:
         # MESMO 429 do bloqueio por IP: não diz que é o usuário (nem se ele existe)
@@ -3390,9 +3594,8 @@ def _login_por_conta(dados: dict) -> Any:
         if not permitida:
             _usuario_desfazer(chave)
             return _resp_429(bloqueado_s, motivo == "travado", motivo, suspenso, _login_trava_e_manual())
-    conta = conta_por_usuario(usuario)
     # Um PBKDF2 sempre (o hash fictício tem o mesmo custo); compare_digest dentro de conferir_senha.
-    certo = contas.conferir_senha(senha, conta["senha_hash"] if conta is not None else contas.HASH_FICTICIO)
+    certo = contas.conferir_senha(senha, conta["senha_hash"] if conta is not None else contas.hash_ficticio())
     if not (certo and conta is not None and conta["ativa"]):
         resultado = ("usuario_inexistente" if conta is None else
                      "conta_inativa" if not conta["ativa"] else "senha_errada")
@@ -3407,6 +3610,7 @@ def _login_por_conta(dados: dict) -> Any:
                     _seg_persistir_niveis()   # o nível de escalada sobrevive a reinício
                 return _resp_429(bloqueado_s, motivo == "travado", motivo, suspenso, _login_trava_e_manual())
         else:
+            _seg_registrar_falha(local=True)   # S2: o ADM vê no painel de segurança as tentativas feitas no PC
             auditar("login", resultado=resultado, bloqueado_s=bloqueio_usuario or None,
                     motivo="usuario" if bloqueio_usuario else None)
         log.warning("Login com usuário ou senha incorretos (origem %s).", "local" if local else "remoto")
@@ -3421,6 +3625,8 @@ def _login_por_conta(dados: dict) -> Any:
             auditar("login", resultado="limite")
             return _resp_429(60, suspenso=suspenso)
         novo = _seg_registrar_login(ip)
+    if contas.precisa_atualizar_hash(conta["senha_hash"]):
+        _atualizar_hash_antigo(conta, senha)   # S6: hash de 200.000 -> ITERACOES atuais, sem derrubar sessões
     cfg = _garantir_chave_acesso()
     auditar("login", resultado="ok", perfil=conta["perfil"], ip_novo=int(novo) if not local else None)
     log.info("Login por conta bem-sucedido (%s)%s.", "local" if local else "remoto",
@@ -3429,8 +3635,30 @@ def _login_por_conta(dados: dict) -> Any:
     token, vida = _emitir_token(cfg, conta=conta, local=local)
     _definir_cookie_sessao(resp, token, vida)
     if not local:   # o aparelho passa a ser "conhecido" (só afeta o limite de tentativas de login; não dá acesso)
-        _definir_cookie_aparelho(resp, _emitir_cookie_aparelho(cfg, aparelho))
+        # S3: e fica LIGADO a esta conta (contador de erros próprio na próxima vez)
+        ligadas = _aparelho_contas(request.cookies.get(COOKIE_APARELHO), cfg) if aparelho else ()
+        _definir_cookie_aparelho(resp, _emitir_cookie_aparelho(cfg, aparelho, _ligar_conta(ligadas, conta["id"])))
     return resp
+
+
+def _atualizar_hash_antigo(conta: dict, senha: str) -> None:
+    """
+    S6: login CERTO de uma conta com hash de menos iterações que contas.ITERACOES: regrava o hash com as iterações
+    atuais (PBKDF2 fora do lock), só se o hash guardado ainda for o mesmo que foi conferido. NÃO muda sessao_v nem
+    versao (ninguém cai, nenhum editor vê "versao_mudou"). Falha só vira aviso: o login continua valendo.
+    """
+    try:
+        novo = contas.hash_senha(senha)
+        with _contas_arquivo.lock:
+            doc = copy.deepcopy(_contas_arquivo.ler())
+            alvo = next((c for c in doc["contas"] if c["id"] == conta["id"]), None)
+            if alvo is None or alvo["senha_hash"] != conta["senha_hash"]:
+                return   # mudou no meio (senha trocada em outro lugar): nada a fazer
+            alvo["senha_hash"] = novo
+            _contas_arquivo.gravar(doc)
+        log.info("Senha de uma conta regravada com o custo novo do PBKDF2.")
+    except Exception as exc:  # noqa: BLE001 - nunca derruba o login
+        log.warning("Não foi possível regravar a senha com o custo novo (%s).", type(exc).__name__)
 
 
 @app.post("/api/auth/login")
@@ -3495,8 +3723,38 @@ def auth_login() -> Any:
     return resp
 
 
+def _revogar_token(token: str | None) -> bool:
+    """
+    S4: guarda a assinatura de um token de sessão ASSINADO com a chave atual na lista de revogados até o exp dele
+    (teto de 90 dias). Token torto/de outra chave: nada a fazer (já não vale). Devolve True se revogou.
+    """
+    cfg = load_config()
+    chave = _chave_acesso(cfg)
+    if not token or len(token) > 400 or chave is None or token.count(".") != 1:
+        return False
+    corpo, assinatura = token.split(".")
+    try:
+        if not hmac.compare_digest(assinatura.encode("ascii"), _assinar(chave, corpo).encode("ascii")):
+            return False
+        exp = json.loads(_b64u_dec(corpo)).get("exp")
+    except (ValueError, TypeError, UnicodeError, AttributeError):
+        return False
+    agora = time.time()
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)) or exp <= agora:
+        return False
+    with _tokens_revogados_lock:
+        for velho in [k for k, fim in _tokens_revogados.items() if fim <= agora]:
+            del _tokens_revogados[velho]
+        while len(_tokens_revogados) >= TOKENS_REVOGADOS_MAX:
+            del _tokens_revogados[min(_tokens_revogados, key=_tokens_revogados.__getitem__)]
+        _tokens_revogados[assinatura] = min(float(exp), agora + SESSAO_TETO_S)
+    return True
+
+
 @app.post("/api/auth/logout")
 def auth_logout() -> Response:
+    """Apaga o cookie e (S4) revoga o token no servidor: copiado antes, ele não vale mais (até um reinício)."""
+    _revogar_token(request.cookies.get(COOKIE_SESSAO))
     return _apagar_cookie(jsonify({"ok": True}))
 
 
@@ -3507,12 +3765,18 @@ _OPCOES_REVISAO_PADRAO = {"desativar_remotos": True, "remover_remotos": False,
 
 
 def _opcoes_de_revisao(dados: dict, extras: frozenset[str] = frozenset()) -> dict[str, bool]:
-    """Valida as opções do corpo (chave desconhecida ou valor que não é bool = 400). Tudo antes de gravar."""
+    """
+    Valida as opções do corpo (chave desconhecida ou valor que não é bool = 400). Tudo antes de gravar.
+    v2.8 (revisão final S8): em modo contas TODAS as opções têm padrão false (só valem se vierem true): "Desconectar
+    todos" não desativa os horários dos gerentes que mexem pelo celular. E os itens com autor (autor_id) nem entram
+    como pendentes (veja _tem_autor).
+    """
     desconhecidas = set(dados) - set(_OPCOES_REVISAO_PADRAO) - extras
     if desconhecidas:
         raise ErroApi("Campo desconhecido.")
+    padroes = dict.fromkeys(_OPCOES_REVISAO_PADRAO, False) if modo_contas() else _OPCOES_REVISAO_PADRAO
     opcoes: dict[str, bool] = {}
-    for nome, padrao in _OPCOES_REVISAO_PADRAO.items():
+    for nome, padrao in padroes.items():
         valor = dados.get(nome, padrao)
         if not isinstance(valor, bool):
             raise ErroApi(f"Campo '{nome}' inválido.")
@@ -3652,6 +3916,7 @@ def auth_primeiro_adm() -> Any:
         cfg.pop("acesso_pin_hash", None)
         cfg["acesso_chave"] = _b64u(secrets.token_bytes(32))
         cfg["acesso_versao"] = _versao_acesso(cfg) + 1
+        cfg[CONTAS_MARCADOR] = _agora_iso()   # S1: daqui em diante, contas.json sumido = 503, nunca o modo PIN
         _gravar_config_atomico(cfg)
         _marcar_versao_vista(cfg)
     _login_resetar_global()
@@ -7095,7 +7360,7 @@ def _executar_teste(sid: str, corpo: dict, ip: str) -> tuple[Response, int] | Re
             except Exception:  # noqa: BLE001
                 log.warning("Não foi possível soltar a saída testada.", exc_info=True)
     SOM.registrar_teste(_id_sessao(), sid)
-    auditoria.info("acao=testar ip=%s sid=%s sinal=%s", ip, sid, medida.resultado)
+    auditoria.info("acao=testar ip=%s sid=%s sinal=%s%s", ip, sid, medida.resultado, _sufixo_conta())
     return jsonify({"ok": True, "duracao_ms": int(round(segundos * 1000)), "sinal_detectado": medida.resultado})
 
 
@@ -7261,8 +7526,8 @@ def som_saida() -> tuple[Response, int] | Response:
     elif not local and ("aprovada" in corpo or (corpo.get("esquecer") and (entrada_atual or {}).get("aprovada"))):
         # aprovar/desaprovar/esquecer uma saída aprovada mexe nas reservas do fallback: avisa no tile
         SOM.definir_alerta("saida_alterada_remoto", f"Saídas aprovadas alteradas por aparelho remoto (IP {ip}).")
-    auditoria.info("acao=saida ip=%s sid=%s origem=%s campos=%s", ip, sid, origem,
-                   ",".join(sorted(k for k in corpo if k != "sid")))
+    auditoria.info("acao=saida ip=%s sid=%s origem=%s campos=%s%s", ip, sid, origem,
+                   ",".join(sorted(k for k in corpo if k != "sid")), _sufixo_conta())
     visoes = SOM.saidas_publicas(remoto=not local)["saidas"]
     return jsonify({"ok": True, "saida": next((v for v in visoes if v["sid"] == sid), None)})
 
@@ -7284,8 +7549,8 @@ def som_preferencias() -> tuple[Response, int] | Response:
     if not _requisicao_local():   # P04: fica pendente para o dono rever (config.json["som_alterado_por"])
         with contextlib.suppress(OSError):
             update_config(som_alterado_por={"em": int(time.time())})
-    auditoria.info("acao=preferencias ip=%s origem=%s campos=%s", ip,
-                   "local" if _requisicao_local() else "remoto", ",".join(sorted(corpo)))
+    auditoria.info("acao=preferencias ip=%s origem=%s campos=%s%s", ip,
+                   "local" if _requisicao_local() else "remoto", ",".join(sorted(corpo)), _sufixo_conta())
     return jsonify({"ok": True, "preferencias": som_modelo.visao_preferencias(som)})
 
 
@@ -7772,9 +8037,9 @@ def _exigir_versao_mensagens(cfg: dict, enviada: int) -> None:
 
 
 def _auditar_mensagens(acao: str, total: int) -> None:
-    """Quem (local/IP) e QUANTAS mensagens. O conteúdo nunca vai para o log."""
-    auditoria.info("acao=%s ip=%s origem=%s total=%d", acao, request.remote_addr or "?",
-                   "local" if _requisicao_local() else "remoto", total)
+    """Quem (local/IP e, v2.8, o token da conta) e QUANTAS mensagens. O conteúdo nunca vai para o log."""
+    auditoria.info("acao=%s ip=%s origem=%s total=%d%s", acao, request.remote_addr or "?",
+                   "local" if _requisicao_local() else "remoto", total, _sufixo_conta())
 
 
 @app.get("/api/mensagens")
@@ -8163,9 +8428,43 @@ _contas_arquivo = programacao.ArquivoJson(
     lambda caminho: _restringir_acl_windows(caminho), rotulo=CONTAS_ARQUIVO, prefixo=".contas.")
 
 
+# v2.8 (revisão final S1): marcador no config.json gravado quando o 1º ADM nasce (ISO com fuso). Com ele, sumir o
+# contas.json NÃO devolve o modo PIN: modo_contas() continua True e as rotas dão 503 (contas_indisponiveis()).
+# Só a CLI --esquecer-contas (no PC das caixas, com confirmação) apaga o marcador.
+CONTAS_MARCADOR = "contas_desde"
+
+
+def _marcador_contas(cfg: dict | None = None) -> bool:
+    """O config.json diz que as contas já foram ativadas? (qualquer valor na chave conta: falha fechado)"""
+    return (load_config() if cfg is None else cfg).get(CONTAS_MARCADOR) is not None
+
+
 def modo_contas() -> bool:
-    """Existe pelo menos uma conta (ativa ou não)? Senão vale o modo PIN."""
-    return bool(_contas_arquivo.ler()["contas"])
+    """
+    Existe pelo menos uma conta (ativa ou não) OU as contas já foram ativadas (marcador, S1)? Senão vale o modo PIN.
+    Com o marcador e sem contas legíveis o modo continua "contas" (ninguém consegue entrar; veja contas_indisponiveis).
+    """
+    return bool(_contas_arquivo.ler()["contas"]) or _marcador_contas()
+
+
+def contas_indisponiveis() -> bool:
+    """S1: as contas já foram ativadas (marcador) mas o contas.json está ausente, vazio, sem contas ou ilegível."""
+    return not _contas_arquivo.ler()["contas"] and _marcador_contas()
+
+
+def _garantir_marcador_contas() -> None:
+    """Na partida: há contas mas falta o marcador (contas criadas antes da S1, ou o processo caiu entre gravar o
+    contas.json e o config.json no 1º ADM)? Grava agora. Falha de disco só vira aviso."""
+    if not _contas_arquivo.ler()["contas"] or _marcador_contas():
+        return
+    try:
+        with _config_lock:
+            cfg = load_config()
+            if cfg.get(CONTAS_MARCADOR) is None:
+                cfg[CONTAS_MARCADOR] = _agora_iso()
+                _gravar_config_atomico(cfg)
+    except OSError as exc:
+        log.warning("Não foi possível gravar o marcador das contas no config.json (%s).", type(exc).__name__)
 
 
 def conta_por_id(conta_id: Any) -> dict | None:
@@ -8192,7 +8491,16 @@ def conta_publica(conta: dict) -> dict:
     return {k: v for k, v in conta.items() if k not in ("senha_hash", "sessao_v")}
 
 
+# v2.8 (revisão final S2): senha fácil de adivinhar (contas.senha_fraca). Mesmo formato dos outros erros de senha:
+# 400 {"codigo": "fraca", "campo": "senha" | "senha_nova", "error": MSG_SENHA_FRACA}.
+MSG_SENHA_FRACA = ("Senha fácil demais de adivinhar. Evite senhas comuns (12345678, senha123, brasil2024), "
+                   "letras ou números repetidos ou em sequência (aaaaaaaa, abcdefgh) e o seu nome ou usuário.")
+MSG_SENHA_IGUAL_USUARIO = "A senha não pode ser igual ao usuário."
+
+
 def _erro_validacao_conta(campo: str | None, motivo: str | None) -> ErroContas:
+    if motivo == "fraca":
+        return ErroContas(MSG_SENHA_FRACA, 400, "fraca", campo)
     if campo == "usuario" and motivo == "duplicado":
         return ErroContas("Esse usuário já existe.", 409, "usuario_repetido", "usuario")
     if motivo == "limite":
@@ -8234,7 +8542,7 @@ def criar_conta(dados: Any, ator: dict | None, *, primeiro_adm: bool = False) ->
     hash_novo = contas.hash_senha(limpa["senha"])   # caro: fora do lock
     with _contas_arquivo.lock:
         doc = copy.deepcopy(_contas_arquivo.ler())
-        if ator is None and doc["contas"]:
+        if ator is None and (doc["contas"] or _marcador_contas()):   # S1: contas sumidas não reabrem o 1º ADM
             raise ErroContas("Seu perfil não pode criar esse tipo de conta.", 403, "sem_permissao", "perfil")
         if ator is not None and not contas.pode_gerenciar(_ator_no_documento(doc, ator)["perfil"], limpa["perfil"]):
             raise ErroContas("Seu perfil não pode criar esse tipo de conta.", 403, "sem_permissao", "perfil")
@@ -8290,8 +8598,13 @@ def alterar_conta(conta_id: Any, mudancas: Any, versao: Any, ator: dict | None, 
                 raise ErroContas("Seu perfil não pode alterar essa conta.", 403, "sem_permissao")
         if versao != alvo["versao"]:
             raise ErroContas("A conta mudou em outro aparelho; recarregue.", 409, "versao_mudou")
-        if "senha" in limpa and limpa["senha"].strip().lower() == alvo["usuario"]:
-            raise ErroContas("A senha não pode ser igual ao usuário.", 400, "igual_usuario", "senha")
+        if "senha" in limpa:   # regras que dependem da conta: igual ao usuário; S2: contém o usuário/1º nome
+            motivo_conta = contas.motivo_senha_da_conta(limpa["senha"], alvo["usuario"],
+                                                        limpa.get("nome", alvo["nome"]))
+            if motivo_conta == "igual_usuario":
+                raise ErroContas(MSG_SENHA_IGUAL_USUARIO, 400, "igual_usuario", "senha")
+            if motivo_conta:
+                raise _erro_validacao_conta("senha", motivo_conta)
         if ("perfil" in limpa or "ativa" in limpa) and not contas.restaria_adm(
                 doc["contas"], alvo["id"], limpa.get("perfil"), limpa.get("ativa")):
             raise ErroContas("Precisa haver pelo menos um administrador ativo.", 409, "ultimo_adm")
@@ -8477,11 +8790,16 @@ def conta_trocar_senha() -> Any:
     if nova is None:
         raise ErroContas("Informe a senha nova.", 400, "ausente", "senha_nova")
     limpa, _, motivo = contas.validar_alteracao({"senha": nova})
+    if limpa is None and motivo == "fraca":
+        raise _erro_validacao_conta("senha_nova", motivo)
     if limpa is None:
         raise ErroContas(f"Senha nova inválida (de {contas.SENHA_MIN} a {contas.SENHA_MAX} caracteres).", 400,
                          motivo, "senha_nova")
-    if nova.strip().lower() == ator["usuario"]:
-        raise ErroContas("A senha não pode ser igual ao usuário.", 400, "igual_usuario", "senha_nova")
+    motivo = contas.motivo_senha_da_conta(nova, ator["usuario"], ator["nome"])   # S2: usuário/1º nome dentro
+    if motivo == "igual_usuario":
+        raise ErroContas(MSG_SENHA_IGUAL_USUARIO, 400, "igual_usuario", "senha_nova")
+    if motivo:
+        raise _erro_validacao_conta("senha_nova", motivo)
     if nova == atual:
         raise ErroContas("A senha nova precisa ser diferente da atual.", 400, "mesma_senha", "senha_nova")
     espera = _senha_reservar_tentativa(ator["id"])
@@ -8513,6 +8831,38 @@ def conta_trocar_senha() -> Any:
     return resp
 
 
+CONTA_SAIR_TODOS_MAX_POR_MIN = 10   # POST /api/conta/sair-de-todos, por IP E por conta
+
+
+@app.post("/api/conta/sair-de-todos")
+def conta_sair_de_todos() -> Response:
+    """
+    v2.8 (revisão final S4): "Sair de todos os aparelhos" (celular perdido). Qualquer conta logada, corpo {} -> {ok}
+    com o cookie apagado. Faz sessao_v + 1 da PRÓPRIA conta (sob o lock, com o ator relido: sessão velha = 403):
+    TODAS as sessões dela caem, inclusive esta. Não muda a versão da conta (o conteúdo não mudou) nem as outras
+    contas. Modo PIN = 409 "modo_pin". 10/min por IP e conta. Auditoria conta_sair_de_todos (resultado, perfil, conta).
+    """
+    ator = _exigir_ator_de_conta()
+    if _excedeu_limite_ip_e_conta("conta_sair:", CONTA_SAIR_TODOS_MAX_POR_MIN, 60.0):
+        _auditar_conta("conta_sair_de_todos", "limite", ator["perfil"])
+        raise ErroContas(MSG_MUITOS_PEDIDOS, 429, "limite")
+    if corpo_json():
+        raise ErroApi("Campo desconhecido.")
+    try:
+        with _contas_arquivo.lock:
+            doc = copy.deepcopy(_contas_arquivo.ler())
+            atual = _ator_no_documento(doc, ator)
+            atual["sessao_v"] += 1
+            _contas_arquivo.gravar(doc)
+    except ErroContas as exc:
+        _auditar_conta("conta_sair_de_todos", _resultado_auditoria(exc), ator["perfil"])
+        raise
+    _revogar_token(request.cookies.get(COOKIE_SESSAO))
+    _auditar_conta("conta_sair_de_todos", "ok", ator["perfil"])
+    log.info("Uma conta encerrou as próprias sessões em todos os aparelhos.")
+    return _apagar_cookie(jsonify({"ok": True}))
+
+
 # ---------------------------------------------------------------------------
 # Histórico de anúncios (v2.8 B6): quem anunciou o quê, por 90 dias
 # ---------------------------------------------------------------------------
@@ -8527,7 +8877,14 @@ HISTORICO_BUSCA_MAX = 100                  # caracteres do filtro "q"
 HISTORICO_PODA_INTERVALO_S = 6 * 3600.0    # a vigia (laço de 60 s) poda no máximo a cada 6 h
 HISTORICO_LEITURA_MAX_POR_MIN = 60         # GET /api/historico, por IP e por conta (lê um arquivo de vários MB)
 HISTORICO_LIMITE_MAX_POR_MIN = 5           # 429 do /api/announce gravados como "limite", por IP e por conta
-HISTORICO_SEM_CONTA = "antes das contas"   # modo PIN ou item sem autor (de antes da atualização)
+HISTORICO_SEM_CONTA = "antes das contas"   # item sem autor (de antes da atualização)
+# v2.8 (revisão final S5): teto do arquivo. Acima dele as linhas "ocupado" e "limite" (as que um aparelho insistente
+# consegue repetir) deixam de ser gravadas, com UM aviso no log por hora ("histórico cheio"); ok, erro, sem_internet e
+# interrompido continuam (a poda de 90 dias é que reduz o arquivo).
+HISTORICO_TETO_BYTES = 50 * 1024 * 1024
+HISTORICO_CORTADOS_NO_TETO = frozenset({"ocupado", "limite"})
+HISTORICO_CHEIO_AVISO_S = 3600.0
+_historico_cheio_avisado: float | None = None   # monotonic do último aviso "histórico cheio"
 HISTORICO_RESULTADOS = frozenset({"ok", "ocupado", "erro", "sem_internet", "limite", "interrompido"})
 HISTORICO_ORIGENS = frozenset({"local", "rede"})
 HISTORICO_TIPOS = frozenset({"digitado", "tocar_agora", "agendado"})
@@ -8573,8 +8930,11 @@ def registrar_anuncio(*, conta: dict | None, texto: str, resultado: str, origem:
     programação, nunca do cliente). Falha de disco NÃO derruba o anúncio (que já tocou): vai para o log só o nome do
     erro, nunca o texto.
     """
+    global _historico_cheio_avisado
     if resultado not in HISTORICO_RESULTADOS or origem not in HISTORICO_ORIGENS or tipo not in HISTORICO_TIPOS:
         raise ValueError("token de histórico desconhecido")
+    if not modo_contas():
+        return   # S11: em modo PIN (sem contas) nada é gravado: sem autor não há responsabilidade, só dado pessoal
     autor = _autor_minimo(conta)
     entrada = {
         "t": _com_fuso(quando if quando is not None else _historico_agora()).isoformat(timespec="microseconds"),
@@ -8592,6 +8952,13 @@ def registrar_anuncio(*, conta: dict | None, texto: str, resultado: str, origem:
     caminho = _anuncios_path()
     with _historico_lock:
         try:
+            if resultado in HISTORICO_CORTADOS_NO_TETO and _tamanho_arquivo(caminho) >= HISTORICO_TETO_BYTES:
+                agora = time.monotonic()   # S5: arquivo no teto: "ocupado"/"limite" não entram
+                if _historico_cheio_avisado is None or agora - _historico_cheio_avisado >= HISTORICO_CHEIO_AVISO_S:
+                    _historico_cheio_avisado = agora
+                    log.warning("Histórico de anúncios cheio (%d MB): tentativas recusadas (ocupado/limite) deixam "
+                                "de ser gravadas até a poda de 90 dias liberar espaço.", HISTORICO_TETO_BYTES // 2**20)
+                return
             if not caminho.exists():
                 caminho.parent.mkdir(parents=True, exist_ok=True)
                 with open(caminho, "a", encoding="utf-8"):
@@ -8613,6 +8980,14 @@ def registrar_anuncio(*, conta: dict | None, texto: str, resultado: str, origem:
                 f.flush()
         except Exception as exc:  # noqa: BLE001 - roda no finally do anúncio: nunca troca a resposta por um 500
             log.error("Não foi possível gravar o histórico de anúncios (%s).", type(exc).__name__)
+
+
+def _tamanho_arquivo(caminho: Path) -> int:
+    """Tamanho em bytes (0 se o arquivo não existe). Separado para os testes simularem um arquivo enorme."""
+    try:
+        return caminho.stat().st_size
+    except OSError:
+        return 0
 
 
 def _texto_ou_none(valor: Any, maximo: int) -> str | None:
@@ -9159,7 +9534,7 @@ def _auditar_listas(acao: str, total: int, resultado: str | None = None) -> None
     Quem (local/IP) e QUANTAS músicas. Nome da lista e ids nunca vão para o log. `resultado` (opcional) é o
     "codigo" estável de uma falha (ex.: premium), nunca texto livre, nome, id ou uri.
     """
-    extra = f" resultado={resultado}" if resultado else ""
+    extra = (f" resultado={resultado}" if resultado else "") + _sufixo_conta()   # v2.8: + o token da conta
     auditoria.info("acao=%s ip=%s origem=%s total=%d%s", acao, request.remote_addr or "?",
                    "local" if _requisicao_local() else "remoto", total, extra)
 
@@ -10619,17 +10994,24 @@ def _prog_pendentes() -> list[tuple[dict, str]]:
     playlist do Spotify que ele toca foi alterada por remoto). Inclui os desativados.
     """
     doc = listas_ler()
-    listas = {x["id"]: x for x in doc["listas"]}
-    atalhos = {x["id"]: x for x in doc["spotify"]}
+    listas = {x["id"]: x for x in _remotas(doc["listas"])}     # (as com autor já ficam de fora: S8)
+    atalhos = {x["id"]: x for x in _remotas(doc["spotify"])}
     achados: list[tuple[dict, str]] = []
     for item in _prog_arquivo.ler()["itens"]:
+        if _tem_autor(item):
+            continue   # v2.8 (S8): a conta que criou/alterou é conhecida (autor_id): não é "de um remoto anônimo"
         if item.get("origem") == "remoto":
             achados.append((item, "item"))
-        elif item["tipo"] == "lista" and listas.get(item["alvo"], {}).get("alterado_por") == "remoto":
+        elif item["tipo"] == "lista" and item["alvo"] in listas:
             achados.append((item, "alvo"))
-        elif item["tipo"] == "spotify" and atalhos.get(item["alvo"], {}).get("alterado_por") == "remoto":
+        elif item["tipo"] == "spotify" and item["alvo"] in atalhos:
             achados.append((item, "alvo"))
     return achados
+
+
+def _tem_autor(registro: dict) -> bool:
+    """v2.8 (S8): o registro tem a conta que o criou/alterou por último (autor_id)? Então não espera revisão."""
+    return isinstance(registro.get("autor_id"), str) and bool(registro["autor_id"])
 
 
 def _prog_contar_remotos() -> int:
@@ -10692,18 +11074,20 @@ def _apagavel(registro: dict) -> bool:
     `remover_remotos` só apaga o que NASCEU num aparelho remoto E continua com o último autor remoto: se o dono
     editou depois (alterado_por "local"), ele assumiu o item - a edição do dono aprova implicitamente - e nada o apaga.
     """
-    return registro.get("criado_por") == "remoto" and registro.get("alterado_por") == "remoto"
+    return (registro.get("criado_por") == "remoto" and registro.get("alterado_por") == "remoto"
+            and not _tem_autor(registro))   # v2.8 (S8): com autor conhecido, nunca é apagado pela revisão
 
 
 def _remotas(registros: list[dict]) -> list[dict]:
-    return [r for r in registros if r.get("alterado_por") == "remoto"]
+    """Último autor remoto E sem conta conhecida (v2.8, S8: itens com autor_id não esperam revisão)."""
+    return [r for r in registros if r.get("alterado_por") == "remoto" and not _tem_autor(r)]
 
 
 def _mensagens_remotas(cfg: dict) -> list[dict]:
     """Mensagens prontas (gravadas) cujo último autor foi um aparelho remoto, com o carimbo."""
     meta = _mensagens_meta(cfg)
     return [{**m, **meta.get(m["id"], {})} for m in _mensagens_do_config(cfg)[0]
-            if meta.get(m["id"], {}).get("alterado_por") == "remoto"]
+            if meta.get(m["id"], {}).get("alterado_por") == "remoto" and not _tem_autor(meta.get(m["id"], {}))]
 
 
 def _musicas_remotas(cfg: dict) -> dict[str, int]:
@@ -11037,9 +11421,9 @@ def seguranca_remotos_aprovar() -> Response:
 
 
 def _auditar_programacao(acao: str, total: int) -> None:
-    """Quem (local/IP) e QUANTOS horários. Nome, texto e ids nunca vão para o log."""
-    auditoria.info("acao=%s ip=%s origem=%s total=%d", acao, request.remote_addr or "?",
-                   "local" if _requisicao_local() else "remoto", total)
+    """Quem (local/IP e, v2.8, o token da conta) e QUANTOS horários. Nome, texto e ids nunca vão para o log."""
+    auditoria.info("acao=%s ip=%s origem=%s total=%d%s", acao, request.remote_addr or "?",
+                   "local" if _requisicao_local() else "remoto", total, _sufixo_conta())
 
 
 @app.get("/api/programacao")
@@ -11609,6 +11993,7 @@ def main() -> None:
         _iniciar_reaplicacao()
     atexit.register(SOM.parar)
     _login_restaurar_do_disco()   # contador diário, trava e níveis de escalada voltam do disco (N5)
+    _garantir_marcador_contas()   # v2.8 (S1): contas de antes do marcador ganham o marcador agora
     _iniciar_vigia_tuneis()   # v2.7.1 (P06): portproxy/túnel para esta porta? (só leitura)
     SOM.iniciar()  # primeira varredura LOCAL em segundo plano (só lê; não toca som)
     atexit.register(ACERVO.parar)
@@ -11730,6 +12115,8 @@ def _cli_pin(remover: bool) -> int:
     if modo_contas():   # v2.8: com contas o PIN não vale mais (remover também apagaria a chave das sessões)
         print("O Proclamare agora usa contas: o PIN nao vale mais. Para recuperar uma conta use "
               "python server.py --redefinir-senha <usuario>")
+        if contas_indisponiveis():   # S1: nem o PIN volta com o contas.json sumido
+            print(_MSG_CONTAS_SUMIRAM_CLI)
         return 1
     try:
         if remover:
@@ -11766,7 +12153,22 @@ _MSG_SENHA_CLI = {
     "tamanho": f"A senha precisa ter de {contas.SENHA_MIN} a {contas.SENHA_MAX} caracteres.",
     "caractere": "A senha tem um caractere que nao pode ser usado.",
     "tipo": "Senha invalida.",
+    # S2: mesma regra do painel (contas.senha_fraca)
+    "fraca": ("Senha facil demais de adivinhar: evite senhas comuns (12345678, senha123), letras ou numeros "
+              "repetidos ou em sequencia e o seu nome ou usuario."),
+    "igual_usuario": "A senha nao pode ser igual ao usuario.",
 }
+_MSG_CONTAS_SUMIRAM_CLI = ("As contas sumiram (contas.json ausente ou estragado). Restaure a copia do contas.json "
+                           "na pasta do programa ou rode: python server.py --esquecer-contas")
+CONFIRMACAO_ESQUECER = "ESQUECER"
+
+
+def _avisar_stdin_sem_terminal() -> None:
+    """S7: com stdin redirecionado (pipe/arquivo) não há leitura sem eco: avisa em stderr (não recusa: os testes e
+    scripts usam pipe). Mensagem em ASCII (console do Windows)."""
+    if sys.stdin is None or not sys.stdin.isatty():
+        print("Aviso: a entrada nao e um terminal (pipe ou arquivo). O que for digitado pode aparecer na tela ou "
+              "ficar gravado; prefira rodar este comando direto no Prompt de Comando.", file=sys.stderr)
 
 
 def _auditar_cli(acao: str) -> None:
@@ -11794,13 +12196,18 @@ def _cli_redefinir_senha(usuario: str) -> int:
     if _servidor_no_ar():
         print("Desligue o Proclamare antes (Menu Iniciar, \"Desligar Proclamare\") e rode de novo.")
         return 1
+    _avisar_stdin_sem_terminal()
     try:
         conta = conta_por_usuario(usuario)
         if conta is None:
             print("Usuario nao encontrado. Nada foi alterado.")
+            if contas_indisponiveis():
+                print(_MSG_CONTAS_SUMIRAM_CLI)
             return 1
         senha = _ler_senha(f"Nova senha ({contas.SENHA_MIN} a {contas.SENHA_MAX} caracteres): ")
         _limpa, _campo, motivo = contas.validar_alteracao({"senha": senha})
+        if not motivo:   # S2: as regras que dependem da conta (usuário/1º nome dentro da senha)
+            motivo = contas.motivo_senha_da_conta(senha, conta["usuario"], conta["nome"])
         if motivo:
             print(_MSG_SENHA_CLI.get(motivo, "Senha invalida.") + " Nada foi alterado.")
             return 1
@@ -11820,14 +12227,66 @@ def _cli_redefinir_senha(usuario: str) -> int:
         return 1
 
 
+def _ler_confirmacao(pergunta: str) -> str:
+    """Uma linha (com eco: não é segredo); EOFError se o stdin acabou."""
+    if sys.stdin is not None and sys.stdin.isatty():
+        return input(pergunta)
+    print(pergunta, end="", flush=True)
+    linha = sys.stdin.readline() if sys.stdin is not None else ""
+    if not linha:
+        raise EOFError
+    return linha.rstrip("\r\n")
+
+
+def _cli_esquecer_contas() -> int:
+    """
+    v2.8 (revisão final S1): `python server.py --esquecer-contas` - recuperação quando o contas.json sumiu ou estragou
+    (o painel mostra "as contas sumiram" e a API dá 503). Só com o servidor DESLIGADO e só se não há conta legível
+    (com contas no lugar, use --redefinir-senha). Pede para digitar ESQUECER; então apaga o marcador "contas_desde" do
+    config.json e o Proclamare volta a pedir "Criar conta de administrador" no PC das caixas (até lá, modo PIN sem
+    PIN: o PC das caixas fica livre e a rede bloqueada). O contas.json estragado continua guardado como
+    contas.json.corrompido-*. Auditoria contas_esquecidas_cli (só a ação). Mensagens em ASCII.
+    """
+    if _servidor_no_ar():
+        print("Desligue o Proclamare antes (Menu Iniciar, \"Desligar Proclamare\") e rode de novo.")
+        return 1
+    _avisar_stdin_sem_terminal()
+    try:
+        if _contas_arquivo.ler()["contas"]:
+            print("As contas estao no lugar (o contas.json foi lido). Para recuperar uma senha use "
+                  "python server.py --redefinir-senha <usuario>. Nada foi alterado.")
+            return 1
+        if not _marcador_contas():
+            print("O Proclamare nao esta usando contas: nada a esquecer. Nada foi alterado.")
+            return 1
+        print("As contas do Proclamare sumiram (contas.json ausente ou estragado). Se voce tem uma copia do "
+              "contas.json, restaure-a em vez de continuar. Continuando, o Proclamare volta a pedir \"Criar conta "
+              "de administrador\" no PC das caixas e as contas antigas nao valem mais.")
+        if _ler_confirmacao(f"Digite {CONFIRMACAO_ESQUECER} para confirmar: ").strip() != CONFIRMACAO_ESQUECER:
+            print("Confirmacao diferente. Nada foi alterado.")
+            return 1
+        with _config_lock:
+            cfg = load_config()
+            cfg.pop(CONTAS_MARCADOR, None)
+            _gravar_config_atomico(cfg)
+        _auditar_cli("contas_esquecidas_cli")
+        print("Pronto. Ligue o Proclamare e crie a conta de administrador no PC das caixas.")
+        return 0
+    except (OSError, EOFError, KeyboardInterrupt) as exc:
+        print(f"Nao foi possivel concluir ({type(exc).__name__}). Nada foi alterado.")
+        return 1
+
+
 if __name__ == "__main__":
     _args = sys.argv[1:]
     if _args == ["--definir-pin"] or _args == ["--remover-pin"]:
         sys.exit(_cli_pin(remover=_args[0] == "--remover-pin"))
     if len(_args) == 2 and _args[0] == "--redefinir-senha":
         sys.exit(_cli_redefinir_senha(_args[1]))
+    if _args == ["--esquecer-contas"]:
+        sys.exit(_cli_esquecer_contas())
     if _args:
-        print("Uso: python server.py [--definir-pin | --remover-pin | --redefinir-senha <usuario>]   "
-              "(sem argumentos: inicia o servidor)")
+        print("Uso: python server.py [--definir-pin | --remover-pin | --redefinir-senha <usuario> | "
+              "--esquecer-contas]   (sem argumentos: inicia o servidor)")
         sys.exit(2)
     main()

@@ -310,42 +310,65 @@ class TesteGravacao(BaseComContas):
 
 
 class TesteAntesDasContas(BaseHistorico):
-    """Sem nenhuma conta (modo PIN) e itens de antes da atualização: autor 'antes das contas'."""
+    """
+    v2.8 (revisão final S11): em modo PIN (nenhuma conta) NADA é gravado no histórico (sem autor não há
+    responsabilidade, e o texto seria dado pessoal guardado sem aviso); o GET continua listando o que houver. Em modo
+    contas, um horário de antes da atualização (sem autor) continua gravado como "antes das contas".
+    """
 
-    def test_item_antigo_antes_das_contas(self) -> None:
-        # modo PIN: o PC da loja anuncia (livre, como hoje)
+    def gravar_linha_crua(self, texto: str, conta: "dict | None") -> None:
+        """Uma linha no anuncios.jsonl escrita direto (o que sobrou de quando havia contas)."""
+        entrada = {"t": "2026-10-19T21:00:00.000000-03:00", "conta_id": conta and conta["id"],
+                   "usuario": conta and conta["usuario"], "nome": conta["nome"] if conta else "antes das contas",
+                   "funcao": conta and conta["funcao"], "texto": texto, "resultado": "ok", "origem": "rede",
+                   "tipo": "digitado"}
+        with open(server._anuncios_path(), "a", encoding="utf-8") as f:
+            f.write(json.dumps(entrada, ensure_ascii=False) + "\n")
+
+    def test_modo_pin_nao_grava_historico(self) -> None:
         self.assertFalse(server.modo_contas())
         self.assertEqual(self.c.post("/api/announce", json={"text": "Modo PIN"}).status_code, 200)
-        # item gravado antes das contas (sem autor) e que toca no horário
         with server._prog_arquivo.lock:
             server._prog_arquivo.gravar({"versao": 1, "itens": [tp.item("abcd0001", "21:45", dias=[1],
                                                                           alvo="Antigo")]})
         self.rodar_agendados()
-        e1, e2 = self.linhas()
-        for e in (e1, e2):
-            self.assertEqual((e["conta_id"], e["usuario"], e["nome"], e["funcao"]),
-                             (None, None, "antes das contas", None))
-        self.assertEqual((e1["tipo"], e1["origem"], e2["tipo"], e2["texto"]),
-                         ("digitado", "local", "agendado", "Antigo"))
+        self.assertEqual(self.falas, ["Modo PIN", "Antigo"])            # tocou, mas não foi gravado
+        self.assertEqual(self.linhas(), [])
+        r = self.c.get("/api/historico")                                 # o GET continua funcionando
+        self.assertEqual((r.status_code, r.get_json()["itens"]), (200, []))
+
+    def test_item_antigo_antes_das_contas(self) -> None:
+        # modo contas: um item gravado antes das contas (sem autor) e que toca no horário
+        self.criar_adm()
+        with server._prog_arquivo.lock:
+            server._prog_arquivo.gravar({"versao": 1, "itens": [tp.item("abcd0001", "21:45", dias=[1],
+                                                                          alvo="Antigo")]})
+        self.rodar_agendados()
+        (e1,) = self.linhas()
+        self.assertEqual((e1["conta_id"], e1["usuario"], e1["nome"], e1["funcao"]),
+                         (None, None, "antes das contas", None))
+        self.assertEqual((e1["tipo"], e1["origem"], e1["texto"]), ("agendado", "local", "Antigo"))
+        cab = {"Cookie": f"{COOKIE}={self.token_adm}"}
         # o GET do item continua sem autor (o painel mostra "antes das contas")
-        self.assertNotIn("autor_nome", self.c.get("/api/programacao").get_json()["itens"][0])
-        # o PC da loja (modo PIN = adm) lê tudo
-        r = self.c.get("/api/historico")
+        self.assertNotIn("autor_nome", self.l.get("/api/programacao", headers=cab).get_json()["itens"][0])
+        r = self.l.get("/api/historico", headers=cab)
         self.assertEqual(r.status_code, 200)
-        self.assertEqual([x["texto"] for x in r.get_json()["itens"]], ["Antigo", "Modo PIN"])
+        self.assertEqual([x["texto"] for x in r.get_json()["itens"]], ["Antigo"])
 
     def test_sessao_de_pin_remota_le_o_historico_inteiro(self) -> None:
-        """Modo PIN: a sessão de PIN pela rede vale como gerente e lê tudo (inclusive com o filtro por conta)."""
+        """Modo PIN: a sessão de PIN pela rede vale como gerente e lê tudo o que houver no arquivo (inclusive com o
+        filtro por conta); nada novo entra."""
         server.aplicar_pin(PIN)
         self.assertFalse(server.modo_contas())
         token = cookie_da_resposta(self.login())
         alguem = {"id": "0123abcd", "usuario": "ex.conta", "nome": "Ex Conta", "funcao": "Caixa"}
-        server.registrar_anuncio(conta=alguem, texto="De uma conta", resultado="ok", origem="rede", tipo="digitado")
-        self.assertEqual(self.c.post("/api/announce", json={"text": "Do PC"}).status_code, 200)
+        self.gravar_linha_crua("De uma conta", alguem)
+        self.gravar_linha_crua("Sem conta", None)
+        self.assertEqual(self.c.post("/api/announce", json={"text": "Do PC"}).status_code, 200)   # não grava
         r = self.remoto("get", "/api/historico", headers=self.com_cookie(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual([(x["texto"], x["nome"]) for x in r.get_json()["itens"]],
-                         [("Do PC", "antes das contas"), ("De uma conta", "Ex Conta")])
+        self.assertEqual(sorted((x["texto"], x["nome"]) for x in r.get_json()["itens"]),
+                         [("De uma conta", "Ex Conta"), ("Sem conta", "antes das contas")])
         r = self.remoto("get", "/api/historico?conta=0123abcd", headers=self.com_cookie(token))
         self.assertEqual([x["texto"] for x in r.get_json()["itens"]], ["De uma conta"])
         self.assertEqual(self.remoto("get", "/api/historico").status_code, 401)
