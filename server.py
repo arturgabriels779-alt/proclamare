@@ -58,6 +58,7 @@ Inventário de rotas (v2.8)
   POST /api/contas                         pin | 20/min por IP e conta | {"usuario","nome","funcao","perfil","senha"}
   POST /api/contas/<conta_id>              pin | 20/min por IP e conta | {"versao","nome"?,"funcao"?,"perfil"?,"ativa"?,"senha"?}
   POST /api/conta/senha                    pin | 10/min por IP e conta; 5 erros/15 min por conta | {"senha_atual","senha_nova"}
+  GET  /api/historico                      pin | 60/min por IP e conta | ?de=&ate=&conta=&q=&antes= (só leitura: nada apaga nem edita)
   GET  /api/seguranca/remotos              local | - | -
   POST /api/seguranca/remotos/aprovar      local | - | {"tipo","id"} | {"todos":true}
   POST /api/sistema/desligar               local | - | {}
@@ -120,8 +121,8 @@ Inventário de rotas (v2.8)
   GET  /spotify/login                      pin | 5/min | - (redireciona; nunca devolve texto)
   GET  /spotify/callback                   publica | - | ?code=&state= (state de uso único)
 
-Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por rota, B5 rotas de contas)
---------------------------------------------------------------------------------------------------------
+Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por rota, B5 rotas de contas, B6 histórico)
+----------------------------------------------------------------------------------------------------------------------
   Modos. Sem nenhuma conta em contas.json (ao lado do config.json) vale o MODO PIN exatamente como na v2.7.1 (o PC
   da loja é livre; a sessão de PIN vale como perfil "gerente"). Com pelo menos uma conta vale o MODO CONTAS:
   login por usuário e senha; o PC das caixas também precisa entrar (rotas "só local" continuam por cima).
@@ -236,6 +237,41 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
   sucesso; primeiro_adm; senha_redefinida_cli (a CLI grava no mesmo logs/auditoria.log). NUNCA usuário, nome, senha
   ou id de conta no log ou na auditoria. criar_conta/alterar_conta sem ator só com marca explícita
   (primeiro_adm=True / sistema=True); ator None sem a marca = 403 "sem_permissao".
+  Histórico de anúncios (B6). anuncios.jsonl AO LADO do config.json (_anuncios_path(); nunca versionado; ACL
+                     restrita ao nascer; só append sob _historico_lock, ensure_ascii=False, uma linha JSON por
+                     anúncio): {"t" (ISO com fuso, relógio do PC, microssegundos), "conta_id", "usuario", "nome",
+                     "funcao", "texto", "resultado" (ok|ocupado|erro|sem_internet|limite|interrompido), "origem"
+                     (local|rede), "tipo" (digitado|tocar_agora|agendado)}. Sem conta (modo PIN ou horário sem
+                     autor): conta_id/usuario/funcao null e nome "antes das contas". É o ÚNICO lugar do
+                     texto falado: logs/auditoria.log e o log comum continuam SEM texto. Entram: POST /api/announce
+                     (digitado e Mensagens prontas; ok, 409 ocupado, 500 erro, 503 sem_internet, 429 limite - este só
+                     HISTORICO_LIMITE_MAX_POR_MIN = 5 por IP/conta, para um aparelho insistente não encher o disco;
+                     NÃO entram 400, 401 nem 403), "Tocar agora" de um horário "anuncio" (autor = quem pediu, origem
+                     dele; o 409 ocupado da rota também entra) e o anúncio agendado que toca sozinho (autor = a
+                     conta que criou/alterou o horário por último, relida em contas.json; origem "local"); "não tocou" vira
+                     ocupado/sem_internet/erro e o "Parar" vira interrompido. Áudio, lista e Spotify não são anúncios.
+                     Falha de disco ao gravar não derruba o anúncio (o log leva só o nome do erro). Retenção:
+                     HISTORICO_RETENCAO_DIAS = 90; podar_historico() regrava de forma atômica (temporário ".anuncios.*"
+                     com ACL antes dos dados) sem as linhas vencidas nem as ilegíveis, logo ao ligar e a cada 6 h
+                     (laço da vigia de túneis; falhou = tenta na próxima volta). A leitura já esconde o que passou de
+                     90 dias. Nenhuma rota apaga nem edita (POST/DELETE/PUT/PATCH em /api/historico = 405).
+  GET  /api/historico (qualquer conta logada; modo PIN: o PC e as sessões de PIN) ?de=AAAA-MM-DD&ate=AAAA-MM-DD
+                     (data local do anúncio, inclusive)&conta=<id>&q=<trecho do texto, sem diferenciar maiúsculas, até
+                     100>&antes=<ISO: só os anteriores; a próxima página manda o "t" do último item> -> {ok, itens:[os
+                     até 100 mais novos, do mais novo para o mais antigo, com os 9 campos acima], mais: bool}. Parâmetro
+                     desconhecido/repetido ou inválido = 400 {"codigo","campo"} (de, ate, conta, q, antes, "chave"; de >
+                     ate = campo "ate"). Sem "historico_todos" (funcionário) o filtro de conta é SEMPRE o da própria
+                     conta (o "conta" pedido é ignorado). 60/min por IP e por conta (429 "limite"). O arquivo é lido
+                     linha a linha (vários MB) guardando só os 101 mais novos; linha ilegível é pulada. Auditoria
+                     historico_ler com resultado, itens=N, proprios=1 e conta=c<10 hex> (nunca filtros nem texto).
+  Carimbo de autor (B6): horários, listas, atalhos do Spotify e mensagens prontas ganham "autor_id"/"autor_nome"
+                     (a conta logada) quando o CONTEÚDO é criado/alterado em modo contas (a mesma regra do
+                     alterado_por/origem; salvar igual não muda o autor). Só o servidor grava: cliente mandando = 400
+                     (programacao.CHAVES_SO_SERVIDOR nos horários; chave desconhecida nos esquemas estritos de listas,
+                     atalhos e mensagens; CHAVES_CARIMBO_SERVIDOR impede o servidor de subir se um esquema aceitar uma
+                     delas). Os GETs mostram só "autor_nome" (horários, resumo/detalhe de lista, atalho, mensagem) e
+                     só quando existe: sem ele = "antes das contas" (itens de antes da atualização continuam
+                     funcionando; quem salvar de novo vira o autor). Carimbo torto no disco é descartado.
 
 Contrato v2.8 (Parte A: voz da loja)
 ------------------------------------
@@ -978,6 +1014,7 @@ import copy
 import functools
 import getpass
 import hashlib
+import heapq
 import hmac
 import ipaddress
 import logging
@@ -1001,7 +1038,7 @@ from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturoTimeout
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from http.cookiejar import DefaultCookiePolicy
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -1465,11 +1502,14 @@ def _atualizar_tuneis() -> None:
 
 
 def _laco_vigia_tuneis() -> None:
+    # v2.8 (B6): o mesmo laço poda o histórico de anúncios (logo ao ligar e depois a cada 6 h; nunca levanta)
+    _podar_historico_se_vencido()
     while not _desligando.wait(TUNEL_VERIFICAR_S):
         try:
             _atualizar_tuneis()
         except Exception:  # noqa: BLE001 - a vigia nunca pode cair
             log.debug("Falha na vigia de túneis.", exc_info=True)
+        _podar_historico_se_vencido()
 
 
 def _iniciar_vigia_tuneis() -> None:
@@ -2168,6 +2208,8 @@ PERMISSOES_ROTAS: dict[tuple[str, str], str | None] = {
     ("POST", "/api/contas"): "contas",
     ("POST", "/api/contas/<conta_id>"): "contas",
     ("POST", "/api/conta/senha"): None,
+    # Histórico de anúncios (B6): qualquer conta logada; sem "historico_todos" (funcionário) só os próprios
+    ("GET", "/api/historico"): None,
     # Saídas de som: ler os blocos = quem mexe na música; mudar = só ADM
     ("GET", "/api/som/estado"): "musica",
     ("GET", "/api/som/saidas"): "musica",
@@ -6598,15 +6640,22 @@ def announce() -> Response | tuple[Response, int]:
     modo, chave_voz, velocidade = loja["motor"], loja["voz"], loja["velocidade"]
     aviso_sonoro = "nenhum" if teste else loja["aviso"]
     conta_audit = _conta_auditoria()
+    # v2.8 (B6): quem anuncia vai para o histórico (anuncios.jsonl). 400/401/403 não entram; o 429 entra como
+    # "limite", mas só HISTORICO_LIMITE_MAX_POR_MIN por IP/conta (um aparelho insistente não enche o disco com texto).
+    conta_hist = conta_da_requisicao()
+    origem_hist = "local" if _requisicao_local() else "rede"
     # v2.7.1 (P05): um aparelho com PIN não emenda anúncios sem limite (o PC da loja é livre).
     # v2.8 (B4): em modo contas o mesmo teto vale também POR CONTA (trocar de IP não dá anúncios a mais).
     if not _requisicao_local() and _excedeu_limite_ip_e_conta("anuncio:", ANUNCIO_REMOTO_MAX_POR_MIN, 60.0):
         auditar("anuncio", caracteres=len(texto), resultado="limite", conta=conta_audit)
+        if not _excedeu_limite_ip_e_conta("historico-limite:", HISTORICO_LIMITE_MAX_POR_MIN, 60.0):
+            registrar_anuncio(conta=conta_hist, texto=texto, resultado="limite", origem=origem_hist, tipo="digitado")
         raise ErroApi("Muitos anúncios seguidos. Aguarde um instante.", 429)
 
     # Não enfileira: se já há um anúncio tocando, responde 409 imediatamente.
     if not _anuncio_lock.acquire(blocking=False):
         auditar("anuncio", caracteres=len(texto), resultado="ocupado", conta=conta_audit)
+        registrar_anuncio(conta=conta_hist, texto=texto, resultado="ocupado", origem=origem_hist, tipo="digitado")
         return _resp_erro(_msg_ocupado("Já existe um anúncio tocando. Aguarde terminar."), 409)
     resultado_audit = "erro"
     _avisos_musica_iniciar()   # v2.4.2: duck/restore do Spotify anotam aqui o que deu errado
@@ -6658,6 +6707,9 @@ def announce() -> Response | tuple[Response, int]:
         _anuncio_lock.release()
         auditar("anuncio", caracteres=len(texto), resultado=resultado_audit,
                 conta=conta_audit)   # só o tamanho e o token opaco da conta, nunca o texto
+        # o texto vai SÓ para o histórico (arquivo próprio, ACL restrita), nunca para a auditoria nem para o log
+        registrar_anuncio(conta=conta_hist, texto=texto, resultado=resultado_audit, origem=origem_hist,
+                          tipo="digitado")
 
 
 # ---------------------------------------------------------------------------
@@ -7618,8 +7670,13 @@ def _mensagens_meta(cfg: dict) -> dict[str, dict[str, Any]]:
 
 
 def _resposta_mensagens(cfg: dict) -> Response:
-    """Formato único do GET e dos POSTs: {ok, versao, de_fabrica, mensagens}."""
+    """Formato único do GET e dos POSTs: {ok, versao, de_fabrica, mensagens} (+ "autor_nome" de quem tem, v2.8 B6)."""
     lista, de_fabrica = _mensagens_do_config(cfg)
+    meta = _mensagens_meta(cfg)
+    for m in lista:
+        nome = meta.get(m["id"], {}).get("autor_nome")
+        if nome:
+            m["autor_nome"] = nome
     return jsonify({"ok": True, "versao": _versao_mensagens(cfg),
                     "de_fabrica": de_fabrica, "mensagens": lista})
 
@@ -7725,6 +7782,7 @@ def mensagens_salvar() -> Response:
         usados = {m["id"] for m in itens if "id" in m}
         origem = _origem_da_requisicao()
         agora = int(time.time())
+        autor = _carimbo_autor()   # v2.8 (B6): a conta logada (modo PIN: nenhuma)
         final: list[dict[str, Any]] = []
         for i, m in enumerate(itens):
             ident = m.get("id")
@@ -7739,9 +7797,9 @@ def mensagens_salvar() -> Response:
                 carimbo = meta.get(ident) or {"criado_por": "local", "alterado_por": "local", "alterado_em": 0}
             elif antiga is not None:   # mudou o conteúdo: o criador fica, o último a mexer é esta requisição
                 carimbo = {"criado_por": (meta.get(ident) or {}).get("criado_por", "local"),
-                           "alterado_por": origem, "alterado_em": agora}
+                           "alterado_por": origem, "alterado_em": agora, **autor}
             else:
-                carimbo = {"criado_por": origem, "alterado_por": origem, "alterado_em": agora}
+                carimbo = {"criado_por": origem, "alterado_por": origem, "alterado_em": agora, **autor}
             final.append({"id": ident, "titulo": m["titulo"], "texto": m["texto"], **carimbo})
         cfg["mensagens"] = final
         cfg["mensagens_versao"] = _versao_mensagens(cfg) + 1
@@ -7904,17 +7962,22 @@ def _meta_de_origem(bruto: dict) -> dict[str, Any]:
     """
     criado = bruto.get("criado_por") if bruto.get("criado_por") in programacao.ORIGENS_ITEM else "local"
     alterado = bruto.get("alterado_por") if bruto.get("alterado_por") in programacao.ORIGENS_ITEM else criado
+    # v2.8 (B6): + autor_id/autor_nome (a conta), cada um só se válido; sem eles = "antes das contas"
     return {"criado_por": criado, "alterado_por": alterado,
-            "alterado_em": _inteiro(bruto.get("alterado_em"), 0, 2**40, 0)}
+            "alterado_em": _inteiro(bruto.get("alterado_em"), 0, 2**40, 0), **programacao.autor_lido(bruto)}
 
 
 def _carimbar(registro: dict, *, novo: bool) -> None:
-    """Grava no registro quem (local|remoto) o criou/alterou agora. É o SERVIDOR que decide; o cliente não manda."""
+    """
+    Grava no registro quem (local|remoto) o criou/alterou agora e, em modo contas, a conta (autor_id/autor_nome,
+    v2.8 B6). É o SERVIDOR que decide; o cliente não manda (as chaves são desconhecidas nos esquemas: 400).
+    """
     origem = _origem_da_requisicao()
     if novo:
         registro["criado_por"] = origem
     registro["alterado_por"] = origem
     registro["alterado_em"] = int(time.time())
+    _aplicar_autor(registro, _carimbo_autor())
 
 
 def _sanear_atalho_spotify(a: Any) -> dict[str, Any] | None:
@@ -8434,6 +8497,325 @@ def conta_trocar_senha() -> Any:
     return resp
 
 
+# ---------------------------------------------------------------------------
+# Histórico de anúncios (v2.8 B6): quem anunciou o quê, por 90 dias
+# ---------------------------------------------------------------------------
+# UMA linha JSON por anúncio em anuncios.jsonl AO LADO do config.json (nunca versionado; ACL restrita ao nascer):
+# {t, conta_id, usuario, nome, funcao, texto, resultado, origem, tipo}. É o ÚNICO lugar onde o texto falado fica
+# guardado: logs/auditoria.log e o log comum continuam sem texto. Só se acrescenta (append sob _historico_lock);
+# nenhuma rota apaga nem edita; podar_historico() tira o que passou de 90 dias (e linhas ilegíveis).
+ANUNCIOS_ARQUIVO = "anuncios.jsonl"
+HISTORICO_RETENCAO_DIAS = 90
+HISTORICO_PAGINA = 100                     # itens por página do GET /api/historico
+HISTORICO_BUSCA_MAX = 100                  # caracteres do filtro "q"
+HISTORICO_PODA_INTERVALO_S = 6 * 3600.0    # a vigia (laço de 60 s) poda no máximo a cada 6 h
+HISTORICO_LEITURA_MAX_POR_MIN = 60         # GET /api/historico, por IP e por conta (lê um arquivo de vários MB)
+HISTORICO_LIMITE_MAX_POR_MIN = 5           # 429 do /api/announce gravados como "limite", por IP e por conta
+HISTORICO_SEM_CONTA = "antes das contas"   # modo PIN ou item sem autor (de antes da atualização)
+HISTORICO_RESULTADOS = frozenset({"ok", "ocupado", "erro", "sem_internet", "limite", "interrompido"})
+HISTORICO_ORIGENS = frozenset({"local", "rede"})
+HISTORICO_TIPOS = frozenset({"digitado", "tocar_agora", "agendado"})
+_HISTORICO_PARAMS = frozenset({"de", "ate", "conta", "q", "antes"})
+_RE_DATA_ISO = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+# Resultado do histórico para um "não tocou" da Programação (motivo do NaoTocou); o resto vira "erro".
+_PROG_RESULTADO_HISTORICO = {"ocupado": "ocupado", "sem_internet": "sem_internet"}
+_historico_lock = threading.Lock()
+_historico_poda_ultima: float | None = None   # time.monotonic() da última poda bem-sucedida (None = ainda não podou)
+
+
+class ErroHistorico(ErroContas):
+    """Erro do GET /api/historico: {"ok": false, "error", "codigo", "campo"?} (mesmo formato das contas)."""
+
+
+def _anuncios_path() -> Path:
+    """anuncios.jsonl na pasta do config.json (os testes trocam CONFIG_PATH e levam este junto)."""
+    return CONFIG_PATH.with_name(ANUNCIOS_ARQUIVO)
+
+
+def _historico_agora() -> datetime:
+    """O relógio do histórico (local, com fuso). Injetável nos testes (poda de 90 dias com relógio falso)."""
+    return datetime.now().astimezone()
+
+
+def _com_fuso(quando: datetime) -> datetime:
+    return quando if quando.tzinfo is not None else quando.astimezone()
+
+
+def _autor_minimo(conta: Any) -> dict | None:
+    """Só o que o histórico guarda de uma conta: id, usuário, nome e função (nunca senha_hash nem sessao_v)."""
+    if not isinstance(conta, dict):
+        return None
+    return {k: conta.get(k) for k in ("id", "usuario", "nome", "funcao")}
+
+
+def registrar_anuncio(*, conta: dict | None, texto: str, resultado: str, origem: str, tipo: str) -> None:
+    """
+    Acrescenta UMA linha ao anuncios.jsonl. `conta` None (modo PIN, ou item da Programação sem autor) = nome "antes
+    das contas" e conta_id/usuario/funcao null. Token de resultado/origem/tipo fora do esperado = ValueError (erro de
+    programação, nunca do cliente). Falha de disco NÃO derruba o anúncio (que já tocou): vai para o log só o nome do
+    erro, nunca o texto.
+    """
+    if resultado not in HISTORICO_RESULTADOS or origem not in HISTORICO_ORIGENS or tipo not in HISTORICO_TIPOS:
+        raise ValueError("token de histórico desconhecido")
+    autor = _autor_minimo(conta)
+    entrada = {
+        "t": _com_fuso(_historico_agora()).isoformat(timespec="microseconds"),
+        "conta_id": _id_de_conta_ou_none(autor["id"]) if autor else None,
+        "usuario": autor["usuario"] if autor and isinstance(autor["usuario"], str) else None,
+        "nome": autor["nome"] if autor and isinstance(autor["nome"], str) and autor["nome"] else HISTORICO_SEM_CONTA,
+        "funcao": autor["funcao"] if autor and isinstance(autor["funcao"], str) else None,
+        "texto": str(texto)[:ANUNCIO_TEXTO_MAX],
+        "resultado": resultado, "origem": origem, "tipo": tipo,
+    }
+    # ensure_ascii=False: o arquivo fica legível com acentos; \n vira "\\n" no JSON (uma linha por anúncio) e os
+    # separadores de linha do Unicode também são escapados (nenhum leitor quebra a linha no meio).
+    linha = json.dumps(entrada, ensure_ascii=False, separators=(",", ":"))
+    linha = linha.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029") + "\n"
+    caminho = _anuncios_path()
+    with _historico_lock:
+        try:
+            if not caminho.exists():
+                caminho.parent.mkdir(parents=True, exist_ok=True)
+                with open(caminho, "a", encoding="utf-8"):
+                    pass   # nasce vazio: a ACL restrita entra ANTES do primeiro texto
+                _restringir_acl_windows(caminho)
+                with contextlib.suppress(OSError):
+                    os.chmod(caminho, 0o600)
+            with open(caminho, "a", encoding="utf-8", newline="\n") as f:
+                f.write(linha)
+                f.flush()
+        except Exception as exc:  # noqa: BLE001 - roda no finally do anúncio: nunca troca a resposta por um 500
+            log.error("Não foi possível gravar o histórico de anúncios (%s).", type(exc).__name__)
+
+
+def _texto_ou_none(valor: Any, maximo: int) -> str | None:
+    return valor[:maximo] if isinstance(valor, str) else None
+
+
+def _ler_entrada_historico(linha: str) -> tuple[datetime, dict] | None:
+    """(instante, entrada na lista branca de campos) de uma linha do arquivo, ou None se ilegível/torta."""
+    try:
+        bruto = json.loads(linha)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(bruto, dict):
+        return None
+    t, texto = bruto.get("t"), bruto.get("texto")
+    if not isinstance(t, str) or len(t) > 40 or not isinstance(texto, str):
+        return None
+    try:
+        quando = _com_fuso(datetime.fromisoformat(t))
+    except (ValueError, OverflowError, OSError):
+        return None
+    if (bruto.get("resultado") not in HISTORICO_RESULTADOS or bruto.get("origem") not in HISTORICO_ORIGENS
+            or bruto.get("tipo") not in HISTORICO_TIPOS):
+        return None
+    return quando, {
+        "t": t, "conta_id": _id_de_conta_ou_none(bruto.get("conta_id")),
+        "usuario": _texto_ou_none(bruto.get("usuario"), 40),
+        "nome": _texto_ou_none(bruto.get("nome"), 80) or HISTORICO_SEM_CONTA,
+        "funcao": _texto_ou_none(bruto.get("funcao"), 60), "texto": texto[:ANUNCIO_TEXTO_MAX],
+        "resultado": bruto["resultado"], "origem": bruto["origem"], "tipo": bruto["tipo"],
+    }
+
+
+def _abrir_historico_leitura(caminho: Path) -> Any:
+    # newline="\n": só o "\n" termina uma linha (o JSON escapa \r e os separadores Unicode).
+    return open(caminho, "r", encoding="utf-8", errors="replace", newline="\n")
+
+
+def podar_historico() -> int:
+    """
+    Reescreve o anuncios.jsonl de forma atômica (temporário com ACL ANTES dos dados + fsync + os.replace) sem as
+    linhas de mais de HISTORICO_RETENCAO_DIAS e sem as ilegíveis. Devolve quantas saíram; 0 = o arquivo não é
+    regravado. Roda sob o MESMO lock do append (nenhum anúncio se perde no meio da poda).
+    """
+    limite = _com_fuso(_historico_agora()) - timedelta(days=HISTORICO_RETENCAO_DIAS)
+    caminho = _anuncios_path()
+    with _historico_lock:
+        if not caminho.exists():
+            return 0
+        fd, tmp_nome = tempfile.mkstemp(dir=str(caminho.parent), prefix=".anuncios.", suffix=".tmp")
+        removidas = 0
+        try:
+            _restringir_acl_windows(Path(tmp_nome))
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as saida, \
+                    _abrir_historico_leitura(caminho) as entrada:
+                for linha in entrada:
+                    lida = _ler_entrada_historico(linha)
+                    if lida is None or lida[0] < limite:
+                        removidas += 1
+                        continue
+                    saida.write(linha if linha.endswith("\n") else linha + "\n")
+                saida.flush()
+                os.fsync(saida.fileno())
+            if removidas:
+                for tentativa in range(5):   # no Windows o replace falha por instantes (antivírus, leitor aberto)
+                    try:
+                        os.replace(tmp_nome, caminho)
+                        break
+                    except PermissionError:
+                        if tentativa == 4:
+                            raise
+                        time.sleep(0.05)
+                with contextlib.suppress(OSError):
+                    os.chmod(caminho, 0o600)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_nome)   # já foi trocado (não existe mais) ou não precisou
+    return removidas
+
+
+def _podar_historico_se_vencido(agora_mono: float | None = None) -> None:
+    """
+    Chamado pela vigia de túneis (já na partida e depois a cada 60 s): poda se nunca podou ou se passaram 6 h desde
+    a última poda BEM-SUCEDIDA (falhou = tenta de novo na próxima volta). Nunca levanta.
+    """
+    global _historico_poda_ultima
+    agora = time.monotonic() if agora_mono is None else agora_mono
+    if _historico_poda_ultima is not None and agora - _historico_poda_ultima < HISTORICO_PODA_INTERVALO_S:
+        return
+    try:
+        removidas = podar_historico()
+    except Exception as exc:  # noqa: BLE001 - a vigia nunca pode cair
+        log.warning("Não foi possível podar o histórico de anúncios (%s).", type(exc).__name__)
+        return
+    _historico_poda_ultima = agora
+    if removidas:
+        log.info("Histórico de anúncios: %d linha(s) antiga(s) ou ilegível(is) removida(s).", removidas)
+
+
+def _autor_do_item(item: dict) -> dict | None:
+    """Autor de um horário (quem criou/alterou o conteúdo por último): a conta atual, ou o nome guardado; sem = None."""
+    aid = item.get("autor_id")
+    if not isinstance(aid, str):
+        return None
+    conta = conta_por_id(aid)
+    if conta is not None:
+        return _autor_minimo(conta)
+    return {"id": aid, "usuario": None, "nome": item.get("autor_nome") or HISTORICO_SEM_CONTA, "funcao": None}
+
+
+def _pedido_por_da_requisicao() -> dict:
+    """Quem pede o "Tocar agora" (vai no ctx.pedido_por da Programação, para o histórico)."""
+    return {"conta": _autor_minimo(conta_da_requisicao()), "origem": "local" if _requisicao_local() else "rede"}
+
+
+def _registrar_anuncio_da_programacao(item: dict, ctx: programacao.Execucao, resultado: str) -> None:
+    """Anúncio da Programação no histórico: "Tocar agora" = quem pediu; agendado = o autor do item, no PC."""
+    if ctx.origem == "manual":
+        pedido = ctx.pedido_por or {}
+        conta, origem, tipo = pedido.get("conta"), pedido.get("origem", "local"), "tocar_agora"
+        if origem not in HISTORICO_ORIGENS:
+            origem = "local"
+    else:
+        conta, origem, tipo = _autor_do_item(item), "local", "agendado"
+    registrar_anuncio(conta=conta, texto=item.get("alvo") or "", resultado=resultado, origem=origem, tipo=tipo)
+
+
+def _param_unico(nome: str) -> str | None:
+    valores = request.args.getlist(nome)
+    if len(valores) > 1:
+        raise ErroHistorico("Parâmetro repetido.", 400, "invalido", nome)
+    return valores[0] if valores and valores[0] != "" else None
+
+
+def _param_data(nome: str) -> date | None:
+    bruto = _param_unico(nome)
+    if bruto is None:
+        return None
+    try:
+        if not _RE_DATA_ISO.fullmatch(bruto):
+            raise ValueError
+        return date.fromisoformat(bruto)
+    except ValueError:
+        raise ErroHistorico("Data inválida (use AAAA-MM-DD).", 400, "invalido", nome) from None
+
+
+@app.get("/api/historico")
+def historico_listar() -> Response:
+    """
+    {ok, itens: [os até 100 mais novos que passam nos filtros], mais: bool}. Filtros (todos opcionais): de/ate
+    (AAAA-MM-DD, pela data local do anúncio, inclusive), conta (id), q (trecho do texto, sem diferenciar maiúsculas,
+    até 100 caracteres), antes (ISO: só os anteriores a este instante; a próxima página usa o "t" do último item).
+    Sem "historico_todos" (funcionário) o filtro de conta é SEMPRE a própria. Lê o arquivo linha a linha (pode ter
+    vários MB) guardando só os 101 mais novos; linhas ilegíveis e as de mais de 90 dias são puladas.
+    """
+    desconhecidos = set(request.args) - _HISTORICO_PARAMS
+    if desconhecidos:
+        raise ErroHistorico("Parâmetro desconhecido.", 400, "invalido", "chave")
+    de, ate = _param_data("de"), _param_data("ate")
+    if de is not None and ate is not None and de > ate:
+        raise ErroHistorico("A data final vem antes da inicial.", 400, "invalido", "ate")
+    conta_filtro = _param_unico("conta")
+    if conta_filtro is not None and _id_de_conta_ou_none(conta_filtro) is None:
+        raise ErroHistorico("Conta inválida.", 400, "invalido", "conta")
+    q = _param_unico("q")
+    if q is not None and len(q) > HISTORICO_BUSCA_MAX:
+        raise ErroHistorico(f"Busca de no máximo {HISTORICO_BUSCA_MAX} caracteres.", 400, "tamanho", "q")
+    q = (q or "").strip().casefold() or None
+    antes_bruto = _param_unico("antes")
+    antes: datetime | None = None
+    if antes_bruto is not None:
+        try:
+            if len(antes_bruto) > 40:
+                raise ValueError
+            antes = _com_fuso(datetime.fromisoformat(antes_bruto))
+        except (ValueError, OverflowError, OSError):
+            raise ErroHistorico("Instante inválido.", 400, "invalido", "antes") from None
+    proprios = not _perfil_pode("historico_todos")
+    if proprios:   # funcionário: só os próprios, seja qual for o "conta" pedido
+        propria = conta_da_requisicao()
+        if propria is None:
+            raise ErroHistorico("Sem permissão para ver o histórico.", 403, "sem_permissao")
+        conta_filtro = propria["id"]
+    if _excedeu_limite_ip_e_conta("historico:", HISTORICO_LEITURA_MAX_POR_MIN, 60.0):
+        auditar("historico_ler", resultado="limite", conta=_conta_auditoria())
+        raise ErroHistorico(MSG_MUITOS_PEDIDOS, 429, "limite")
+    limite = _com_fuso(_historico_agora()) - timedelta(days=HISTORICO_RETENCAO_DIAS)
+    melhores: list[tuple[datetime, int, dict]] = []   # heap mínimo dos HISTORICO_PAGINA + 1 mais novos
+    caminho = _anuncios_path()
+    try:
+        with _abrir_historico_leitura(caminho) as f:
+            for seq, linha in enumerate(f):
+                lida = _ler_entrada_historico(linha)
+                if lida is None:
+                    continue
+                quando, entrada = lida
+                dia = quando.date()
+                if (quando < limite or (antes is not None and quando >= antes) or (de is not None and dia < de)
+                        or (ate is not None and dia > ate)
+                        or (conta_filtro is not None and entrada["conta_id"] != conta_filtro)
+                        or (q is not None and q not in entrada["texto"].casefold())):
+                    continue
+                par = (quando, seq, entrada)   # seq: desempate pela ordem no arquivo (o dict nunca é comparado)
+                if len(melhores) <= HISTORICO_PAGINA:
+                    heapq.heappush(melhores, par)
+                else:
+                    heapq.heappushpop(melhores, par)
+    except FileNotFoundError:
+        pass   # nenhum anúncio ainda
+    ordenados = sorted(melhores, reverse=True)
+    itens = [e for _, _, e in ordenados[:HISTORICO_PAGINA]]
+    auditar("historico_ler", resultado="ok", itens=len(itens), proprios=1 if proprios else None,
+            conta=_conta_auditoria())   # nunca filtros, texto ou nomes
+    return jsonify({"ok": True, "itens": itens, "mais": len(ordenados) > HISTORICO_PAGINA})
+
+
+# --- Carimbo de autor (v2.8 B6) ---------------------------------------------------------------------
+def _carimbo_autor() -> dict[str, str]:
+    """{"autor_id", "autor_nome"} da conta logada (modo contas) ou {} (modo PIN / fora de requisição)."""
+    conta = conta_da_requisicao()
+    return {} if conta is None else {"autor_id": conta["id"], "autor_nome": conta["nome"]}
+
+
+def _aplicar_autor(registro: dict, autor: dict[str, str]) -> None:
+    """Troca o autor do registro pelo `autor` ({} = sem autor: as chaves saem; o painel mostra "antes das contas")."""
+    registro.pop("autor_id", None)
+    registro.pop("autor_nome", None)
+    registro.update(autor)
+
+
 def listas_ler() -> dict:
     """
     Documento atual {"versao", "listas": [{id, nome, versao, atualizada_em, musicas: [item]}], "spotify":
@@ -8491,6 +8873,7 @@ def _resumo_lista(lista: dict) -> dict[str, Any]:
     return {
         "id": lista["id"], "nome": lista["nome"], "versao": lista["versao"], "atualizada_em": lista["atualizada_em"],
         "total": len(itens), "youtube": yt, "disponiveis": disponiveis,
+        **({"autor_nome": lista["autor_nome"]} if lista.get("autor_nome") else {}),   # v2.8 (B6); sem = antes das contas
     }
 
 
@@ -9118,6 +9501,12 @@ _RE_LINK_SPOTIFY_CAMINHO = re.compile(
     rf"/(?:(?i:intl-[a-z]{{2,3}}(?:-[a-z]{{2,4}})?)/)?({_SPOTIFY_TIPO})/({_SPOTIFY_ID22})/?")
 _ATALHO_CHAVES_CRIAR = frozenset({"nome", "link"})
 _ATALHO_CHAVES_SALVAR = frozenset({"versao", "nome", "link"})
+# Carimbos que SÓ o servidor grava (v2.7.1 + v2.8 B6). Os esquemas estritos do cliente recusam chave desconhecida
+# (400); esta guarda impede que alguém, um dia, ponha uma delas num esquema (o servidor nem sobe).
+CHAVES_CARIMBO_SERVIDOR = frozenset({"criado_por", "alterado_por", "alterado_em", "autor_id", "autor_nome"})
+if CHAVES_CARIMBO_SERVIDOR & (_LISTA_CHAVES_CRIAR | _LISTA_CHAVES_SALVAR | _ATALHO_CHAVES_CRIAR | _ATALHO_CHAVES_SALVAR
+                              | _MENSAGEM_CHAVES | programacao.CHAVES_ITEM | programacao.CHAVES_DOC):
+    raise RuntimeError("Um esquema do cliente aceita um carimbo que só o servidor grava.")
 
 
 class ErroTocarSpotify(Exception):
@@ -9162,7 +9551,8 @@ def _uri_spotify_do_link(valor: Any) -> str:
 def _atalho_publico(atalho: dict) -> dict[str, Any]:
     _, tipo, ident = atalho["uri"].split(":")
     return {"id": atalho["id"], "nome": atalho["nome"], "tipo": tipo, "versao": atalho["versao"],
-            "atualizada_em": atalho["atualizada_em"], "url": f"https://open.spotify.com/{tipo}/{ident}"}
+            "atualizada_em": atalho["atualizada_em"], "url": f"https://open.spotify.com/{tipo}/{ident}",
+            **({"autor_nome": atalho["autor_nome"]} if atalho.get("autor_nome") else {})}   # v2.8 (B6)
 
 
 def _limites_atalhos() -> dict[str, int]:
@@ -9852,7 +10242,27 @@ def _prog_executar(item: dict, ctx: programacao.Execucao) -> dict | None:
         if _desligamento_agendado or _desligando.is_set():
             raise programacao.NaoTocou("desligando", "O Proclamare estava sendo desligado.")
         return _prog_executar_lista(item, ctx) if item["tipo"] == "lista" else _prog_executar_spotify(item, ctx)
+    if item["tipo"] == "anuncio":
+        return _prog_executar_anuncio(item, ctx)
     return _prog_executar_som(item, ctx)
+
+
+def _prog_executar_anuncio(item: dict, ctx: programacao.Execucao) -> dict | None:
+    """
+    v2.8 (B6): o anúncio de texto da Programação (agendado ou "Tocar agora") passa pelo fluxo de sempre e, ao fim,
+    entra no histórico com o resultado: ok | interrompido ("Parar") | ocupado / sem_internet (não tocou) | erro.
+    Só o tipo "anuncio" tem texto: áudio, lista e Spotify não são anúncios e não entram.
+    """
+    resultado = "erro"
+    try:
+        extra = _prog_executar_som(item, ctx)
+        resultado = "interrompido" if (extra or {}).get("interrompido") else "ok"
+        return extra
+    except programacao.NaoTocou as e:
+        resultado = _PROG_RESULTADO_HISTORICO.get(e.motivo, "erro")
+        raise
+    finally:
+        _registrar_anuncio_da_programacao(item, ctx, resultado)
 
 
 def _prog_criar_servico(**ajustes: Any) -> programacao.Programacao:
@@ -9906,7 +10316,8 @@ def _prog_alvo_info(item: dict) -> tuple[str | None, bool | None, str | None]:
 def _prog_item_publico(item: dict, agora: datetime) -> dict[str, Any]:
     alvo_nome, alvo_ok, alvo_motivo = _prog_alvo_info(item)
     proxima = programacao.proxima_ocorrencia(item, agora) if item["ativo"] else None
-    return {**item, "rotulo": _prog_nome(item), "alvo_nome": alvo_nome, "alvo_ok": alvo_ok,
+    publico = {k: v for k, v in item.items() if k != "autor_id"}   # v2.8 (B6): o painel mostra só o autor_nome
+    return {**publico, "rotulo": _prog_nome(item), "alvo_nome": alvo_nome, "alvo_ok": alvo_ok,
             "alvo_motivo": alvo_motivo,
             "proxima": proxima.isoformat(timespec="seconds") if proxima else None}
 
@@ -10134,10 +10545,13 @@ def _prog_marcar_origem(final: list[dict], atuais: list[dict]) -> None:
     """
     Carimbos do SERVIDOR em cada item (o cliente não pode mandar nenhum): "origem" ("local" | "remoto") =
     quem alterou o CONTEÚDO por último (ligar/desligar pelo PC não conta; veja _prog_mexeu); "criado_por" =
-    quem criou (imutável); "alterado_em" = epoch da última alteração de conteúdo.
+    quem criou (imutável); "alterado_em" = epoch da última alteração de conteúdo. v2.8 (B6): "autor_id"/"autor_nome"
+    = a conta que mexeu no conteúdo por último (a mesma regra do "origem"; modo PIN = sem autor); sem mexer, fica o
+    autor que já estava (item de antes das contas continua sem).
     """
     origem = _origem_da_requisicao()
     agora = int(time.time())
+    autor = _carimbo_autor()
     antigos = {i["id"]: i for i in atuais}
     for item in final:
         antigo = antigos.get(item["id"])
@@ -10145,6 +10559,8 @@ def _prog_marcar_origem(final: list[dict], atuais: list[dict]) -> None:
         item["origem"] = _prog_origem_prevista(item, antigo, origem)
         item["criado_por"] = (antigo.get("criado_por") or antigo.get("origem") or "local") if antigo else origem
         item["alterado_em"] = agora if mexeu else (antigo.get("alterado_em") or 0)
+        _aplicar_autor(item, autor if mexeu else
+                       {k: antigo[k] for k in ("autor_id", "autor_nome") if antigo and k in antigo})
 
 
 def _prog_pendentes() -> list[tuple[dict, str]]:
@@ -10647,7 +11063,7 @@ def programacao_testar(item_id: str) -> tuple[Response, int]:
                 raise ErroProg(MSG_ATALHO_NAO_EXISTE, 404, codigo="atalho_inexistente")
         elif not _tocador_vivo():
             raise ErroProg(MSG_SEM_TOCADOR, 409, codigo="sem_tocador")
-        PROGRAMACAO.solicitar(item, lock_tomado=False)
+        PROGRAMACAO.solicitar(item, lock_tomado=False, pedido_por=_pedido_por_da_requisicao())
     else:
         if item["tipo"] == "audio":   # erros que não dependem da trava: respondidos antes de tomá-la
             try:
@@ -10655,9 +11071,14 @@ def programacao_testar(item_id: str) -> tuple[Response, int]:
             except programacao.NaoTocou as e:
                 raise ErroProg(e.texto, 404 if e.motivo == "sem_musica" else 409, codigo=e.motivo) from None
         if not _anuncio_lock.acquire(blocking=False):
+            if item["tipo"] == "anuncio":   # v2.8 (B6): o "Tocar agora" recusado também entra no histórico
+                pedido = _pedido_por_da_requisicao()
+                registrar_anuncio(conta=pedido["conta"], texto=item["alvo"], resultado="ocupado",
+                                  origem=pedido["origem"], tipo="tocar_agora")
             raise ErroProg(_msg_ocupado("Já existe um anúncio tocando. Aguarde terminar."), 409, codigo="ocupado")
         try:
-            PROGRAMACAO.solicitar(item, lock_tomado=True)   # o executar libera a trava ao terminar
+            # o executar libera a trava ao terminar; pedido_por = o autor do "Tocar agora" no histórico (v2.8 B6)
+            PROGRAMACAO.solicitar(item, lock_tomado=True, pedido_por=_pedido_por_da_requisicao())
         except BaseException:
             _anuncio_lock.release()
             raise
@@ -10902,7 +11323,7 @@ def limpar_residuos_de_dados() -> None:
     pasta = CONFIG_PATH.parent
     with contextlib.suppress(Exception):
         n = programacao.limpar_temporarios_orfaos(
-            pasta, (".config.", ".listas.", ".programacao.", ".seguranca."))
+            pasta, (".config.", ".listas.", ".programacao.", ".seguranca.", ".contas.", ".anuncios."))
         podadas = sum(programacao.podar_copias(pasta / nome) for nome in ("config.json", LISTAS_ARQUIVO, PROGRAMACAO_ARQUIVO))
         if n or podadas:
             log.info("Limpeza na partida: %d temporário(s) órfão(s) e %d cópia(s) corrompida(s) antiga(s) apagados.",

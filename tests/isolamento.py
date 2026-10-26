@@ -8,7 +8,8 @@ chama também para poder rodar como `python tests/test_som.py`):
     que são as chaves de testes opcionais) - antes bastava um `setdefault`, que não faz nada se a variável
     já existia (ou existia vazia, e então o servidor caía na pasta Músicas REAL);
   * aponta PROCLAMARE_MUSICAS_DIR para uma pasta nova (mkdtemp), apagada ao sair;
-  * `sandbox_de_dados(server)` (P36) troca o CONFIG_PATH e o AUDIO_DIR "de produção" do servidor por pastas
+  * `sandbox_de_dados(server)` (P36) troca o CONFIG_PATH (e com ele contas.json e anuncios.jsonl, conferidos: falha
+    fechado) e o AUDIO_DIR "de produção" do servidor por pastas
     temporárias: as classes de teste guardam o valor "real" no setUp e o DEVOLVEM no tearDown, que roda
     ANTES dos addCleanup/threads de fundo; com o valor real sendo uma pasta temporária, nada que termine
     depois do tearDown cai no config.json/listas.json/programacao.json da loja;
@@ -79,6 +80,9 @@ def sandbox_de_dados(server: object) -> Path:
     if not dentro_do_temporario(server._contas_path()):   # type: ignore[attr-defined]
         raise RuntimeError("ABORTADO: o contas.json dos testes não está na pasta temporária isolada.")
     server._contas_arquivo.resetar()                 # type: ignore[attr-defined]
+    # B6: o histórico de anúncios (anuncios.jsonl, com o TEXTO falado) também acompanha o CONFIG_PATH; falha FECHADO.
+    if not dentro_do_temporario(server._anuncios_path()):   # type: ignore[attr-defined]
+        raise RuntimeError("ABORTADO: o anuncios.jsonl dos testes não está na pasta temporária isolada.")
     server.AUDIO_DIR = base / "audios_temp"         # type: ignore[attr-defined]
     server.AUDIO_DIR.mkdir(parents=True, exist_ok=True)   # type: ignore[attr-defined]
     return base

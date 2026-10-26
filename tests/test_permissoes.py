@@ -198,11 +198,11 @@ class TesteMatriz(BasePermissoes):
         def liberadas(perfil: str) -> set[tuple[str, str]]:
             return {rota for rota in rotas_protegidas() if not deve_negar(perfil, *rota)}
 
-        # funcionário: só o anúncio, as mensagens prontas, ler a voz da loja, trocar a própria senha (e as que a
-        # própria rota decide)
+        # funcionário: só o anúncio, as mensagens prontas, ler a voz da loja, trocar a própria senha, o próprio
+        # histórico (B6: a rota força o filtro da conta) e as que a própria rota decide
         self.assertEqual(liberadas("funcionario"), {
             ("POST", "/api/announce"), ("GET", "/api/mensagens"), ("GET", "/api/voz"), ("GET", "/api/voices"),
-            ("POST", "/api/auth/primeiro-adm"), ("POST", "/api/conta/senha"),
+            ("POST", "/api/auth/primeiro-adm"), ("POST", "/api/conta/senha"), ("GET", "/api/historico"),
         })
         # gerente: tudo menos saídas de som (mudar), segurança/rede e credenciais/conexão do Spotify
         self.assertEqual(set(rotas_protegidas()) - liberadas("gerente"), {

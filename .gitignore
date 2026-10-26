@@ -13,6 +13,11 @@ listas.json*
 # contas de usuário (hash das senhas; também cópias de um contas.json ilegível)
 contas.json*
 **/contas.json*
+# histórico de anúncios (v2.8: nome, função e o TEXTO falado por 90 dias = dado pessoal; e os temporários da poda)
+anuncios.jsonl*
+**/anuncios.jsonl*
+.anuncios.*
+**/.anuncios.*
 # programação de horários (dados da loja e o instante em que o servidor foi visto pela última vez)
 programacao*.json*
 **/programacao*.json*

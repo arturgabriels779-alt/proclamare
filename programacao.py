@@ -90,7 +90,11 @@ _CATEGORIAS_RECUSADAS = frozenset({"Cc", "Cf", "Cs", "Co"})
 _FORMATO_OK = frozenset({chr(0x200C), chr(0x200D)})
 
 CHAVES_DOC = frozenset({"versao", "itens"})
-CHAVES_SO_SERVIDOR = frozenset({"origem", "criado_por", "alterado_em"})   # gravadas só pelo servidor (nunca vêm do cliente)
+# Gravadas só pelo servidor (nunca vêm do cliente: chave desconhecida = 400). v2.8 (B6): "autor_id"/"autor_nome" = a
+# conta que criou ou alterou o CONTEÚDO por último (só em modo contas; item sem eles = "antes das contas").
+CHAVES_SO_SERVIDOR = frozenset({"origem", "criado_por", "alterado_em", "autor_id", "autor_nome"})
+RE_AUTOR_ID = re.compile(r"[0-9a-f]{8}")      # id de conta (server._CONTA_ID_RE)
+AUTOR_NOME_MAX = 60                           # contas.NOME_MAX (conferido nos testes)
 CHAVES_ITEM = frozenset({"id", "ativo", "tipo", "alvo", "nome", "hora", "dias", "data", "embaralhar",
                          "voz", "motor", "velocidade"})
 
@@ -434,8 +438,24 @@ def sanear_documento(bruto: Any) -> dict:
         em = b.get("alterado_em")
         if _inteiro_puro(em) and 0 <= em <= 2**40:
             item["alterado_em"] = em
+        item.update(autor_lido(b))   # v2.8 (B6): autor torto no disco é descartado (o item continua)
         doc["itens"].append(item)
     return doc
+
+
+def autor_lido(bruto: dict) -> dict:
+    """
+    v2.8 (B6): {"autor_id", "autor_nome"} lidos do disco, cada um só se válido (id de conta de 8 hex; nome com a
+    mesma higienização dos textos, 1..60, uma linha). Inválido ou ausente = a chave fica de fora ("antes das contas").
+    """
+    autor: dict = {}
+    aid = bruto.get("autor_id")
+    if isinstance(aid, str) and RE_AUTOR_ID.fullmatch(aid):
+        autor["autor_id"] = aid
+    nome = texto_limpo(bruto.get("autor_nome"), AUTOR_NOME_MAX, multilinha=False)
+    if nome is not None:
+        autor["autor_nome"] = nome
+    return autor
 
 
 COPIAS_CORROMPIDAS_MAX = 3   # cópias "<arquivo>.corrompido-*" guardadas por arquivo (as mais novas)
@@ -637,6 +657,9 @@ class Execucao:
     esperar: Callable[[float], bool]  # espera `s` segundos; True = o serviço está parando
     monotonic: Callable[[], float]
     comecou: Callable[[], None] = field(default=lambda: None)   # "agora está tocando de verdade"
+    # v2.8 (B6): quem pediu o "Tocar agora" ({"conta": {...} | None, "origem": "local" | "rede"}, montado pelo
+    # servidor); None no agendado (o autor é o do item).
+    pedido_por: dict | None = None
 
 
 @dataclass
@@ -916,11 +939,12 @@ class Programacao:
         if fim is not None and ctx.origem == "agendado" and ctx.criado_mono <= fim:
             ctx.prazo_mono = min(max(ctx.prazo_mono, fim + self.espera_s), ctx.criado_mono + ATRASO_MAX_S)
 
-    def _novo_pedido(self, item: dict, origem: str, lock_tomado: bool = False) -> _Pedido:
+    def _novo_pedido(self, item: dict, origem: str, lock_tomado: bool = False,
+                     pedido_por: dict | None = None) -> _Pedido:
         agora = self._mono()
         sinal = SinalParada()
         ctx = Execucao(origem=origem, criado_mono=agora, prazo_mono=agora + self.espera_s, sinal=sinal,
-                       lock_tomado=lock_tomado, esperar=self._esperar, monotonic=self._mono)
+                       lock_tomado=lock_tomado, esperar=self._esperar, monotonic=self._mono, pedido_por=pedido_por)
         pedido = _Pedido(dict(item), ctx)
         ctx.comecou = lambda: self._marcar_tocando(pedido)
         return pedido
@@ -938,13 +962,13 @@ class Programacao:
             self._rodar(pedido)
             n += 1
 
-    def solicitar(self, item: dict, *, lock_tomado: bool = True) -> None:
+    def solicitar(self, item: dict, *, lock_tomado: bool = True, pedido_por: dict | None = None) -> None:
         """
         "Tocar agora": roda o item já, fora da fila, numa thread própria. Com `lock_tomado` a trava de
         áudio já é da requisição (o `executar` a libera ao terminar). Se não der para disparar a
-        thread, levanta a exceção (quem chamou desfaz o que tomou).
+        thread, levanta a exceção (quem chamou desfaz o que tomou). `pedido_por` vai para ctx.pedido_por.
         """
-        pedido = self._novo_pedido(item, "manual", lock_tomado)
+        pedido = self._novo_pedido(item, "manual", lock_tomado, pedido_por)
         if lock_tomado and item["tipo"] != "lista":
             self._marcar_tocando(pedido)    # sem janela entre a trava e o "tocando" (a rota 409 usa)
         try:
