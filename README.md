@@ -101,6 +101,15 @@ Abra **http://127.0.0.1:8502** no PC da loja. Nos outros aparelhos, use **http:/
 
 > O guia completo — conectar o Spotify, configurar o YouTube, IP fixo, firewall, iniciar junto com o Windows/Linux e solução de problemas — está em **[docs/GUIA.md](docs/GUIA.md)**.
 
+## 👥 Primeiro acesso (contas e perfis)
+
+1. No **PC da loja**, abra o painel e clique em **Criar conta de administrador** (aviso no topo, ou *Configurações → Acesso pela rede*). Essa conta pode tudo; a partir dela o PIN deixa de valer.
+2. Em *Configurações → Contas*, crie uma conta para cada pessoa: **funcionário** (só anuncia), **gerente** (anuncia, música, horários, contas de funcionários) ou **administrador** (tudo, inclusive som, segurança e Spotify). Contas não são apagadas, só desativadas.
+3. Cada um entra com o próprio usuário e senha (o PC da loja sai sozinho após 5 min sem clique/tecla; o Tocador e os horários seguem tocando). O *Histórico* mostra quem anunciou o quê, por 90 dias.
+4. Esqueceu a senha do último administrador? Com o Proclamare desligado: `python server.py --redefinir-senha <usuario>`.
+
+Detalhes, tabela de perfis e privacidade: seção 2d do [guia](docs/GUIA.md).
+
 ## ⚙️ Configuração
 
 | Variável | Padrão | Para quê |
@@ -119,6 +128,7 @@ Abra **http://127.0.0.1:8502** no PC da loja. Nos outros aparelhos, use **http:/
 ## 🛡️ Segurança e desempenho
 
 - **Credenciais só no servidor:** o Client Secret do Spotify fica no `config.json` local (ignorado pelo Git) e nunca é enviado ao navegador; só pode ser alterado a partir do próprio PC da loja.
+- **Contas e perfis (v2.8):** depois do primeiro administrador, todos entram com usuário e senha (PBKDF2) e cada rota exige a capacidade do perfil. O texto abaixo (PIN) vale enquanto não houver contas.
 - **Acesso pela rede com PIN:** aparelhos remotos só controlam o painel após digitar o PIN (hash PBKDF2, sessão por cookie assinado de 14 dias, bloqueio por tentativas). O PC da loja (loopback) não pede PIN; sem PIN o acesso remoto fica desligado. O PIN protege contra curiosos, mas a rede usa `http`: mantenha o Wi-Fi de clientes separado.
 - **Proteções web:** Content-Security-Policy rígida, checagem de `Origin`/`Content-Type` contra CSRF, lista de hosts contra DNS rebinding, `state` de uso único no login OAuth e validação de todas as entradas.
 - **Leve para ficar ligado o dia todo:** servidor waitress, conexões reaproveitadas com a API do Spotify, cache compartilhado entre os aparelhos, todo o áudio numa única thread dedicada e *long-polling* em vez de consultas a cada segundo.
@@ -127,6 +137,7 @@ Abra **http://127.0.0.1:8502** no PC da loja. Nos outros aparelhos, use **http:/
 
 - **O texto dos anúncios vai à Microsoft** no modo online (voz neural, via Edge TTS, fora do Brasil e sem contrato próprio). No modo **Offline** (voz do Windows) nada sai do computador. Evite nomes completos, CPF e placas nos anúncios.
 - **No PC da loja** ficam o `config.json` (hash do PIN, segredo do Spotify), a programação (com o texto dos anúncios agendados) e `logs/` com o **IP dos aparelhos**. A trilha `logs/auditoria.log` tem rotação diária e guarda 90 dias, e **nunca** o texto dos anúncios.
+- **Histórico de anúncios (v2.8, com contas):** `anuncios.jsonl` guarda nome, função e **texto** de cada anúncio por **90 dias** e apaga sozinho; ninguém edita nem apaga.
 - **No celular de cada pessoa** fica o histórico dos últimos 20 anúncios (use *Limpar*).
 - Sem telemetria: nada é enviado aos autores. Detalhes e roteiro de resposta a incidente (PIN vazado, aparelho perdido, segredo do Spotify vazado; há botão **Desconectar Spotify** e uma área **Segurança** no painel do PC da loja): seções 9 e 10 do [guia](docs/GUIA.md). Falhas de segurança: veja [SECURITY.md](SECURITY.md).
 

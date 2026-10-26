@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -126,6 +126,19 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
   Modos. Sem nenhuma conta em contas.json (ao lado do config.json) vale o MODO PIN exatamente como na v2.7.1 (o PC
   da loja é livre; a sessão de PIN vale como perfil "gerente"). Com pelo menos uma conta vale o MODO CONTAS:
   login por usuário e senha; o PC das caixas também precisa entrar (rotas "só local" continuam por cima).
+  Passagem PIN -> contas: o primeiro ADM nasce SÓ por POST /api/auth/primeiro-adm no PC das caixas (o painel oferece
+  o aviso "Criar conta de administrador" e o bloco em Configurações; nada trava enquanto ninguém criar). Ao nascer, o
+  PIN deixa de valer e as sessões de PIN caem. FALHA PARA O MODO PIN: contas.json apagado ou ilegível (o armazém guarda
+  a cópia "contas.json.corrompido-*" e segue com a lista vazia) = modo PIN SEM PIN: o PC das caixas fica livre e a rede
+  bloqueada (nenhuma conta, nenhum PIN). Recuperar = restaurar o backup do contas.json ou criar o ADM de novo.
+  PROCLAMARE_CONFIAR_LOOPBACK=0 (ninguém é "o PC das caixas") impede criar o primeiro ADM (a rota é só local).
+  Perfis (contas.PERFIS) e capacidades (contas.PODE; contas.pode(perfil, capacidade) falha fechado):
+    funcionario = anunciar
+    gerente     = anunciar, mensagens_editar, voz, musica, programacao, historico_todos, contas, desligar
+    adm         = as do gerente + som, seguranca, spotify_config
+  Hierarquia (contas.pode_gerenciar): ADM gerencia qualquer perfil; gerente só funcionário; funcionário ninguém.
+  Limites de conta (contas.py): até CONTAS_MAX 50; usuário 3..30 [a-z0-9._]; senha 8..128 e diferente do usuário; nome
+  até 60; função até 40; PBKDF2 (ITERACOES 200000).
   Permissões (B4, SÓ em modo contas; modo PIN = nenhum 403 novo). before_request: _exigir_sessao() e, logo depois,
   _exigir_permissao(): PERMISSOES_ROTAS[(método, regra do url_map)] = capacidade de contas.CAPACIDADES (None = basta
   estar logado). Perfil sem a capacidade = 403 {"ok":false,"codigo":"sem_permissao","error"} (vale chamando a API

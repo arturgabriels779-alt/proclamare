@@ -481,6 +481,108 @@ direitos autorais envolvidos.
 
 ---
 
+## 2d. Contas e perfis (cada pessoa com o próprio usuário)
+
+Desde a versão 2.8 o Proclamare pode funcionar com **contas**: cada pessoa da equipe entra com o próprio
+**usuário e senha** e o painel mostra só o que o cargo dela permite. Assim o **Histórico** mostra quem fez cada
+anúncio. Enquanto ninguém criar a primeira conta, tudo continua como antes (PIN para os aparelhos da rede e o
+computador da loja livre).
+
+### Criar a primeira conta (administrador)
+
+1. No **computador da loja**, abra o painel. No topo aparece o aviso **Criar conta de administrador** (ou vá em
+   **Configurações → Acesso pela rede → Criar conta de administrador**).
+2. Preencha seu nome, a função (por exemplo, "Dona da loja"), o usuário (3 a 30 letras minúsculas, números,
+   ponto ou sublinhado; ex.: `maria.souza`) e uma senha de 8 a 128 caracteres, diferente do usuário.
+3. Pronto: essa conta é o **administrador** e pode tudo. **A partir daí o PIN deixa de valer**: os celulares que
+   estavam conectados com PIN saem e todos, **inclusive o computador da loja**, passam a entrar com usuário e senha.
+   A aba **Tocador da loja** e os horários programados continuam tocando normalmente.
+4. Só dá para criar o primeiro administrador **no computador da loja**. Se o Proclamare foi iniciado com
+   `PROCLAMARE_CONFIAR_LOOPBACK=0`, nenhum aparelho é "o computador da loja" e **não é possível criar o primeiro
+   administrador**: inicie sem essa opção, crie a conta e depois volte a usá-la se precisar.
+5. Depois, crie as contas de todo mundo: **Configurações → Contas → Nova conta**.
+
+### O que cada perfil pode fazer
+
+| Ação | Funcionário | Gerente | Administrador |
+|---|:-:|:-:|:-:|
+| Fazer anúncios (digitando ou pelas mensagens prontas) | sim | sim | sim |
+| Ver o histórico de anúncios | só os próprios | todos | todos |
+| Trocar a própria senha | sim | sim | sim |
+| Editar as mensagens prontas | não | sim | sim |
+| Escolher a voz e o aviso sonoro | não | sim | sim |
+| Música (YouTube, Minhas músicas, listas, Spotify) | não | sim | sim |
+| Programação de horários | não | sim | sim |
+| Criar e editar contas | não | só de funcionários | todas |
+| Desligar o Proclamare pelo painel | não | sim (no PC da loja) | sim (no PC da loja) |
+| Saídas de som, segurança da rede e conexão com o Spotify | não | não | sim |
+
+Se alguém tentar algo que o perfil não permite, o Proclamare recusa e avisa quem deve pedir (um gerente ou um
+administrador). Isso vale mesmo que a pessoa tente por fora do painel.
+
+### Criar, editar e desativar contas
+
+- **Configurações → Contas → Nova conta:** nome, função, usuário, perfil e senha. Combine a senha com a pessoa;
+  ela pode trocar depois em **Trocar minha senha** (no topo do painel).
+- **Editar:** nome, função, perfil e situação da conta. O **usuário (o nome de entrada) não muda**. Ninguém edita
+  a própria conta por essa tela (a própria senha é em **Trocar minha senha**).
+- **Definir uma senha nova para outra pessoa** (ela esqueceu): um **gerente** (para funcionários) ou um
+  **administrador** (para qualquer um) abre a conta e usa **Definir senha nova**. As sessões abertas dessa pessoa
+  são encerradas e ela entra com a senha nova.
+- **Desativar:** quem saiu da equipe é **desativado**, não apagado. A pessoa não consegue mais entrar e a sessão
+  dela cai. **Contas nunca são apagadas**, de propósito: o histórico continua mostrando o nome de quem anunciou.
+  Dá para **Reativar** depois.
+- Sempre fica pelo menos **um administrador ativo**: o Proclamare não deixa desativar ou rebaixar o último.
+- Limite de 50 contas. Quem erra a senha muitas vezes é bloqueado por alguns minutos (10 erros em 15 minutos).
+
+### Esqueci a senha
+
+- **Gerente ou administrador:** peça a outro gerente/administrador para definir uma senha nova (veja acima).
+- **Era o último administrador:** no **computador da loja**, com o Proclamare **desligado** (Menu Iniciar →
+  *Desligar Proclamare*), abra um terminal na pasta do Proclamare e rode (troque `maria.souza` pelo seu usuário):
+
+  ```
+  .venv\Scripts\python.exe server.py --redefinir-senha maria.souza
+  ```
+
+  Ele pede a senha nova duas vezes (sem mostrar na tela, como no `--definir-pin`). As sessões abertas dessa conta
+  são encerradas. Depois é só ligar o Proclamare e entrar.
+
+### O computador da loja sai sozinho (5 minutos)
+
+Com contas, o computador da loja também precisa de login. Depois de **5 minutos sem nenhum clique ou tecla**,
+ele sai sozinho, para ninguém usar o painel com a conta de outra pessoa. **Só rolar a página não conta** como
+atividade. Nos celulares e outros computadores a pessoa fica lembrada por 14 dias, como antes.
+
+**O som não para:** com ninguém logado, a aba **Tocador da loja** e os **horários da programação** continuam
+tocando; só não dá para anunciar nem mexer em nada até alguém entrar.
+
+### Histórico de anúncios
+
+No bloco **Histórico** do painel, **Ver tudo** abre a lista de anúncios com data e hora, quem fez (nome e função),
+o texto, o resultado (tocou, ocupado, erro, sem internet, interrompido) e se foi digitado, "tocar agora" ou
+agendado. Dá para filtrar por dia, por pessoa (gerente e administrador) e por trecho do texto, e carregar mais
+páginas. O **funcionário vê só os próprios anúncios**. Anúncios de antes das contas aparecem como "antes das
+contas".
+
+### Privacidade do histórico
+
+O Proclamare guarda, para cada anúncio, o **nome, a função e o texto** falado (e a data, a hora e o resultado), no
+arquivo `anuncios.jsonl` ao lado do `config.json`. **Depois de 90 dias isso é apagado automaticamente.** **Ninguém
+pode editar nem apagar** esses registros pelo painel (nem o administrador). Avise a equipe de que isso existe e
+evite nomes completos, CPF e placas nos anúncios (veja a seção 10). Os registros de segurança (`auditoria.log`)
+continuam sem o texto dos anúncios.
+
+### Cuidados importantes
+
+- **Faça backup do `contas.json`** (fica ao lado do `config.json`, nunca vai para o Git). Se ele for **apagado
+  ou ficar ilegível**, o Proclamare volta ao modo antigo **sem PIN**: o computador da loja fica livre, mas a
+  **rede fica bloqueada** até alguém restaurar o backup ou criar o administrador de novo (a cópia do arquivo
+  estragado fica guardada como `contas.json.corrompido-...`).
+- Com contas, `--definir-pin` e `--remover-pin` não funcionam mais: o PIN não vale.
+
+---
+
 ## 3. Conectar o Spotify (passo a passo)
 
 Diferente da v1, a música do Spotify **não toca pelo navegador** — ela toca
@@ -1287,6 +1389,9 @@ carro). Quem decide o que anunciar é a loja; estas são as informações para d
 
 **O que fica guardado no computador da loja** (tudo na pasta do programa)
 - `config.json`: hash do PIN, chave de sessão, Client Secret e tokens do Spotify, saídas de som.
+- `contas.json` (v2.8): as contas da equipe (usuário, nome, função, perfil e o **hash** da senha, nunca a senha).
+- `anuncios.jsonl` (v2.8): o **histórico de anúncios** com **nome, função e texto** de cada um; **apagado
+  automaticamente após 90 dias**; ninguém edita nem apaga (seção 2d).
 - `programacao.json`: inclui o **texto** dos anúncios agendados. `listas.json`: listas e atalhos.
 - `logs/proclamare.log`: log comum do servidor (rotativo por tamanho: 5 MB × 3 cópias), sem textos
   de anúncios e **sem IP dos aparelhos** (o IP fica só na auditoria, abaixo).
