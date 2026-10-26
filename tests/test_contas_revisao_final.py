@@ -477,7 +477,8 @@ class TesteSair(BaseContas):
 # S5 - teto do anuncios.jsonl
 # ---------------------------------------------------------------------------------------------
 class TesteTetoDoHistorico(BaseContas):
-    def test_no_teto_so_ocupado_e_limite_deixam_de_entrar(self) -> None:
+    def test_no_teto_tentativas_e_falhas_deixam_de_entrar(self) -> None:
+        """S5 + rodada 3 (N5): no teto, ocupado/limite/erro/sem_internet param; ok e interrompido nunca."""
         self.criar_adm()
         conta = server.conta_por_usuario("ana.adm")
         server._historico_cheio_avisado = None
@@ -493,11 +494,11 @@ class TesteTetoDoHistorico(BaseContas):
                 server.registrar_anuncio(conta=conta, texto=resultado, resultado=resultado, origem="rede",
                                          tipo="digitado")
         linhas = server._anuncios_path().read_text(encoding="utf-8").splitlines()
-        self.assertEqual([json.loads(x)["resultado"] for x in linhas], ["ok", "erro", "sem_internet", "interrompido"])
+        self.assertEqual([json.loads(x)["resultado"] for x in linhas], ["ok", "interrompido"])
         # abaixo do teto, "ocupado" volta a entrar
         with mock.patch.object(server, "_tamanho_arquivo", return_value=cheio - 1):
             server.registrar_anuncio(conta=conta, texto="y", resultado="ocupado", origem="rede", tipo="digitado")
-        self.assertEqual(len(server._anuncios_path().read_text(encoding="utf-8").splitlines()), 5)
+        self.assertEqual(len(server._anuncios_path().read_text(encoding="utf-8").splitlines()), 3)
 
 
 # ---------------------------------------------------------------------------------------------

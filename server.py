@@ -209,12 +209,17 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
   contas "c" (id da conta), "sv" (sessao_v da conta) e "l": 1 se foi emitido para o PC das caixas. É recusado:
   token sem "c" (de PIN) em modo contas; conta inexistente ou desativada; "sv" diferente (senha/perfil/ativa
   mudaram); "l" que não bate com a origem da requisição (token do PC não vale pela rede e vice-versa); token na lista
-  de revogados (S4 + rodada 2 N1/N2: POST /api/auth/logout revoga a FAMÍLIA "s:<sid>" do token apresentado até iat +
-  90 dias - o token velho e todos os renovados a partir dele, nos dois sentidos; o filtro de corpo grande do waitress
-  também recusa -, em memória, até TOKENS_REVOGADOS_MAX 5000 entradas; as vencidas saem antes e uma revogação VIVA
-  nunca é descartada: lista cheia = falha fechada, a conta de quem saiu tem todas as sessões encerradas (sessao_v + 1)
-  ou, num token de PIN, todas as sessões caem (acesso_versao + 1), com aviso no log. UM REINÍCIO DO SERVIDOR ESQUECE
-  A LISTA - para derrubar de vez use "Sair de todos os aparelhos"; vale também em modo PIN). A conta é
+  de revogados (S4 + rodada 2 N1/N2 + rodada 3 M1: POST /api/auth/logout revoga a FAMÍLIA "s:<sid>" do token
+  apresentado - o token velho e todos os renovados a partir dele, nos dois sentidos; o filtro de corpo grande do
+  waitress também recusa -, SÓ se o token ainda VALE (_carga_completa; cópia velha = nada a revogar, só apaga o
+  cookie), por min(iat + 90 dias, agora + a vida de um token da família + 60 s) (PC das caixas 300 s, rede 14 dias:
+  nenhum membro novo nasce depois, porque toda emissão revalida o token apresentado), em memória, até
+  TOKENS_REVOGADOS_MAX 50000 entradas; as vencidas saem antes e uma revogação VIVA nunca é descartada: lista cheia =
+  falha fechada, a conta de quem saiu tem todas as sessões encerradas (sessao_v + 1) ou, num token de PIN, todas as
+  sessões caem (acesso_versao + 1), com aviso no log. O logout tem LOGOUT_MAX_POR_MIN 20/min por IP: acima, 429
+  {"ok":false,"codigo":"limite","error"} sem revogar, mas com o cookie apagado. Trocar a própria senha (POST
+  /api/conta/senha) começa uma família NOVA (sid novo, mesmo iat). UM REINÍCIO DO SERVIDOR ESQUECE A LISTA - para
+  derrubar de vez use "Sair de todos os aparelhos"; vale também em modo PIN). A conta é
   RELIDA do contas.json a cada requisição (conta_da_requisicao(), guardada em flask.g; perfil_da_requisicao():
   perfil da conta; em modo PIN "adm" para o PC da loja (livre, pode tudo, como hoje) e "gerente" para sessões de
   PIN pela rede; None sem sessão).
@@ -231,7 +236,9 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
                      os bloqueios de login e grava o marcador "contas_desde" (S1).
                      Rodada 2 (R1): falhou ao gravar o config.json = log de erro e mais uma tentativa; se
                      falhar de novo, 500 (a conta existe; modo contas já vale) e TODA requisição seguinte tenta de
-                     novo (_retomar_passagem_contas). Erros de validação: 400/409 com
+                     novo (_retomar_passagem_contas). Rodada 3 (L2): a passagem roda sob _passagem_lock e é
+                     idempotente (nunca gira a chave duas vezes); na PARTIDA, conta existente com o acesso_pin_hash
+                     ainda gravado = passagem completa (_garantir_marcador_contas). Erros de validação: 400/409 com
                      "codigo"/"campo" (como as contas; senha fraca = "fraca").
   POST /api/auth/login (modo contas) {"usuario","senha"} (estrito; {"pin"} = 400 "codigo":"modo_contas"; tipo/
                      tamanho errado = 400). Usuário em minúsculas sem espaços nas pontas. Ordem: bloqueio por usuário
@@ -338,8 +345,8 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
                      falha ao achar o autor de um horário, que nunca troca o resultado do horário). Arquivo que termina
                      sem "\n" (processo morto no meio de uma escrita) = a próxima linha começa numa linha nova. Teto
                      (S5): com o arquivo em HISTORICO_TETO_BYTES (50 MB) ou mais, "ocupado" e "limite" deixam de ser
-                     gravados (aviso "histórico cheio" no log no máximo 1 vez por hora); ok, erro, sem_internet e
-                     interrompido continuam. Retenção:
+                     gravados, e desde a rodada 3 (N5) também "erro" e "sem_internet" (aviso "histórico cheio" no
+                     log no máximo 1 vez por hora); ok e interrompido continuam. Retenção:
                      HISTORICO_RETENCAO_DIAS = 90; podar_historico() regrava de forma atômica (temporário ".anuncios.*"
                      com ACL antes dos dados) sem as linhas vencidas nem as ilegíveis, logo ao ligar e a cada 6 h
                      (laço da vigia de túneis; falhou = tenta na próxima volta). A leitura já esconde o que passou de
@@ -2046,7 +2053,8 @@ _versao_vista: int | None = None
 # para derrubar de vez, "Sair de todos os aparelhos" sobe a sessao_v da conta). No máximo TOKENS_REVOGADOS_MAX; os
 # vencidos saem antes e uma revogação viva NUNCA sai: sem lugar, _revogar_token encerra as sessões da conta (falha
 # fechada).
-TOKENS_REVOGADOS_MAX = 5000
+TOKENS_REVOGADOS_MAX = 50000   # rodada 3 (M1): com a retenção curta, 50.000 cabe com folga na memória (poucos MB)
+LOGOUT_MAX_POR_MIN = 20         # rodada 3 (M1): POST /api/auth/logout por IP
 SID_BYTES = 9            # rodada 2 (N1): sid = 12 caracteres base64url
 SID_MAX_CHARS = 40
 _tokens_revogados: dict[str, float] = {}
@@ -3809,7 +3817,17 @@ def _revogar_token(token: str | None) -> bool:
     if (sid is None or isinstance(exp, bool) or not isinstance(exp, (int, float)) or exp <= agora
             or isinstance(iat, bool) or not isinstance(iat, (int, float))):
         return False
-    fim = min(float(iat) + SESSAO_TETO_S, agora + SESSAO_TETO_S)
+    # Rodada 3 (M1): só se revoga token VIVO (conta existe, ativa, mesma sessao_v, versão de acesso atual, família ainda
+    # não revogada). Uma cópia velha não tem o que revogar: sem isto, cópias velhas + lista cheia forçariam o logout de
+    # qualquer conta (ou, no modo PIN, a queda geral) quantas vezes alguém quisesse.
+    marca_local = carga.get("l", 0)
+    if _carga_completa(token, cfg, local=bool(marca_local) if marca_local in (0, 1) else False) is None:
+        return False
+    # Retenção (M1 b): todo membro VIVO da família vence até agora + a vida de um token dele (PC das caixas: 300 s;
+    # rede: 14 dias) e nenhum novo pode nascer depois da revogação (toda emissão revalida o token apresentado); os
+    # 60 s cobrem uma renovação que já tinha passado da checagem no instante do "Sair".
+    vida = SESSAO_LOCAL_OCIOSA_S if (carga.get("c") is not None and marca_local == 1) else SESSAO_DURACAO_S
+    fim = min(float(iat) + SESSAO_TETO_S, agora + vida + 60)
     with _tokens_revogados_lock:
         for velho in [k for k, f in _tokens_revogados.items() if f <= agora]:
             del _tokens_revogados[velho]
@@ -3846,8 +3864,15 @@ def _encerrar_sessoes_da_conta(conta_id: str) -> bool:
 
 
 @app.post("/api/auth/logout")
-def auth_logout() -> Response:
-    """Apaga o cookie e (S4) revoga o token no servidor: copiado antes, ele não vale mais (até um reinício)."""
+def auth_logout() -> Any:
+    """
+    Apaga o cookie e (S4/N1) revoga a família do token no servidor, se ele ainda vale (M1): copiado antes, ele não vale
+    mais (até um reinício). Rodada 3: LOGOUT_MAX_POR_MIN por IP; acima disso 429 SEM revogar nada, mas o cookie deste
+    navegador é apagado do mesmo jeito (a pessoa sai do aparelho; "Sair de todos os aparelhos" continua disponível).
+    """
+    if excedeu_limite("logout:" + (request.remote_addr or "?"), LOGOUT_MAX_POR_MIN, 60.0):
+        return _apagar_cookie(jsonify({"ok": False, "codigo": "limite",
+                                       "error": "Muitos pedidos de saída seguidos. Aguarde um minuto."})), 429
     _revogar_token(request.cookies.get(COOKIE_SESSAO))
     return _apagar_cookie(jsonify({"ok": True}))
 
@@ -3981,6 +4006,7 @@ def _exigir_adm_local(msg_so_local: str) -> None:
 
 PRIMEIRO_ADM_MAX_POR_MIN = 10
 _passagem_contas_pendente = False   # rodada 2 (R1): o 1º ADM nasceu mas o config.json não gravou; tenta de novo
+_passagem_lock = threading.Lock()   # rodada 3 (L2): primeiro-adm e a retomada nunca rodam a passagem ao mesmo tempo
 
 
 def _passar_para_contas() -> dict:
@@ -3988,9 +4014,14 @@ def _passar_para_contas() -> dict:
     A passagem PIN -> contas no config.json, numa gravação só: apaga o acesso_pin_hash, gira a acesso_chave, sobe a
     acesso_versao (sessões de PIN e cookies de aparelho caem) e grava o marcador "contas_desde" (S1). Devolve o config
     gravado; OSError sobe para quem chama (primeiro-adm tenta de novo).
+    Rodada 3 (L2): idempotente - com o marcador gravado, sem PIN e com chave, não faz nada (nunca gira a chave duas
+    vezes). Ordem dos locks: _passagem_lock -> _config_lock (nunca o das contas aqui dentro).
     """
     with _config_lock:
         cfg = load_config()
+        if (cfg.get(CONTAS_MARCADOR) is not None and "acesso_pin_hash" not in cfg
+                and _chave_acesso(cfg) is not None):
+            return cfg
         cfg.pop("acesso_pin_hash", None)
         cfg["acesso_chave"] = _b64u(secrets.token_bytes(32))
         cfg["acesso_versao"] = _versao_acesso(cfg) + 1
@@ -4005,15 +4036,18 @@ def _retomar_passagem_contas() -> None:
     global _passagem_contas_pendente
     if not _passagem_contas_pendente:
         return
-    if _marcador_contas() or not _contas_arquivo.ler()["contas"]:
+    with _passagem_lock:   # rodada 3 (L2): uma retomada por vez; quem chega depois vê o pendente já resolvido
+        if not _passagem_contas_pendente:
+            return
+        if not _contas_arquivo.ler()["contas"]:
+            _passagem_contas_pendente = False
+            return
+        try:
+            _passar_para_contas()
+        except OSError as exc:
+            log.error("O config.json ainda não pôde ser gravado depois do primeiro ADM (%s).", type(exc).__name__)
+            return
         _passagem_contas_pendente = False
-        return
-    try:
-        _passar_para_contas()
-    except OSError as exc:
-        log.error("O config.json ainda não pôde ser gravado depois do primeiro ADM (%s).", type(exc).__name__)
-        return
-    _passagem_contas_pendente = False
     _login_resetar_global()
     log.info("Passagem para as contas concluída: o marcador e a chave nova foram gravados no config.json.")
 
@@ -4043,13 +4077,16 @@ def auth_primeiro_adm() -> Any:
         raise
     global _passagem_contas_pendente
     cfg = None
-    for _tentativa in range(2):   # rodada 2 (R1): falhou ao gravar o config.json = loga e tenta mais uma vez
-        try:
-            cfg = _passar_para_contas()
-            break
-        except OSError as exc:
-            log.error("Primeiro ADM criado, mas o config.json não foi gravado (%s): tentando de novo.",
-                      type(exc).__name__)
+    with _passagem_lock:   # rodada 3 (L2): nunca junto com a retomada
+        for _tentativa in range(2):   # rodada 2 (R1): falhou ao gravar o config.json = loga e tenta mais uma vez
+            try:
+                cfg = _passar_para_contas()
+                break
+            except OSError as exc:
+                log.error("Primeiro ADM criado, mas o config.json não foi gravado (%s): tentando de novo.",
+                          type(exc).__name__)
+        if cfg is None:
+            _passagem_contas_pendente = True
     if cfg is None:
         # A conta existe (modo contas já vale: o PIN não entra mais), mas o marcador/chave não foram gravados: a
         # próxima requisição tenta de novo (_retomar_passagem_contas).
@@ -8597,11 +8634,25 @@ def contas_indisponiveis() -> bool:
 
 
 def _garantir_marcador_contas() -> None:
-    """Na partida: há contas mas falta o marcador (contas criadas antes da S1, ou o processo caiu entre gravar o
-    contas.json e o config.json no 1º ADM)? Grava agora. Falha de disco só vira aviso."""
-    if not _contas_arquivo.ler()["contas"] or _marcador_contas():
+    """
+    Na partida: há contas mas falta o marcador (contas criadas antes da S1, ou o processo caiu entre gravar o
+    contas.json e o config.json no 1º ADM)? Grava agora. Rodada 3 (L2): se o acesso_pin_hash AINDA está no config.json
+    (a passagem do 1º ADM não chegou ao disco), faz a passagem COMPLETA (_passar_para_contas: tira o PIN, gira a
+    chave, sobe a versão, grava o marcador); sem PIN, só o marcador (as sessões das contas continuam). Falha de disco
+    só vira aviso.
+    """
+    if not _contas_arquivo.ler()["contas"]:
         return
+    cfg = load_config()
     try:
+        if "acesso_pin_hash" in cfg:
+            with _passagem_lock:
+                _passar_para_contas()
+            _login_resetar_global()
+            log.warning("Havia contas com o PIN ainda gravado: a passagem para as contas foi concluída agora.")
+            return
+        if cfg.get(CONTAS_MARCADOR) is not None:
+            return
         with _config_lock:
             cfg = load_config()
             if cfg.get(CONTAS_MARCADOR) is None:
@@ -8975,7 +9026,9 @@ def conta_trocar_senha() -> Any:
     log.info("Conta trocou a própria senha (%s); as outras sessões da conta foram encerradas.",
              "local" if carga["local"] else "remoto")
     resp = jsonify({"ok": True})
-    token, vida = _emitir_token(cfg, iat=carga["iat"], conta=conta, local=carga["local"], sid=carga["sid"])
+    # Rodada 3 (L1): senha nova = família de sessão NOVA (sid novo; o iat fica, e com ele o teto de 90 dias): sair com
+    # uma cópia velha da sessão de antes da troca nunca alcança a sessão nova
+    token, vida = _emitir_token(cfg, iat=carga["iat"], conta=conta, local=carga["local"])
     _definir_cookie_sessao(resp, token, vida)
     return resp
 
@@ -9028,11 +9081,11 @@ HISTORICO_LIMITE_MAX_POR_MIN = 5           # 429 do /api/announce gravados como 
 HISTORICO_FALHA_MAX_POR_MIN = 10           # rodada 2 (N5): "erro"/"sem_internet" do /api/announce, por IP e por conta
 HISTORICO_FALHAS_LIMITADAS = frozenset({"erro", "sem_internet"})
 HISTORICO_SEM_CONTA = "antes das contas"   # item sem autor (de antes da atualização)
-# v2.8 (revisão final S5): teto do arquivo. Acima dele as linhas "ocupado" e "limite" (as que um aparelho insistente
-# consegue repetir) deixam de ser gravadas, com UM aviso no log por hora ("histórico cheio"); ok, erro, sem_internet e
-# interrompido continuam (a poda de 90 dias é que reduz o arquivo).
+# v2.8 (revisão final S5 + rodada 3 N5): teto do arquivo. Acima dele as linhas "ocupado", "limite", "erro" e
+# "sem_internet" (as que voltam na hora e um aparelho insistente consegue repetir) deixam de ser gravadas, com UM aviso
+# no log por hora ("histórico cheio"); ok e interrompido continuam (a poda de 90 dias é que reduz o arquivo).
 HISTORICO_TETO_BYTES = 50 * 1024 * 1024
-HISTORICO_CORTADOS_NO_TETO = frozenset({"ocupado", "limite"})
+HISTORICO_CORTADOS_NO_TETO = frozenset({"ocupado", "limite", "erro", "sem_internet"})   # rodada 3 (N5): + falhas
 HISTORICO_CHEIO_AVISO_S = 3600.0
 _historico_cheio_avisado: float | None = None   # monotonic do último aviso "histórico cheio"
 HISTORICO_RESULTADOS = frozenset({"ok", "ocupado", "erro", "sem_internet", "limite", "interrompido"})

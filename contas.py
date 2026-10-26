@@ -143,10 +143,12 @@ def _forma_fraca(texto: str) -> bool:
     miolo = _PONTAS_RE.sub("", texto)
     if texto in SENHAS_COMUNS or (miolo and miolo in SENHAS_COMUNS):
         return True
-    if len(set(texto)) <= 2:   # aaaaaaa1, 11112222, 00000001, 12121212
+    if len(texto) >= 6 and len(set(texto)) <= 2:   # aaaaaaa1, 11112222, 00000001, 12121212
         return True
-    for k in (3, 4):           # bloco repetido: abcabcab, 12341234
-        if texto == (texto[:k] * len(texto))[:len(texto)]:
+    for k in (3, 4):           # bloco repetido DE VERDADE (mais de 2 vezes o bloco): abcabcab, 12341234
+        # rodada 3: sem o "len > 2k" um texto de 4 caracteres "repetia" o próprio bloco e senhas fortes curtas com
+        # símbolos (Ab3$xY7!, Xk9!mQ2#) caíam por uma variante curta ("9mq2")
+        if len(texto) > 2 * k and texto == (texto[:k] * len(texto))[:len(texto)]:
             return True
     return any(texto in seq or texto in seq[::-1] for seq in _SEQUENCIAS)
 
