@@ -371,6 +371,9 @@
         const code = out.data.auth;
         if ((res.status === 401 && code === "pin_requerido") || (res.status === 403 && code === "pin_nao_configurado")) {
           lockApp(code, out.data);
+        } else if (res.status === 401 && out.data.codigo === "login_requerido") {
+          // v2.8: algumas rotas de conta (ex.: /api/conta/senha) respondem só com o "codigo"
+          lockApp("pin_requerido", out.data);
         } else if (res.status === 403 && out.data.codigo === "sem_permissao") {
           // v2.8: o perfil não pode (a tela ficou velha?). Sem toast nem nova tentativa aqui: relê as permissões
           // uma vez (com intervalo mínimo) e esconde o que não vale mais. Quem chamou trata a própria resposta.
@@ -827,6 +830,7 @@
   const btnGateRetry = $("btn-gate-retry");
   const gateDownView = $("gate-down");
   const gateDownTitle = $("gate-down-title");
+  const gateAutoplay = $("gate-autoplay");
   // entrar com usuário e senha (v2.8)
   const gateLoginView = $("gate-login");
   const gateLoginForm = $("gate-login-form");
@@ -962,8 +966,10 @@
   /** role=tabpanel só vale quando a barra de abas está visível (celular/tablet). */
   function syncTabSemantics() {
     const tabs = [[panelAnnounce, "tab-announce", "title-announce"], [panelMusic, "tab-music", "title-music"], [panelProg, "tab-prog", "title-prog"]];
+    // v2.8: a barra some para o funcionário (uma aba só): aí os painéis não são tabpanel de nada
+    const comAbas = tabModeMQ.matches && !tabbar.classList.contains("perm-off");
     tabs.forEach(([panel, tabId, titleId]) => {
-      if (tabModeMQ.matches) {
+      if (comAbas) {
         panel.setAttribute("role", "tabpanel");
         panel.setAttribute("aria-labelledby", tabId);
       } else {
@@ -3222,6 +3228,27 @@
   const ytNpImg = $("yt-np-img");
   const youtubeNpArtist = $("youtube-np-artist");
   const AUTOPLAY_MSG = "O navegador bloqueou a reprodução automática. Clique em Tocar nesta aba uma vez.";
+
+  /**
+   * Autoplay bloqueado. Com o painel liberado: o toast de sempre. Com a porta fechada e o Tocador tocando por trás
+   * (o painel está inerte e os toasts não aparecem): um aviso NA PORTA, e o próximo clique/tecla nela retoma a
+   * música (o clique é o gesto que o navegador pede).
+   */
+  let autoplayPendente = false;
+  function avisarAutoplay() {
+    if (!tocadorSobrevivendo) { toast(AUTOPLAY_MSG, "warn", { duration: 8000 }); return; }
+    autoplayPendente = true;
+    gateAutoplay.hidden = false;
+  }
+  function retomarAposGesto() {
+    if (!autoplayPendente) return;
+    autoplayPendente = false;
+    gateAutoplay.hidden = true;
+    if (fa.id) playAudio();
+    else if (ytPlayer && ytReady) { try { ytPlayer.playVideo(); } catch (e) { /* o player avisa de novo */ } }
+  }
+  gate.addEventListener("pointerdown", retomarAposGesto);
+  gate.addEventListener("keydown", retomarAposGesto);
   const fa = {
     id: null, // music_id carregado no <audio> (null = a fonte ativa é o YouTube ou nada)
     meta: null, // faixa {id, title, artista, album, tem_capa, duracao_s}
@@ -3274,7 +3301,7 @@
       p.catch((e) => {
         if (!fa.id || !e) return;
         if (e.name === "NotAllowedError") {
-          toast(AUTOPLAY_MSG, "warn", { duration: 8000 });
+          avisarAutoplay();
           fileUiSync();
           pushYoutubeState();
         }
@@ -4079,9 +4106,7 @@
           // item com problema não pode travar a fila: segue para o próximo
           ytAdvance("error");
         },
-        onAutoplayBlocked: () => {
-          toast("O navegador bloqueou a reprodução automática. Clique em Tocar nesta aba uma vez.", "warn");
-        },
+        onAutoplayBlocked: () => avisarAutoplay(),
       },
     });
   }
@@ -9707,11 +9732,18 @@
   /** Fecha a porta com um fade e inicia o painel. */
   function enterApp() {
     const fromGate = gateMode === "pin" || gateMode === "off" || gateMode === "login";
+    // v2.8: com o Tocador por trás, o painel aparece durante o fade da porta: já com a conta, as permissões e sem o
+    // texto da pessoa anterior
+    renderConta();
+    aplicarPermissoes();
+    limparDaPessoaAnterior();
     const finish = () => {
       gateMode = "";
       delete rootEl.dataset.gate;
       delete rootEl.dataset.gateSobre;
       appEl.inert = false;
+      gateAutoplay.hidden = true;
+      autoplayPendente = false;
       gate.hidden = true;
       gate.classList.remove("is-leaving");
       if (fromGate) playEnter(appEl);
@@ -10561,6 +10593,10 @@
   const USUARIO_RE = /^[a-z0-9._]{3,30}$/; // = contas.normalizar_usuario
   const SENHA_MIN = 8;
   const SENHA_MAX = 128;
+  const NOME_MAX = 60; // = contas.NOME_MAX
+  const FUNCAO_MAX = 40; // = contas.FUNCAO_MAX
+  /** Tamanho em code points (o len() do Python), não em unidades UTF-16 (um emoji conta 1, como no servidor). */
+  const tamanho = (texto) => Array.from(texto).length;
 
   /** Lê modo, conta e permissões do /api/auth/status (só campos conhecidos; textos cortados no tamanho do contrato). */
   function lerConta(st) {
@@ -10629,6 +10665,7 @@
     // Abas do celular: só as do perfil; com uma aba só (funcionário) a barra some
     const abas = Array.from(tabbar.querySelectorAll("[data-value]")).filter((b) => !b.classList.contains("perm-off"));
     tabbar.classList.toggle("perm-off", abas.length <= 1);
+    syncTabSemantics();
     if (!pode("musica") && !pode("programacao")) rootEl.dataset.soAnuncio = "1";
     else delete rootEl.dataset.soAnuncio;
     if ((activeTab === "music" && !pode("musica")) || (activeTab === "prog" && !pode("programacao"))) {
@@ -10650,6 +10687,7 @@
         lockApp("pin_requerido", { codigo: "login_requerido" });
         return;
       }
+      if (contaTrocou(r.data)) { trocarDePessoa(); return; } // nunca troca a identidade da tela em silêncio
       lerConta(r.data);
       auth.podeDesligar = r.data.local === true && r.data.pode_desligar === true;
       btnPower.hidden = !auth.podeDesligar;
@@ -10669,15 +10707,62 @@
    * status (rota pública, não renova nada) e, se a sessão acabou, mostra a tela de entrar na hora, para a próxima
    * pessoa não encontrar o painel aberto com o nome de quem esqueceu de sair.
    */
-  async function conferirSessaoOciosa() {
-    if (!(auth.modoContas && auth.local) || authLocked || performance.now() - ultimaAtividade < SESSAO_LOCAL_OCIOSA_MS) return;
+  function conferirSessaoOciosa() {
+    if (!(auth.modoContas && auth.local) || authLocked || performance.now() - ultimaAtividade < SESSAO_LOCAL_OCIOSA_MS) return undefined;
+    return conferirConta();
+  }
+
+  /**
+   * O cookie de sessão é do navegador inteiro: se outra aba entrou com outra conta (ou saiu), esta aba não pode
+   * continuar mostrando o nome, as permissões e o texto da pessoa anterior enquanto o servidor grava os anúncios
+   * no nome da nova. Compara o id da conta do status com o desta tela.
+   */
+  function contaTrocou(st) {
+    return !!(auth.modoContas && auth.conta && st && st.modo_contas === true && st.autenticado === true
+      && st.conta && typeof st.conta === "object" && st.conta.id !== auth.conta.id);
+  }
+
+  /** Outra conta assumiu o navegador: relê tudo (boot -> enterApp -> limparDaPessoaAnterior some o texto antigo). */
+  function trocarDePessoa() {
+    limparComposerEHistorico(); // já agora: o fade da porta não mostra o que a anterior digitou
+    boot();
+  }
+
+  /**
+   * Confere quem está logado (rota pública /api/auth/status, não renova nada). Roda depois de 5 min sem uso no PC das
+   * caixas, ao voltar para a aba e quando outra aba do mesmo navegador entra ou sai (evento "storage").
+   * Sessão caiu -> tela de entrar; outra conta -> boot; na tela de entrar e outra aba entrou -> boot (entra junto).
+   */
+  let contaConferindo = false;
+  async function conferirConta() {
+    if (contaConferindo || shuttingDown || booting) return;
+    contaConferindo = true;
     try {
       const r = await getJSON("/api/auth/status", { auth: true, timeout: 5000 });
-      if (r.ok && r.data.modo_contas === true && r.data.autenticado !== true && !authLocked) {
-        lockApp("pin_requerido", { codigo: "login_requerido" });
+      if (!r.ok || typeof r.data.local !== "boolean") return;
+      const d = r.data;
+      if (authLocked) {
+        if (gateMode === "login" && d.modo_contas === true && d.autenticado === true) boot();
+        return;
       }
-    } catch (e) { /* sem resposta: a próxima sondagem decide */ }
+      if (d.modo_contas === true && !auth.modoContas) { boot(); return; } // criaram o 1º ADM em outra aba
+      if (!auth.modoContas) return;
+      if (d.autenticado !== true) lockApp("pin_requerido", { codigo: "login_requerido" });
+      else if (contaTrocou(d)) trocarDePessoa();
+    } catch (e) {
+      /* sem resposta: a próxima sondagem decide */
+    } finally {
+      contaConferindo = false;
+    }
   }
+
+  // Outra aba deste navegador gravou/apagou a conta (entrou, trocou de pessoa ou saiu): confere já.
+  window.addEventListener("storage", (e) => {
+    try {
+      if (e.storageArea !== window.localStorage) return;
+      if (e.key === LS.conta || e.key === null) conferirConta();
+    } catch (err) { /* localStorage indisponível: as outras conferências cobrem */ }
+  });
 
   /** Esquece o que a pessoa digitou e o histórico local de anúncios (PC das caixas, que é compartilhado). */
   function limparComposerEHistorico() {
@@ -10710,6 +10795,7 @@
       // música e o tema ficam (são da loja). Aparelho da rede: como o "Sair" do PIN (fica só o tema).
       if (auth.local) limparComposerEHistorico();
       else wipeBrowserData();
+      store.remove(LS.conta); // as outras abas deste navegador recebem o evento "storage" e conferem a sessão
       gateUser.value = "";
       contaUltima = null;
       boot();
@@ -10770,7 +10856,7 @@
     const atual = senhaAtual.value;
     const nova = senhaNova.value;
     if (!atual) return showSenhaError("Digite a sua senha atual.", senhaAtual);
-    if (nova.length < SENHA_MIN || nova.length > SENHA_MAX) return showSenhaError(SENHA_MOTIVOS.tamanho, senhaNova);
+    if (tamanho(nova) < SENHA_MIN || tamanho(nova) > SENHA_MAX) return showSenhaError(SENHA_MOTIVOS.tamanho, senhaNova);
     if (nova.trim().toLowerCase() === auth.conta.usuario) return showSenhaError(SENHA_MOTIVOS.igual_usuario, senhaNova);
     if (nova === atual) return showSenhaError(SENHA_MOTIVOS.mesma_senha, senhaNova);
     if (nova !== senhaNova2.value) return showSenhaError("As duas senhas novas não são iguais.", senhaNova2);
@@ -10794,7 +10880,7 @@
         showSenhaError(SENHA_MOTIVOS[data.codigo] || erro || "Senha nova inválida.", senhaNova);
       } else if (status === 429) {
         showSenhaError(erro || "Muitas tentativas. Espere um pouco e tente de novo.");
-      } else if (status !== 401) { // 401: a porta já fechou (request -> lockApp)
+      } else if (status !== 401 || !authLocked) { // 401 com a porta já fechada (request -> lockApp): nada a mostrar
         showSenhaError(erro || "Não foi possível trocar a senha. Tente de novo.");
       }
     } catch (err) {
@@ -10864,10 +10950,10 @@
     const funcao = cleanMsgText(admFuncao.value, false);
     const usuario = admUsuario.value.trim().toLowerCase();
     const senha = admSenha.value;
-    if (!nome || nome.length > 60) return showAdmError(ADM_MOTIVOS.nome, admNome);
-    if (!funcao || funcao.length > 40) return showAdmError(ADM_MOTIVOS.funcao, admFuncao);
+    if (!nome || tamanho(nome) > NOME_MAX) return showAdmError(ADM_MOTIVOS.nome, admNome);
+    if (!funcao || tamanho(funcao) > FUNCAO_MAX) return showAdmError(ADM_MOTIVOS.funcao, admFuncao);
     if (!USUARIO_RE.test(usuario)) return showAdmError(ADM_MOTIVOS.usuario, admUsuario);
-    if (senha.length < SENHA_MIN || senha.length > SENHA_MAX) return showAdmError(ADM_MOTIVOS.senha, admSenha);
+    if (tamanho(senha) < SENHA_MIN || tamanho(senha) > SENHA_MAX) return showAdmError(ADM_MOTIVOS.senha, admSenha);
     if (senha.trim().toLowerCase() === usuario) return showAdmError("A senha não pode ser igual ao usuário.", admSenha);
     if (senha !== admSenha2.value) return showAdmError("As duas senhas não são iguais.", admSenha2);
     showAdmError("");
@@ -11868,10 +11954,8 @@
     const tocadorJaTocava = tocadorSobrevivendo && ytMode === "player"; // v2.8: o Tocador seguiu tocando atrás da porta
     authLocked = false;
     tocadorSobrevivendo = false;
-    // v2.8: interface do perfil ANTES das tarefas (área escondida = poller desligado pelo enabled())
-    renderConta();
-    aplicarPermissoes();
-    limparDaPessoaAnterior();
+    // v2.8: a interface do perfil já foi aplicada no enterApp(), ANTES das tarefas (área escondida = poller
+    // desligado pelo enabled())
     sp.connected = null; // reavalia o Spotify do zero (inclusive após novo login)
     // as assinaturas de render valem só para a sessão anterior: força o primeiro desenho a escrever
     sp.lampSig = sp.noticeSig = sp.calloutSig = sp.alertSig = SIG_REINICIO;
@@ -11941,6 +12025,7 @@
     } else {
       scheduler.wake(); // refresh imediato ao voltar para a aba
       ensureProgressLoop();
+      if (auth.modoContas) conferirConta(); // v2.8: outra aba pode ter entrado com outra conta (ou saído)
     }
     tlRefresh();
   });

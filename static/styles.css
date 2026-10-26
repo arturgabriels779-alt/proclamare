@@ -3065,3 +3065,4 @@ html[data-so-anuncio] .conta-bar { width: 100%; max-width: 920px; margin-inline:
 @media (max-width: 767.98px) {
   .sheet--conta { padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
 }
+.gate__autoplay { max-width: 36ch; text-align: center; }

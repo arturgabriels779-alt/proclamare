@@ -114,6 +114,75 @@ class TesteTelaDeEntrar(unittest.TestCase):
         self.assertIn(f"const SESSAO_LOCAL_OCIOSA_MS = {server.SESSAO_LOCAL_OCIOSA_S * 1000};", JS)
 
 
+def _funcao_js(nome: str) -> str:
+    """Corpo de uma função de primeiro nível do IIFE (até o "}" de mesma indentação)."""
+    m = re.search(r"\n  (?:async )?function " + re.escape(nome) + r"\([^)]*\) \{\n(.*?)\n  \}\n", JS, re.S)
+    if m is None:
+        raise AssertionError(f"função {nome} não encontrada no app.js")
+    return m.group(1)
+
+
+class TesteConstantesDoServidor(unittest.TestCase):
+    """O app.js repete alguns limites de contas.py para avisar antes do POST: têm de ser os mesmos."""
+
+    def test_usuario_senha_nome_funcao(self) -> None:
+        m = re.search(r"const USUARIO_RE = /\^\[([^\]]+)\]\{(\d+),(\d+)\}\$/;", JS)
+        self.assertIsNotNone(m, "USUARIO_RE fora do formato esperado")
+        self.assertEqual("^[" + m.group(1) + "]+$", contas._USUARIO_RE.pattern)
+        self.assertEqual((int(m.group(2)), int(m.group(3))), (contas.USUARIO_MIN, contas.USUARIO_MAX))
+        for nome, valor in (("SENHA_MIN", contas.SENHA_MIN), ("SENHA_MAX", contas.SENHA_MAX),
+                            ("NOME_MAX", contas.NOME_MAX), ("FUNCAO_MAX", contas.FUNCAO_MAX)):
+            with self.subTest(constante=nome):
+                self.assertIn(f"const {nome} = {valor};", JS)
+
+    def test_tamanho_em_code_points_como_o_len_do_python(self) -> None:
+        self.assertIn("const tamanho = (texto) => Array.from(texto).length;", JS)
+        for funcao in ("senhaForm", "admForm"):
+            with self.subTest(form=funcao):
+                trecho = JS[JS.index(funcao + '.addEventListener("submit"'):]
+                trecho = trecho[:trecho.index("postJSON(")]
+                self.assertNotRegex(trecho, r"\b(nova|senha|nome|funcao)\.length\b")
+                self.assertIn("tamanho(", trecho)
+
+
+class TesteTrocaDePessoa(unittest.TestCase):
+    """Cookie é do navegador inteiro: outra aba com outra conta não pode deixar esta mostrando a pessoa anterior."""
+
+    def test_releituras_comparam_o_id_da_conta(self) -> None:
+        self.assertIn("st.conta.id !== auth.conta.id", _funcao_js("contaTrocou"))
+        reler = _funcao_js("permissoesReler")
+        self.assertIn("contaTrocou(r.data)", reler)
+        self.assertLess(reler.index("contaTrocou(r.data)"), reler.index("lerConta(r.data)"),
+                        "permissoesReler trocaria a identidade antes de conferir")
+        self.assertIn("conferirConta()", _funcao_js("conferirSessaoOciosa"))
+        conferir = _funcao_js("conferirConta")
+        self.assertIn("contaTrocou(d)", conferir)
+        self.assertIn("trocarDePessoa()", conferir)
+        self.assertIn("boot()", _funcao_js("trocarDePessoa"))
+
+    def test_outra_aba_e_a_volta_para_a_aba_conferem(self) -> None:
+        m = re.search(r'window\.addEventListener\("storage", \(e\) => \{(.*?)\n  \}\);', JS, re.S)
+        self.assertIsNotNone(m, "sem listener de storage")
+        self.assertIn("e.key === LS.conta", m.group(1))
+        self.assertIn("conferirConta()", m.group(1))
+        self.assertIn("try {", m.group(1))
+        vis = JS[JS.index('document.addEventListener("visibilitychange"'):]
+        self.assertIn("conferirConta()", vis[:vis.index("});")])
+
+    def test_401_login_requerido_sem_auth_fecha_a_porta(self) -> None:
+        corpo = _funcao_js("request")
+        self.assertIn('out.data.codigo === "login_requerido"', corpo)
+
+    def test_porta_aplica_a_pessoa_nova_antes_do_fade(self) -> None:
+        corpo = _funcao_js("enterApp")
+        self.assertLess(corpo.index("limparDaPessoaAnterior()"), corpo.index('classList.add("is-leaving")'))
+        self.assertLess(corpo.index("aplicarPermissoes()"), corpo.index('classList.add("is-leaving")'))
+
+    def test_sem_barra_de_abas_sem_tabpanel(self) -> None:
+        self.assertIn('!tabbar.classList.contains("perm-off")', _funcao_js("syncTabSemantics"))
+        self.assertIn("syncTabSemantics()", _funcao_js("aplicarPermissoes"))
+
+
 class TesteCspDoHtml(unittest.TestCase):
     def test_sem_inline(self) -> None:
         self.assertEqual(re.findall(r"<script(?![^>]*\bsrc=)[^>]*>", HTML), [])
