@@ -931,7 +931,6 @@
   const redirectHint = $("redirect-hint");
   // contas e histórico de anúncios (v2.8 B8)
   const contasSection = $("contas-section");
-  const contasTitle = $("contas-title");
   const contasCount = $("contas-count");
   const btnContaNova = $("btn-conta-nova");
   const btnContasAtualizar = $("btn-contas-atualizar");
@@ -9217,6 +9216,9 @@
     if (settingsDialog.open) return;
     // v2.8 (modo contas): as Configurações têm itens do ADM (Spotify, saídas de som, segurança) e as Contas (B8)
     if (auth.modoContas && !["spotify_config", "som", "seguranca", "contas"].some(pode)) return;
+    // aviso do Spotify (volta "nocfg" do login) só faz sentido para quem configura o Spotify (o gerente veria a
+    // gaveta só com Contas e o aviso escondido)
+    if (opts && opts.aviso && !pode("spotify_config")) return;
     showSettingsError("");
     clearCodeInvalid();
     showSettingsWarn(opts && typeof opts.aviso === "string" ? opts.aviso : "");
@@ -9238,7 +9240,7 @@
     let loaded = false;
     settingsDialog.showModal();
     somAoAbrir(target === "som");
-    contasAoAbrirSettings(target === "contas"); // v2.8 (B8)
+    contasAoAbrirSettings(); // v2.8 (B8)
     if (target === "net" && !netSection.hidden && !netLocal.hidden) {
       netSection.scrollIntoView({ block: "nearest" });
       pinNew.focus({ preventScroll: true });
@@ -11153,10 +11155,17 @@
     }
   }
 
-  /** Lê a lista de contas (uma leitura por vez). Devolve true se leu. */
-  function contasCarregar() {
+  /**
+   * Lê a lista de contas (uma leitura por vez). Devolve true se leu. `opts.forcar`: se já há uma leitura em curso
+   * (que pode ter começado ANTES de uma gravação de outra pessoa), espera ela e faz um GET novo depois.
+   */
+  function contasCarregar(opts) {
     if (!contasVisiveis() || authLocked) return Promise.resolve(false);
-    if (ct.carregando) return ct.carregando;
+    if (ct.carregando) {
+      if (!(opts && opts.forcar)) return ct.carregando;
+      const seq = ct.seq;
+      return ct.carregando.then(() => (seq === ct.seq ? contasCarregar() : false));
+    }
     const seq = ct.seq;
     if (!ct.carregada) contasLoading.hidden = false;
     btnContasAtualizar.classList.add("is-loading");
@@ -11261,17 +11270,13 @@
   });
   btnContaNova.addEventListener("click", () => openContaDialog("nova", null));
 
-  /** Configurações abriram: relê a lista (e rola até ela, se pedido). */
-  function contasAoAbrirSettings(focar) {
+  /** Configurações abriram: relê a lista de contas. */
+  function contasAoAbrirSettings() {
     contasSection.hidden = !auth.modoContas;
     if (!contasVisiveis()) return;
     contaAvisar("");
     contasRender();
     contasCarregar();
-    if (focar) {
-      contasSection.scrollIntoView({ block: "start" });
-      contasTitle.focus({ preventScroll: true });
-    }
   }
 
   // ---- Diálogo "Nova conta" / "Editar conta" ----
@@ -11396,7 +11401,7 @@
   async function contaVersaoMudou(mostrar) {
     const id = ct.editando && ct.editando.id;
     const seq = ct.seq;
-    await contasCarregar();
+    await contasCarregar({ forcar: true }); // a leitura em curso pode ser de antes da gravação que deu o 409
     if (seq !== ct.seq) return;
     const atual = id ? ct.lista.find((c) => c.id === id) : null;
     if (!atual || !atual.podeEditar || ehPropria(atual)) {
@@ -11410,12 +11415,13 @@
   }
 
   /**
-   * Trata os erros comuns de POST /api/contas/<id> (senha, desativar, reativar). Devolve true se tratou
-   * (versão, conta sumida, porta fechada); senão quem chamou mostra contaErroTexto().
+   * Trata os erros comuns de POST /api/contas/<id> (editar, senha, desativar, reativar). Devolve algo verdadeiro se
+   * tratou (versão, conta sumida, porta fechada); senão quem chamou mostra contaErroTexto(). No "versao_mudou"
+   * devolve a Promise da releitura: quem chamou a espera com o botão ainda ocupado (ct.busy).
    */
   function contaErroComum(status, data, mostrar) {
     if (status === 401 && authLocked) return true; // request() já fechou a porta
-    if (data.codigo === "versao_mudou") { contaVersaoMudou(mostrar); return true; }
+    if (data.codigo === "versao_mudou") return contaVersaoMudou(mostrar);
     if (data.codigo === "nao_encontrada" || status === 404) {
       fecharDialogosConta();
       contaAvisar(msgDoServidor(data) || "Conta não encontrada.", true);
@@ -11496,7 +11502,8 @@
       if (status === 401 && authLocked) return;
       const codigo = typeof data.codigo === "string" ? data.codigo : "";
       const campo = typeof data.campo === "string" ? data.campo : "";
-      if (!nova && contaErroComum(status, data, (m) => showCfError(m))) return;
+      const tratado = nova ? false : contaErroComum(status, data, (m) => showCfError(m));
+      if (tratado) { await tratado; return; }
       if (nova && codigo === "sem_permissao") contasCarregar();
       if (codigo === "limite_contas") {
         showCfError(msgDoServidor(data) || "Limite de " + CONTAS_MAX + " contas atingido.");
@@ -11574,7 +11581,8 @@
         return;
       }
       limparCsenha();
-      if (contaErroComum(status, data, (m) => showCsenhaError(m, csenhaNova))) return;
+      const tratado = contaErroComum(status, data, (m) => showCsenhaError(m, csenhaNova));
+      if (tratado) { await tratado; return; }
       if (status === 400 && data.campo === "senha") showCsenhaError(contaMotivo("senha", data.codigo), csenhaNova);
       else showCsenhaError(contaErroTexto(status, data));
     } catch (err) {
@@ -11634,10 +11642,11 @@
       if (data.codigo === "versao_mudou" && cdesatDialog.open) {
         // volta para o diálogo de edição com os valores novos (lá aparece o aviso)
         cdesatDialog.close();
-        contaErroComum(status, data, (m) => showCfError(m));
+        await contaErroComum(status, data, (m) => showCfError(m));
         return;
       }
-      if (contaErroComum(status, data, mostrar)) return;
+      const tratado = contaErroComum(status, data, mostrar);
+      if (tratado) { await tratado; return; }
       mostrar(contaErroTexto(status, data));
     } catch (err) {
       if (seq === ct.seq && err.name !== "AuthLockedError") mostrar(CONTAS_SEM_REDE_MSG);
@@ -11708,7 +11717,7 @@
   const histHoraFmt = new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" });
   const histCompletoFmt = new Intl.DateTimeFormat("pt-BR", { dateStyle: "full", timeStyle: "medium" });
 
-  const hs = { itens: [], mais: false, seq: 0, ctrl: null, ultimoDia: "", carregando: false, erro: false, debounce: 0 };
+  const hs = { itens: [], mais: false, seq: 0, ctrl: null, ultimoDia: "", carregando: false, erro: false, debounce: 0, chave: "" };
 
   /** O filtro de pessoa precisa da lista de contas (capacidade "contas") e de poder ver todos. */
   const histPodeFiltrarPessoa = () => auth.modoContas && pode("historico_todos") && pode("contas") && !!auth.conta;
@@ -11804,10 +11813,14 @@
       hs.carregando = false;
       histOcupado(false, false);
       histOcupado(true, false);
+      histEsvaziar(); // como no 400 do servidor: nada de lista (nem "Mostrando N") de outro filtro
       showHistError(f.erro);
       histResumo();
       return;
     }
+    // "Carregar mais" só continua a lista dos MESMOS filtros; mudou algo (busca ainda no debounce) = lê do começo
+    const chave = histChave(f);
+    if (append && chave !== hs.chave) append = false;
     if (hs.ctrl) hs.ctrl.abort();
     const ctrl = new AbortController();
     hs.ctrl = ctrl;
@@ -11830,6 +11843,7 @@
       if (ok && data.ok && Array.isArray(data.itens)) {
         const novos = data.itens.slice(0, 200).map(histItemLimpo).filter(Boolean);
         if (!append) { hs.itens = []; hs.ultimoDia = ""; }
+        hs.chave = chave; // os filtros que produziram a lista na tela
         hs.itens = hs.itens.concat(novos);
         hs.mais = data.mais === true && novos.length > 0;
         showHistError("");
@@ -11845,7 +11859,7 @@
       }
       showHistError(histErroTexto(status, data));
       histMarcarCampo(campo);
-      if (!append) { hs.itens = []; hs.mais = false; hs.ultimoDia = ""; histList.replaceChildren(); } // nada de lista de outro filtro
+      if (!append) histEsvaziar(); // nada de lista de outro filtro
     } catch (err) {
       if (seq !== hs.seq || err.name === "AbortError" || err.name === "AuthLockedError") return;
       showHistError(err.name === "TimeoutError" ? "O servidor demorou para responder. Toque em Atualizar." : "Não foi possível falar com o servidor. Toque em Atualizar.");
@@ -11857,6 +11871,18 @@
         histResumo();
       }
     }
+  }
+
+  /** Assinatura dos filtros (o "Carregar mais" só vale para a lista que eles produziram). */
+  const histChave = (f) => JSON.stringify([f.q, f.de, f.ate, f.conta]);
+
+  /** Tira a lista da tela (filtro recusado pelo cliente ou pelo servidor). */
+  function histEsvaziar() {
+    hs.itens = [];
+    hs.mais = false;
+    hs.ultimoDia = "";
+    hs.chave = "";
+    histList.replaceChildren();
   }
 
   function histDiaRotulo(d) {
@@ -11876,6 +11902,7 @@
       if (dia !== hs.ultimoDia) {
         hs.ultimoDia = dia;
         const li = mk("li", "hist__day");
+        li.setAttribute("aria-hidden", "true"); // só visual: cada linha leva a própria data para o leitor de tela
         li.appendChild(mk("h3", "hist__day-t", histDiaRotulo(it.quando)));
         frag.appendChild(li);
       }
@@ -11888,7 +11915,8 @@
   /** Uma entrada: hora | quem (nome, função · usuário) | texto (literal) | resultado, tipo · origem. */
   function histLinha(it) {
     const li = mk("li", "hrow");
-    const time = mk("time", "hrow__time", histHoraFmt.format(it.quando));
+    const time = mk("time", "hrow__time");
+    time.append(mk("span", "sr-only", histDiaRotulo(it.quando) + ", "), histHoraFmt.format(it.quando));
     time.dateTime = it.quando.toISOString();
     time.title = histCompletoFmt.format(it.quando);
     const main = mk("div", "hrow__main");
@@ -11978,6 +12006,12 @@
     if (hs.ctrl) hs.ctrl.abort();
   });
   histFilters.addEventListener("submit", (e) => { e.preventDefault(); histCarregar(false); });
+  // Enter na busca: o formulário não tem botão de enviar e os campos de data impedem o envio implícito
+  histQ.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.isComposing) return;
+    e.preventDefault();
+    histCarregar(false);
+  });
   histQ.addEventListener("input", () => {
     clearTimeout(hs.debounce);
     hs.debounce = setTimeout(() => histCarregar(false), 450); // menos pedidos enquanto digita (60/min no servidor)
@@ -12009,6 +12043,7 @@
     hs.itens = [];
     hs.mais = false;
     hs.ultimoDia = "";
+    hs.chave = "";
     hs.carregando = false;
     if (histDialog.open) histDialog.close();
     histList.replaceChildren();

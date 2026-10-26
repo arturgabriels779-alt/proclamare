@@ -229,6 +229,16 @@ class TesteContasNoPainel(unittest.TestCase):
                     re.findall(r"[{,]\s*([a-z_]+):", _objeto_js(nome)))
                 self.assertEqual(chaves, set(conjunto))
 
+    def test_aviso_do_spotify_nao_abre_configuracoes_sem_spotify_config(self) -> None:
+        corpo = _funcao_js("openSettings")
+        self.assertIn('if (opts && opts.aviso && !pode("spotify_config")) return;', corpo)
+        self.assertLess(corpo.index("opts.aviso && !pode"), corpo.index("settingsDialog.showModal()"))
+
+    def test_versao_mudou_rele_de_novo_e_segura_o_botao(self) -> None:
+        self.assertIn("contasCarregar({ forcar: true })", _funcao_js("contaVersaoMudou"))
+        self.assertIn('return contaVersaoMudou(mostrar);', _funcao_js("contaErroComum"))
+        self.assertEqual(JS.count("if (tratado) { await tratado; return; }"), 3)
+
     def test_codigos_de_erro_tratados_existem_no_servidor(self) -> None:
         fonte = (RAIZ / "server.py").read_text(encoding="utf-8")
         for codigo in ("versao_mudou", "nao_encontrada", "propria_conta", "ultimo_adm", "limite_contas",
@@ -273,6 +283,29 @@ class TesteHistoricoNoPainel(unittest.TestCase):
         bloco = re.search(r"\.hrow__texto \{([^}]*)\}", css)
         self.assertIsNotNone(bloco)
         self.assertIn("white-space: pre-wrap", bloco.group(1))
+
+    def test_carregar_mais_so_continua_os_mesmos_filtros(self) -> None:
+        corpo = _funcao_js("histCarregar")
+        self.assertIn("const chave = histChave(f);", corpo)
+        self.assertIn("if (append && chave !== hs.chave) append = false;", corpo)
+        self.assertLess(corpo.index("append = false;"), corpo.index('params.set("antes"'))
+        self.assertIn("hs.chave = chave;", corpo)
+        # filtro recusado no cliente tira a lista da tela, como o 400 do servidor
+        erro = corpo[corpo.index("if (f.erro) {"):corpo.index("const chave")]
+        self.assertIn("histEsvaziar()", erro)
+        self.assertIn("histList.replaceChildren()", _funcao_js("histEsvaziar"))
+
+    def test_enter_na_busca_le_o_historico(self) -> None:
+        m = re.search(r'histQ\.addEventListener\("keydown", \(e\) => \{(.*?)\n  \}\);', JS, re.S)
+        self.assertIsNotNone(m, "sem keydown na busca do histórico")
+        self.assertIn('e.key !== "Enter" || e.isComposing', m.group(1))
+        self.assertIn("e.preventDefault()", m.group(1))
+        self.assertIn("histCarregar(false)", m.group(1))
+
+    def test_dia_so_visual_e_data_em_cada_linha(self) -> None:
+        render = _funcao_js("histRender")
+        self.assertIn('li.setAttribute("aria-hidden", "true")', render)
+        self.assertIn('mk("span", "sr-only", histDiaRotulo(it.quando)', _funcao_js("histLinha"))
 
     def test_sem_sondagem_do_historico_nem_das_contas(self) -> None:
         self.assertNotRegex(JS, r'scheduler\.add\("[^"]*",\s*(histCarregar|contasCarregar)')
