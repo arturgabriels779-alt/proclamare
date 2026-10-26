@@ -119,7 +119,7 @@ Detalhes, tabela de perfis e privacidade: seção 2d do [guia](docs/GUIA.md).
 | `PROCLAMARE_LOG_LEVEL` | `INFO` | Nível de detalhe do log |
 | `PROCLAMARE_LOG_FILE` | *(vazio = console)* | Arquivo de log (rotativo: 5 MB, 3 antigos) |
 | `PROCLAMARE_PID_FILE` | *(vazio)* | Arquivo JSON com o PID do servidor (usado pelo lançador para desligar o processo certo) |
-| `PROCLAMARE_CONFIAR_LOOPBACK` | `1` | `0` = nenhuma conexão é "local": todos precisam de PIN (use com proxy/túnel no PC da loja) |
+| `PROCLAMARE_CONFIAR_LOOPBACK` | `auto` | `auto` = o PC da loja é local enquanto não houver encaminhamento de rede para a porta; `1` = sempre; `0` = nenhuma conexão é "local": todos precisam de PIN (use com proxy/túnel no PC da loja) |
 | `PROCLAMARE_SPOTIFY_REDIRECT` | `http://127.0.0.1:8502/spotify/callback` | Redirect URI cadastrado no painel do Spotify |
 | `PROCLAMARE_MUSICAS_DIR` | *Músicas do Windows*`\Músicas do Proclamare` | Pasta das Minhas músicas |
 | `PROCLAMARE_MUSICAS_ENVIO` | `1` | `0` desliga o envio de músicas pelo painel. Ligado, só o PC da loja e aparelhos com PIN podem mandar corpo grande (até 100 MB por envio); o resto da API aceita no máximo 64 KB |

@@ -561,7 +561,7 @@ tocando; só não dá para anunciar nem mexer em nada até alguém entrar.
 
 No bloco **Histórico** do painel, **Ver tudo** abre a lista de anúncios com data e hora, quem fez (nome e função),
 o texto, o resultado (tocou, ocupado, erro, sem internet, interrompido) e se foi digitado, "tocar agora" ou
-agendado. Dá para filtrar por dia, por pessoa (gerente e administrador) e por trecho do texto, e carregar mais
+agendado. Dá para filtrar por período (De/Até), por pessoa (gerente e administrador) e por trecho do texto, e carregar mais
 páginas. O **funcionário vê só os próprios anúncios**. Anúncios de antes das contas aparecem como "antes das
 contas".
 
