@@ -1984,10 +1984,21 @@ html[data-vt="theme"]::view-transition-new(root) { animation: fade-in 280ms var(
    9b. ACESSO POR PIN (porta de entrada + seção nas Configurações)
    ===================================================================== */
 
-/* Enquanto a porta está ativa (boot/pin/off), o painel inteiro fica fora do ar */
-html[data-gate] .app,
+/* Enquanto a porta está ativa (boot/pin/login/off), o painel inteiro fica fora do ar.
+   v2.8: com o Tocador da loja tocando no PC das caixas (html[data-gate-sobre]) o painel CONTINUA renderizado
+   (o player do YouTube não pode ir para display:none) e a porta o cobre por inteiro; o JS deixa o .app inerte. */
+html[data-gate]:not([data-gate-sobre]) .app,
 html[data-gate] .tabbar,
 html[data-gate] .skip-link { display: none; }
+html[data-gate-sobre] { overflow: hidden; }
+html[data-gate-sobre] .gate {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background-color: var(--bg);
+}
 
 .gate {
   min-height: 100dvh;
@@ -2039,6 +2050,15 @@ html[data-gate] .skip-link { display: none; }
 .gate__count { font: 600 22px/28px var(--font); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; color: var(--text-1); }
 .gate__submit { width: 100%; }
 .gate__view--off .btn { margin-top: 6px; }
+
+/* ---- v2.8: entrar com usuário e senha ---- */
+.gate__form--conta { gap: 16px; text-align: left; }
+.gate__form--conta .gate__feedback { min-height: 20px; }
+.gate__field input { height: 52px; border-radius: 14px; font-size: 17px; }
+.gate__field.is-error input { border-color: var(--live); box-shadow: 0 0 0 4px var(--live-soft); }
+.gate__field.is-shake { animation: shake 420ms var(--ease) both; }
+.gate__field input:disabled { opacity: 0.5; cursor: not-allowed; }
+.gate__help { max-width: 32ch; text-align: center; }
 .gate__view--off .callout__text { text-wrap: balance; }
 
 @keyframes shake {
@@ -2948,3 +2968,100 @@ dialog.dialog--wide { scroll-padding-bottom: 120px; }
 .seg__liberar { display: flex; flex-direction: column; gap: 4px; }
 .seg__removidos { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .seg__removidos .btn { flex: none; }
+
+/* =====================================================================
+   13. CONTAS E PERFIS (v2.8, Parte B)
+   ===================================================================== */
+
+/* ---- Interface por perfil: o JS põe "perm-off" no que o perfil não usa ----
+   display:none !important vence o código que liga/desliga [hidden] (ex.: "Editar" das mensagens).
+   data-perm-manter (painel Música): sai de vista mas continua renderizado, como as abas inativas do celular,
+   para o player do YouTube da aba Tocador da loja não ser interrompido. */
+.perm-off:not([data-perm-manter]) { display: none !important; }
+.perm-off[data-perm-manter] {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  animation: none;
+}
+
+/* Funcionário: só o Anúncio. A coluna ganha a largura toda, com uma medida confortável para ler e digitar. */
+html[data-so-anuncio] .stage,
+html[data-so-anuncio] .status-row,
+html[data-so-anuncio] .conta-bar { width: 100%; max-width: 920px; margin-inline: auto; }
+@media (min-width: 768px) {
+  html[data-so-anuncio] .stage { display: flex; flex-direction: column; }
+  html[data-so-anuncio] .status-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 1200px) {
+  html[data-so-anuncio] .bento-col--announce > .tile--history { grid-column: 1 / -1; }
+}
+@media (max-width: 767.98px) {
+  /* sem a barra de abas não há o que reservar embaixo */
+  html[data-so-anuncio] .app { padding-bottom: calc(32px + env(safe-area-inset-bottom)); }
+}
+
+/* ---- Barra da conta logada (topo) ---- */
+.conta-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 10px 10px 12px;
+  background-color: var(--tile);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-tile-sm);
+  box-shadow: var(--shadow-tile);
+}
+.conta-bar__avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font: 600 14px/1 var(--font);
+  letter-spacing: 0.02em;
+}
+.conta-bar__who { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.conta-bar__nome,
+.conta-bar__funcao { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conta-bar__nome { font: 600 15px/20px var(--font); letter-spacing: -0.01em; color: var(--text-1); }
+.conta-bar__funcao { font-size: 13px; line-height: 18px; color: var(--text-3); }
+.conta-bar__funcao:empty { display: none; }
+.conta-bar__acts { flex: none; display: flex; align-items: center; gap: 8px; }
+.conta-bar__btn.btn--sm { height: 44px; padding: 0 16px; }   /* alvo de toque >= 44px */
+@media (max-width: 599.98px) {
+  .conta-bar { padding: 8px 8px 8px 10px; gap: 10px; }
+  .conta-bar__avatar { width: 32px; height: 32px; font-size: 13px; }
+  /* no celular "Trocar minha senha" vira só a chave (o nome segue no aria-label) */
+  .conta-bar__label {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+  .conta-bar__btn.btn--sm { padding: 0 12px; }
+  #btn-conta-senha.btn--sm { width: 44px; padding: 0; }
+}
+
+/* ---- Convite para criar a conta de administrador (modo PIN, PC das caixas) ---- */
+.conta-convite { align-items: center; }
+.conta-convite__acts { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+.conta-convite__acts .btn--sm { height: 44px; }
+@media (max-width: 599.98px) {
+  .conta-convite__acts { width: 100%; }
+  .conta-convite__acts .btn--primary { flex: 1 1 auto; }
+}
+.net__pin, .net__contas { display: flex; flex-direction: column; gap: 14px; }
+.net__contas { padding-top: 14px; border-top: 1px solid var(--separator); }
+
+/* ---- Diálogos "Criar conta de administrador" e "Trocar minha senha" ---- */
+.sheet--conta .callout__icon { align-self: flex-start; }
+.conta-form__lead { color: var(--text-2); font-size: 14px; line-height: 20px; }
+.conta-form__pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+@media (max-width: 767.98px) {
+  .sheet--conta { padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+}

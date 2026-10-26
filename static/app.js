@@ -81,6 +81,18 @@
    caixas" não toca o aviso); "Ouvir" = POST /api/voz/ouvir {aviso} (409 mostra o "error" do servidor; 429 = 6/min por
    aparelho remoto ou 20/10 min na loja toda). /api/voices não é mais usada (ficou só local).
 
+   Contas e perfis (v2.8, Parte B): /api/auth/status traz "modo_contas", "precisa_criar_adm", "conta" e "permissoes".
+   Modo PIN (nenhuma conta): tudo como antes (pode() = sempre true) + no PC das caixas o convite "Criar conta de
+   administrador" (POST /api/auth/primeiro-adm; não bloqueia nada). Modo contas: tela de entrar com usuário e senha
+   (POST /api/auth/login; 401 = sempre "Usuário ou senha incorretos."; 429 = bloqueio com o texto do servidor), também
+   no PC das caixas; barra da conta no topo (nome, função, "Trocar minha senha" = POST /api/conta/senha, "Sair" =
+   POST /api/auth/logout). aplicarPermissoes() esconde [data-perm] sem a capacidade (classe perm-off) e os pollers de
+   áreas escondidas não rodam (enabled() com pode()); 403 "sem_permissao" relê as permissões, sem laço nem toast.
+   Sessão do PC das caixas: 5 min sem uso; o painel manda "X-Proclamare-Atividade: 1" só até 60 s depois do último
+   clique/tecla. 401 com codigo "login_requerido" = tela de entrar; no PC das caixas com a aba em "Tocador da loja"
+   a porta abre POR CIMA (html[data-gate-sobre]) e o heartbeat, o long-poll, o "pop" da fila e o <audio>/YouTube
+   seguem (rotaDoTocador: as mesmas rotas que o servidor libera sem login para o PC).
+
    Regras de segurança deste arquivo (CSP do servidor):
    - nada de innerHTML/eval com dados de API ou do usuário (só textContent
      e createElement);
@@ -105,6 +117,7 @@
     source: "proclamare_source",
     lib: "proclamare_lib", // ordem da lista e "embaralhar" das Minhas músicas
     ytMode: "youtube_mode", // chave antiga, mantida
+    conta: "proclamare_conta", // v2.8: id opaco da última conta logada neste navegador (outra pessoa = limpa o composer)
   };
   const ENGINES = ["auto", "online", "offline"];
   const VOICES = ["francisca", "antonio"];
@@ -263,9 +276,52 @@
   // ---- Estado de acesso (PIN) — preenchido por boot() ----
   // authLocked = true enquanto a porta (PIN / acesso desativado) está fechada.
   let authLocked = false;
-  const auth = { loopbackSuspenso: false, supported: true, local: true, pinConfigured: false, authenticated: true, falhas: 0, bloqueioS: 0, podeDesligar: false };
+  // v2.8: true enquanto a porta está fechada mas a aba "Tocador da loja" do PC das caixas segue tocando (o 401 não
+  // para o heartbeat, o long-poll de comandos, a fila nem o <audio>/YouTube; ver rotaDoTocador e pararMenosTocador).
+  let tocadorSobrevivendo = false;
+  const auth = {
+    loopbackSuspenso: false, supported: true, local: true, pinConfigured: false, authenticated: true, falhas: 0, bloqueioS: 0, podeDesligar: false,
+    // v2.8 (Parte B): modo contas = login por usuário e senha; "conta" = {id, usuario, nome, funcao, perfil} (pública)
+    // e "permissoes" = capacidades do perfil (contas.CAPACIDADES). Modo PIN: tudo como antes (pode() = sempre true).
+    modoContas: false, conta: null, permissoes: [], precisaCriarAdm: false,
+  };
   const REMOTE_SPOTIFY_MSG = "As credenciais do Spotify são configuradas no computador da loja.";
   const isRemote = () => auth.supported && !auth.local;
+
+  /**
+   * O perfil logado tem a capacidade? Em modo PIN vale tudo (o comportamento de antes: o servidor também não dá 403).
+   * A tela só esconde; quem recusa de verdade é o servidor (403 "sem_permissao").
+   */
+  function pode(capacidade) {
+    return !auth.modoContas || auth.permissoes.includes(capacidade);
+  }
+
+  // ---- Atividade (v2.8): a sessão do PC das caixas vence após 5 min sem uso ----
+  // O servidor só renova essa sessão em requisições com "X-Proclamare-Atividade: 1"; o painel manda o cabeçalho só
+  // nas requisições feitas até 60 s depois do último clique/tecla. Sondagens sem ninguém mexendo NÃO o mandam: é
+  // assim que o PC compartilhado sai sozinho. Nos aparelhos da rede (sessão longa) o cabeçalho é inofensivo.
+  const CAB_ATIVIDADE = "X-Proclamare-Atividade";
+  const ATIVIDADE_JANELA_MS = 60000;
+  const SESSAO_LOCAL_OCIOSA_MS = 300000; // = SESSAO_LOCAL_OCIOSA_S do servidor
+  let ultimaAtividade = -Infinity; // performance.now() do último clique/tecla (relógio monotônico)
+  const marcarAtividade = () => { ultimaAtividade = performance.now(); };
+  document.addEventListener("pointerdown", marcarAtividade, { capture: true, passive: true });
+  document.addEventListener("keydown", marcarAtividade, { capture: true, passive: true });
+  const atividadeRecente = () => performance.now() - ultimaAtividade < ATIVIDADE_JANELA_MS;
+
+  /**
+   * Rotas que a aba Tocador do PC das caixas chama sozinha e que o servidor libera sem login (ROTAS_TOCADOR_LOCAL):
+   * só elas saem com a porta fechada, e só enquanto `tocadorSobrevivendo`. A fila só no "pop" (exatamente {op:"pop"}).
+   */
+  function rotaDoTocador(method, url, body) {
+    const path = String(url).split("?")[0];
+    if (path === "/api/youtube/state") return method === "GET" || method === "POST";
+    if (path === "/api/youtube/commands") return method === "GET";
+    if (path === "/api/youtube/queue") {
+      return method === "POST" && !!body && typeof body === "object" && Object.keys(body).length === 1 && body.op === "pop";
+    }
+    return method === "GET" && (path === "/api/musicas" || /^\/api\/musicas\/[0-9a-f]{16}\/(audio|capa)$/.test(path));
+  }
 
   // ---- Helper único de API ----
   /**
@@ -276,7 +332,8 @@
   async function request(method, url, body, opts) {
     const o = opts || {};
     // Porta fechada (sem sessão/PIN): nenhuma chamada sai — não martela o servidor.
-    if (authLocked && !o.auth) {
+    // v2.8: exceto as do Tocador da loja que sobrevive ao bloqueio no PC das caixas.
+    if (authLocked && !o.auth && !(tocadorSobrevivendo && rotaDoTocador(method, url, body))) {
       const locked = new Error("Acesso bloqueado");
       locked.name = "AuthLockedError";
       throw locked;
@@ -297,6 +354,7 @@
         credentials: "same-origin",
         headers: { Accept: "application/json" },
       };
+      if (atividadeRecente()) init.headers[CAB_ATIVIDADE] = "1"; // v2.8: renova a sessão de 5 min do PC das caixas
       if (method !== "GET") {
         init.headers["Content-Type"] = "application/json";
         init.body = JSON.stringify(body === undefined ? {} : body);
@@ -313,6 +371,10 @@
         const code = out.data.auth;
         if ((res.status === 401 && code === "pin_requerido") || (res.status === 403 && code === "pin_nao_configurado")) {
           lockApp(code, out.data);
+        } else if (res.status === 403 && out.data.codigo === "sem_permissao") {
+          // v2.8: o perfil não pode (a tela ficou velha?). Sem toast nem nova tentativa aqui: relê as permissões
+          // uma vez (com intervalo mínimo) e esconde o que não vale mais. Quem chamou trata a própria resposta.
+          permissoesReler();
         }
       }
       return out;
@@ -512,6 +574,11 @@
       clear() {
         if (timer) { clearTimeout(timer); timer = 0; }
         tasks.clear();
+      },
+      /** v2.8: remove todas as tarefas menos as listadas (porta fechou com o Tocador da loja tocando). */
+      keepOnly(names) {
+        tasks.forEach((t, name) => { if (!names.includes(name)) tasks.delete(name); });
+        plan();
       },
       /** Reavalia o que está ativo (após mudar de aba/fonte/modo). */
       refresh: plan,
@@ -760,6 +827,49 @@
   const btnGateRetry = $("btn-gate-retry");
   const gateDownView = $("gate-down");
   const gateDownTitle = $("gate-down-title");
+  // entrar com usuário e senha (v2.8)
+  const gateLoginView = $("gate-login");
+  const gateLoginForm = $("gate-login-form");
+  const gateUser = $("gate-user");
+  const gatePass = $("gate-pass");
+  const gateUserBox = $("gate-user-box");
+  const gatePassBox = $("gate-pass-box");
+  const gateLoginMsg = $("gate-login-msg");
+  const gateLoginCount = $("gate-login-count");
+  const btnGateEntrar = $("btn-gate-entrar");
+  // conta logada, convite do 1º ADM e diálogos (v2.8)
+  const contaBar = $("conta-bar");
+  const contaAvatar = $("conta-avatar");
+  const contaNome = $("conta-nome");
+  const contaFuncao = $("conta-funcao");
+  const btnContaSenha = $("btn-conta-senha");
+  const btnContaSair = $("btn-conta-sair");
+  const admConvite = $("adm-convite");
+  const btnAdmConvite = $("btn-adm-convite");
+  const btnAdmConviteDepois = $("btn-adm-convite-depois");
+  const admDialog = $("adm-dialog");
+  const admForm = $("adm-form");
+  const admNome = $("adm-nome");
+  const admFuncao = $("adm-funcao");
+  const admUsuario = $("adm-usuario");
+  const admSenha = $("adm-senha");
+  const admSenha2 = $("adm-senha2");
+  const admError = $("adm-error");
+  const btnAdmSave = $("btn-adm-save");
+  const btnAdmCancel = $("btn-adm-cancel");
+  const senhaDialog = $("senha-dialog");
+  const senhaForm = $("senha-form");
+  const senhaUsuario = $("senha-usuario");
+  const senhaAtual = $("senha-atual");
+  const senhaNova = $("senha-nova");
+  const senhaNova2 = $("senha-nova2");
+  const senhaError = $("senha-error");
+  const btnSenhaSave = $("btn-senha-save");
+  const btnSenhaCancel = $("btn-senha-cancel");
+  const netContas = $("net-contas");
+  const btnNetCriarAdm = $("btn-net-criar-adm");
+  const pinCampos = $("pin-campos");
+  const revokeHint = $("revoke-hint");
   // desligar pelo painel (v2.5)
   const btnPower = $("btn-power");
   const powerDialog = $("power-dialog");
@@ -820,7 +930,8 @@
   // 8. Estado de tela (aba ativa, fonte ativa) — usado pelos pollers
   // ======================================================================
   let activeTab = "announce";
-  const musicVisible = () => !tabModeMQ.matches || activeTab === "music";
+  // v2.8: sem a capacidade "musica" a área de música nunca está "à vista" (os pollers dela não rodam)
+  const musicVisible = () => pode("musica") && (!tabModeMQ.matches || activeTab === "music");
 
   // ======================================================================
   // 9. Status do servidor (lâmpada de internet) e vozes
@@ -865,7 +976,8 @@
   tabModeMQ.addEventListener("change", syncTabSemantics);
 
   function setTab(name) {
-    const next = name === "music" || name === "prog" ? name : "announce";
+    // v2.8: aba de uma área que o perfil não vê cai no Anúncio
+    const next = (name === "music" && pode("musica")) || (name === "prog" && pode("programacao")) ? name : "announce";
     activeTab = next;
     const panels = { announce: panelAnnounce, music: panelMusic, prog: panelProg };
     const apply = () => {
@@ -1021,7 +1133,7 @@
 
   /** Tarefa "voz" do agendador (início, a cada minuto e ao voltar para a aba). */
   async function vozCarregar() {
-    if (authLocked || vozOcupada()) return; // gravando: a resposta do POST já traz o estado novo
+    if (authLocked || vozOcupada() || !pode("voz")) return; // gravando: a resposta do POST já traz o estado novo
     const seq = vozSeq;
     try {
       const { ok, data } = await getJSON("/api/voz", { timeout: 8000 });
@@ -1045,6 +1157,7 @@
     const apagar = () => { try { window.localStorage.removeItem(LS.prefs); } catch (e) { /* ignora */ } };
     if (voz.definida) { apagar(); return; } // a loja já tem voz: a chave antiga não serve mais
     if (!(auth.supported && auth.local)) return; // aparelho remoto nunca define a voz por migração
+    if (!pode("voz")) return; // v2.8: só quem pode mudar a voz da loja (em modo PIN, todos) migra a escolha antiga
     if (vozOcupada()) return; // o usuário já está mudando a voz: a escolha dele vale mais que a antiga
     try {
       const p = JSON.parse(raw);
@@ -1057,7 +1170,7 @@
         vozEnviando = corpo;
         let resp = null;
         try { resp = await postJSON("/api/voz", corpo, { timeout: 8000 }); } finally { vozEnviando = null; }
-        if (!(resp.ok && resp.data.ok)) return; // tenta de novo no próximo carregamento
+        if (!(resp.ok && resp.data.ok)) return; // tenta de novo no próximo carregamento (403: nunca volta ao vozCarregar)
         vozAplicar(resp.data);
       }
       apagar();
@@ -1101,7 +1214,8 @@
       toast(msg, "error", { silent: true });
     }
     // erro: volta ao que o servidor tem (os campos com mudança NOVA a caminho continuam como o usuário deixou)
-    if (!vozOcupada()) scheduler.kick("voz");
+    // v2.8: 403 "sem_permissao" não relê (o perfil não pode mudar a voz: nada de laço POST -> GET -> POST)
+    if (!vozOcupada() && !(resp && resp.status === 403)) scheduler.kick("voz");
   }
 
   speedRange.addEventListener("input", updateSpeedLabel);
@@ -1476,7 +1590,7 @@
   }
 
   async function openMessagesEditor() {
-    if (msgsDialog.open || authLocked || shuttingDown) return;
+    if (msgsDialog.open || authLocked || shuttingDown || !pode("mensagens_editar")) return;
     const session = ++msgsSession;
     msgsLeaveClean = false;
     draft = [];
@@ -2375,7 +2489,7 @@
 
   /** Busca o Redirect URI cadastrado no servidor para mostrá-lo no erro "redirect". */
   async function loadRedirectUri() {
-    if (isRemote()) return;
+    if (isRemote() || !pode("spotify_config")) return; // v2.8: GET /api/spotify/config é só do ADM
     try {
       const { data } = await getJSON("/api/spotify/config", { timeout: 6000 });
       if (typeof data.redirect_uri === "string" && /^http:\/\/[^\s]{1,200}$/.test(data.redirect_uri)) {
@@ -2462,6 +2576,7 @@
    */
   async function startSpotifyConnect() {
     // aparelho remoto não conecta o Spotify: o login só vale no PC da loja
+    if (!pode("spotify_config")) return; // v2.8: conectar o Spotify é do ADM (o botão nem aparece para os outros)
     if (isRemote()) { toast(REMOTE_SPOTIFY_MSG, "info"); return; }
     if (sp.connecting) return;
     sp.connecting = true;
@@ -3095,6 +3210,9 @@
   const ytPlayUI = playToggle(btnYoutubePlay, youtubePlayIcon);
   /** YouTube e Minhas músicas usam o mesmo painel/tocador: os pollers valem para as duas fontes. */
   const youtubeActive = () => isTocadorSource(sourceGroup.value) && musicVisible();
+  // Lâmpada/fila do Tocador com calma (15 s) quando o YouTube está fora de vista. v2.8: sem "musica" só vale na aba
+  // Tocador do PC das caixas (GET /api/youtube/state está em ROTAS_TOCADOR_LOCAL): a fila mantém o avanço certo.
+  const ytLampAtivo = () => (pode("musica") || (ytMode === "player" && auth.local)) && !youtubeActive();
 
   // ---- Arquivos (Minhas músicas) no <audio> oculto desta aba tocadora ----
   const audioEl = $("lib-audio");
@@ -5716,6 +5834,7 @@
       xhr.open("POST", "/api/musicas/enviar");
       xhr.responseType = "json";
       xhr.setRequestHeader("Accept", "application/json");
+      if (atividadeRecente()) xhr.setRequestHeader(CAB_ATIVIDADE, "1"); // v2.8: como no request()
       xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) onProgress(ev.loaded); };
       xhr.onload = () => {
         const body = xhr.response && typeof xhr.response === "object" ? xhr.response : {};
@@ -5840,7 +5959,7 @@
         doneBytes += batchBytes;
         const d = res.data;
         if ((res.status === 401 && d.auth === "pin_requerido") || (res.status === 403 && d.auth === "pin_nao_configurado")) {
-          lockApp(d.auth); // sessão caiu no meio do envio
+          lockApp(d.auth, d); // sessão caiu no meio do envio
           return;
         }
         if (Array.isArray(d.enviados)) {
@@ -7315,7 +7434,7 @@
     sig: { alerts: "", next: "", list: "", hist: "" },
   };
   /** O bloco está à vista? (no computador, sempre; no celular, só na aba Horários) */
-  const progVisible = () => !tabModeMQ.matches || activeTab === "prog";
+  const progVisible = () => pode("programacao") && (!tabModeMQ.matches || activeTab === "prog"); // v2.8: sem a capacidade, nunca à vista
 
   // ---- Leitura (nunca confia no formato) ----
   function progItemParse(it) {
@@ -9004,6 +9123,8 @@
   /** `target === "net"` rola até "Acesso pela rede" e foca o campo do PIN. */
   async function openSettings(target, opts) {
     if (settingsDialog.open) return;
+    // v2.8 (modo contas): as Configurações só têm itens do ADM (Spotify, saídas de som, segurança)
+    if (auth.modoContas && !["spotify_config", "som", "seguranca"].some(pode)) return;
     showSettingsError("");
     clearCodeInvalid();
     showSettingsWarn(opts && typeof opts.aviso === "string" ? opts.aviso : "");
@@ -9018,7 +9139,7 @@
     spotifyRemoteNote.hidden = !remote;
     btnSettingsSave.hidden = remote;
     btnSettingsCancel.textContent = remote ? "Fechar" : "Cancelar";
-    if (auth.supported && auth.local) { refreshLocalAuthInfo(); segLoadRemotos(); } // atualiza alertas, bloqueio e pendentes da rede
+    if (auth.supported && auth.local && pode("seguranca")) { refreshLocalAuthInfo(); segLoadRemotos(); } // atualiza alertas, bloqueio e pendentes da rede
     settingsClientId.readOnly = true;
     settingsClientSecret.readOnly = true;
     btnSettingsSave.setAttribute("aria-disabled", "true"); // só libera se a config carregar
@@ -9029,7 +9150,7 @@
       netSection.scrollIntoView({ block: "nearest" });
       pinNew.focus({ preventScroll: true });
     }
-    if (remote) return;
+    if (remote || !pode("spotify_config")) return; // v2.8: GET /api/spotify/config é só do ADM
     try {
       const { data } = await getJSON("/api/spotify/config", { timeout: 8000 });
       settingsClientId.value = typeof data.client_id === "string" ? data.client_id : "";
@@ -9106,6 +9227,7 @@
   document.addEventListener("click", (e) => {
     const trigger = e.target.closest("[data-open-settings]");
     if (!trigger) return;
+    if (!pode("spotify_config")) return; // v2.8
     if (isRemote()) { toast(REMOTE_SPOTIFY_MSG, "info"); return; }
     openSettings();
   });
@@ -9140,7 +9262,8 @@
   const PIN_RE = /^[0-9]{6,8}$/;
   const GATE_TUNNEL_MSG = "O Proclamare detectou um encaminhamento de rede (túnel) para este computador e bloqueou o acesso sem PIN. Feche o encaminhamento, ou defina um PIN pela linha de comando (python server.py --definir-pin), ou inicie com PROCLAMARE_CONFIAR_LOOPBACK=1.";
   const PIN_HINT_KEY = "proclamare_pin_hint"; // sessionStorage: aviso "defina um PIN" uma vez por sessão
-  let gateMode = ""; // "" (painel liberado) | boot | pin | off
+  let gateMode = ""; // "" (painel liberado) | boot | pin | login | off | down
+  let contaUltima = null; // v2.8: id da última conta logada nesta aba (outra pessoa entrou = limpa o que a anterior digitou)
   let loginBusy = false;
   let blockTimer = 0;
   let netBusy = false;
@@ -9149,30 +9272,75 @@
   /** Para tudo que fala com o servidor (polls, long-poll, player, buscas). */
   function stopAll() {
     authLocked = true;
+    tocadorSobrevivendo = false;
     scheduler.clear();
     stopYoutubeLoop();
     if (ytPlayer || ytCreating) destroyYoutubePlayer();
     ytMode = "control"; // o modo salvo é restaurado por startApp()
     ytPendingLoad = null;
     stopFile();
+    pararMenosTocadorComum();
+  }
+
+  /** O que stopAll e pararMenosTocador fazem igual: buscas, envios, diálogos e avisos. */
+  function pararMenosTocadorComum() {
     libStopAll();
     listsProgStopAll(); // v2.6: diálogos, buscas e estado de Listas e Programação
     if (searchCtrl) { searchCtrl.abort(); searchCtrl = null; }
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
     toastHost.replaceChildren();
-    if (settingsDialog.open) settingsDialog.close();
-    if (msgsDialog.open) msgsDialog.close();
-    if (powerDialog.open) powerDialog.close();
+    for (const d of [settingsDialog, msgsDialog, powerDialog, admDialog, senhaDialog]) if (d.open) d.close();
   }
 
-  /** Mostra a porta: "pin" (digitar), "off" (desativado/sem conexão) ou "boot" (verificando). */
+  /**
+   * v2.8 (B6b): a aba "Tocador da loja" do PC das caixas sobrevive ao bloqueio. A porta fecha (nenhuma outra
+   * chamada sai), mas o heartbeat, o long-poll de comandos, o "pop" da fila e o <audio>/YouTube continuam: o
+   * servidor libera exatamente essas rotas para o PC das caixas, com ou sem sessão (ROTAS_TOCADOR_LOCAL).
+   */
+  const tocadorPodeSobreviver = () => auth.supported && auth.local && ytMode === "player" && !shuttingDown;
+
+  function pararMenosTocador() {
+    authLocked = true;
+    tocadorSobrevivendo = true;
+    scheduler.keepOnly(["yt-heartbeat", "yt-lamp"]);
+    pararMenosTocadorComum();
+  }
+
+  /** Fecha a porta: com o Tocador tocando no PC das caixas, sem pará-lo; senão para tudo. */
+  function fecharPorta() {
+    if (tocadorSobrevivendo || tocadorPodeSobreviver()) pararMenosTocador();
+    else stopAll();
+  }
+
+  /**
+   * v2.8: o PC das caixas abriu (ou recarregou) a aba marcada como Tocador da loja e ninguém está logado: o
+   * Tocador começa sozinho por trás da tela de entrar (só heartbeat, long-poll e fila; o resto espera o login).
+   */
+  function iniciarTocadorSemLogin() {
+    if (!(auth.supported && auth.local) || store.get(LS.ytMode) !== "player" || shuttingDown) return;
+    authLocked = true;
+    tocadorSobrevivendo = true;
+    scheduler.add("yt-heartbeat", pushYoutubeState, 3000, { always: true, immediate: true, enabled: () => ytMode === "player" });
+    scheduler.add("yt-lamp", pollYoutubeState, 15000, { enabled: ytLampAtivo, immediate: true });
+    // applyYoutubeMode já deixa o painel do Tocador renderizado (fora de vista) para o player do YouTube nascer
+    if (ytMode !== "player") applyYoutubeMode("player", false);
+  }
+
+  /** Mostra a porta: "pin" (digitar), "login" (usuário e senha), "off" (desativado/sem conexão) ou "boot" (verificando). */
   function showGate(mode, opts) {
     const o = opts || {};
     gateMode = mode;
     rootEl.dataset.gate = mode;
+    // v2.8: com o Tocador tocando atrás, a porta fica POR CIMA do painel (que segue renderizado, mas inerte)
+    if (tocadorSobrevivendo) rootEl.dataset.gateSobre = "1";
+    else delete rootEl.dataset.gateSobre;
+    appEl.inert = tocadorSobrevivendo;
     gate.classList.remove("is-leaving");
-    gate.hidden = mode === "boot";
+    // "boot" (verificando) só mostra a porta vazia quando ela cobre o painel do Tocador (senão o painel da pessoa
+    // anterior apareceria por um instante)
+    gate.hidden = mode === "boot" && !tocadorSobrevivendo;
     gatePinView.hidden = mode !== "pin";
+    gateLoginView.hidden = mode !== "login";
     gateOffView.hidden = mode !== "off";
     gateDownView.hidden = mode !== "down";
     gateTunnel.hidden = !(mode === "pin" && auth.loopbackSuspenso);
@@ -9181,6 +9349,12 @@
       gatePinInput.value = "";
       setPinFeedback(o.notice || "", false);
       gatePinInput.focus();
+    } else if (mode === "login") {
+      endLoginBlock(true);
+      gatePass.value = "";
+      setLoginFeedback(o.notice || "", false);
+      // o fiscal precisa entrar em segundos: o foco já vai para o Usuário (ou para a Senha, se o usuário ficou)
+      (gateUser.value ? gatePass : gateUser).focus();
     } else if (mode === "off") {
       if (o.tunnel) {
         // v2.7.1: túnel detectado e sem PIN; o servidor explica a saída (fechar o túnel, --definir-pin, CONFIAR_LOOPBACK=1)
@@ -9202,8 +9376,23 @@
   /** Chamado pelo helper de API quando o servidor recusa por falta de sessão/PIN. */
   function lockApp(code, data) {
     if (authLocked) return;
-    stopAll();
+    // v2.8: 401 com codigo "login_requerido" = o servidor está em modo contas (ex.: aba antiga com cookie de PIN
+    // depois de criado o primeiro ADM, ou a sessão de 5 min do PC das caixas venceu)
+    if (code === "pin_requerido" && data && data.codigo === "login_requerido") auth.modoContas = true;
     auth.authenticated = false;
+    if (auth.modoContas && code === "pin_requerido") {
+      const anterior = auth.conta;
+      fecharPorta(); // o Tocador do PC das caixas segue tocando
+      contaUltima = anterior && typeof anterior.id === "string" ? anterior.id : contaUltima;
+      auth.conta = null;
+      auth.permissoes = [];
+      // PC das caixas é compartilhado: a próxima pessoa não encontra o usuário de quem saiu já preenchido
+      if (auth.local) gateUser.value = "";
+      renderConta();
+      showGate("login", { notice: anterior ? "Sua sessão terminou. Entre de novo." : "" });
+      return;
+    }
+    stopAll();
     if (code === "pin_nao_configurado") {
       auth.pinConfigured = false;
       const tunel = !!data && data.codigo === "loopback_suspenso";
@@ -9261,7 +9450,12 @@
         return;
       }
       if (r.status === 409) showPowerError(typeof r.data.error === "string" && r.data.error ? r.data.error : "Espere o anúncio terminar.");
-      else if (r.status === 403) showPowerError("Só dá para desligar pelo computador do Proclamare.");
+      else if (r.status === 403 && r.data.codigo === "sem_permissao") {
+        // v2.8: o perfil não pode desligar (o servidor diz "Peça a um gerente."); sem nova tentativa, o botão some
+        showPowerError(typeof r.data.error === "string" && r.data.error ? str(r.data.error, 200) : "Seu perfil não pode desligar o Proclamare.");
+        auth.podeDesligar = false;
+        btnPower.hidden = true;
+      } else if (r.status === 403) showPowerError("Só dá para desligar pelo computador do Proclamare.");
       else showPowerError(typeof r.data.error === "string" && r.data.error ? r.data.error : "Não foi possível desligar agora. Tente de novo.");
     } catch (err) {
       if (err.name !== "AuthLockedError") showPowerError("Não foi possível falar com o servidor. Tente de novo.");
@@ -9367,6 +9561,10 @@
       } else if (status === 403 && data.auth === "pin_nao_configurado") {
         auth.pinConfigured = false;
         showGate("off");
+      } else if (status === 400 && data.codigo === "modo_contas") {
+        // v2.8: criaram a primeira conta enquanto esta tela estava aberta: agora é usuário e senha
+        auth.modoContas = true;
+        showGate("login", { notice: "O Proclamare agora usa usuário e senha." });
       } else if (status === 401) {
         const base = typeof data.error === "string" && data.error ? data.error : "PIN incorreto.";
         const left = Number.isInteger(data.tentativas_restantes) ? data.tentativas_restantes : null;
@@ -9387,14 +9585,133 @@
     }
   });
 
+  // ---- Tela de entrar com usuário e senha (v2.8, modo contas) ----
+  // POST /api/auth/login {usuario, senha}: 200 {ok, conta, permissoes} + cookie; 401 = SEMPRE "Usuário ou senha
+  // incorretos." (o servidor nunca diz se o usuário existe); 429 = bloqueio (mostra o texto do servidor). A senha só
+  // passa pela memória até o POST e o campo é limpo logo em seguida (nunca vai ao storage).
+  let entrarBusy = false;
+  let entrarTimer = 0;
+
+  function setLoginFeedback(text, isError) {
+    setText(gateLoginMsg, text);
+    gateLoginMsg.classList.toggle("is-error", !!isError);
+    gatePassBox.classList.toggle("is-error", !!isError);
+  }
+
+  function shakeLogin() {
+    gatePassBox.classList.remove("is-shake");
+    void gatePassBox.offsetWidth; // reinicia a animação
+    gatePassBox.classList.add("is-shake");
+  }
+  gatePassBox.addEventListener("animationend", () => gatePassBox.classList.remove("is-shake"));
+
+  function setEntrarBusy(on) {
+    entrarBusy = on;
+    btnGateEntrar.classList.toggle("is-loading", on);
+    btnGateEntrar.setAttribute("aria-disabled", String(on || !!entrarTimer));
+    if (on) btnGateEntrar.setAttribute("aria-busy", "true");
+    else btnGateEntrar.removeAttribute("aria-busy");
+  }
+
+  function endLoginBlock(silent) {
+    if (entrarTimer) { clearInterval(entrarTimer); entrarTimer = 0; }
+    gateUser.disabled = false;
+    gatePass.disabled = false;
+    gateLoginCount.hidden = true;
+    btnGateEntrar.setAttribute("aria-disabled", String(entrarBusy));
+    if (!silent) {
+      setLoginFeedback("Você já pode tentar de novo.", false);
+      (gateUser.value ? gatePass : gateUser).focus();
+    }
+  }
+
+  function startLoginBlock(seconds, msg) {
+    const end = Date.now() + clamp(Math.ceil(seconds), 1, 86400) * 1000;
+    if (entrarTimer) clearInterval(entrarTimer);
+    gatePass.value = "";
+    gateUser.disabled = true;
+    gatePass.disabled = true;
+    btnGateEntrar.setAttribute("aria-disabled", "true");
+    setLoginFeedback(msg || "Muitas tentativas. Aguarde para tentar de novo.", true);
+    gateLoginCount.hidden = false;
+    const tick = () => {
+      const left = Math.ceil((end - Date.now()) / 1000);
+      if (left <= 0) { endLoginBlock(false); return; }
+      setText(gateLoginCount, formatTime(left * 1000));
+    };
+    entrarTimer = setInterval(tick, 1000);
+    tick();
+  }
+
+  for (const input of [gateUser, gatePass]) {
+    input.addEventListener("input", () => {
+      if (gateLoginMsg.classList.contains("is-error") && !entrarTimer) setLoginFeedback("", false);
+    });
+  }
+
+  gateLoginForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (entrarBusy || entrarTimer) return;
+    const usuario = gateUser.value.trim().toLowerCase(); // o servidor faz o mesmo (strip + minúsculas)
+    const senha = gatePass.value;
+    if (!usuario) {
+      setLoginFeedback("Digite o seu usuário.", true);
+      gateUser.focus();
+      return;
+    }
+    if (!senha) {
+      // Enter no campo Usuário só leva para a Senha, sem bronca
+      if (document.activeElement === gateUser) setLoginFeedback("", false);
+      else setLoginFeedback("Digite a sua senha.", true);
+      gatePass.focus();
+      return;
+    }
+    gatePass.value = ""; // a senha não fica no campo depois do envio
+    setLoginFeedback("", false);
+    setEntrarBusy(true);
+    try {
+      const { ok, status, data } = await postJSON("/api/auth/login", { usuario, senha }, { auth: true, timeout: 15000 });
+      if (ok && data.ok) {
+        // relê o status (conta, permissões, pode_desligar, segurança) e abre o painel do perfil; o botão segue
+        // "carregando" até lá (nada de segundo envio)
+        await boot();
+        return;
+      }
+      if (status === 429) {
+        startLoginBlock(Number(data.bloqueado_por_s) || 60, typeof data.error === "string" && data.error ? str(data.error, 200) : "");
+      } else if (status === 401) {
+        // mensagem única do servidor; o nº de tentativas restantes é por aparelho/rede (nunca diz se o usuário existe)
+        const base = typeof data.error === "string" && data.error ? str(data.error, 120) : "Usuário ou senha incorretos.";
+        const left = isRemote() && Number.isInteger(data.tentativas_restantes) && data.tentativas_restantes <= 3 ? data.tentativas_restantes : null;
+        const extra = left === null ? "" : left === 1 ? " Resta 1 tentativa." : " Restam " + left + " tentativas.";
+        setLoginFeedback(base + extra, true);
+        shakeLogin();
+        gatePass.focus();
+      } else if (status === 400 && data.codigo === "modo_contas") {
+        boot(); // o servidor voltou a pedir PIN (não deveria acontecer): relê e mostra a tela certa
+      } else {
+        setLoginFeedback(typeof data.error === "string" && data.error ? str(data.error, 200) : "Não foi possível entrar. Tente de novo.", true);
+        shakeLogin();
+        gatePass.focus();
+      }
+    } catch (err) {
+      setLoginFeedback("Sem conexão com o servidor. Tente de novo.", true);
+      gatePass.focus();
+    } finally {
+      setEntrarBusy(false);
+    }
+  });
+
   btnGateRetry.addEventListener("click", () => { if (!booting) boot(); });
 
   /** Fecha a porta com um fade e inicia o painel. */
   function enterApp() {
-    const fromGate = gateMode === "pin" || gateMode === "off";
+    const fromGate = gateMode === "pin" || gateMode === "off" || gateMode === "login";
     const finish = () => {
       gateMode = "";
       delete rootEl.dataset.gate;
+      delete rootEl.dataset.gateSobre;
+      appEl.inert = false;
       gate.hidden = true;
       gate.classList.remove("is-leaving");
       if (fromGate) playEnter(appEl);
@@ -9410,11 +9727,32 @@
 
   // ---- Configurações: "Acesso pela rede" ----
   function renderNetSection() {
+    if (auth.modoContas) {
+      // v2.8: o PIN não vale mais. Fica só "Desconectar todos os aparelhos" para o ADM no PC das caixas (encerra
+      // TODAS as sessões, inclusive a dele); o "Sair" de cada pessoa está na barra da conta.
+      const showAdm = auth.supported && auth.local && pode("seguranca");
+      netSection.hidden = !showAdm;
+      netLocal.hidden = !showAdm;
+      netRemote.hidden = true;
+      pinCampos.hidden = true;
+      netContas.hidden = true;
+      pinChangeConfirm.hidden = true;
+      pinDisableConfirm.hidden = true;
+      setText(netState, "O Proclamare usa contas: cada pessoa entra com o próprio usuário e senha.");
+      netState.classList.add("is-on");
+      setText(revokeHint, "Todas as pessoas conectadas, inclusive você, vão precisar entrar de novo.");
+      netRevokeRow.hidden = !showAdm;
+      if (!showAdm) revokeConfirm.hidden = true;
+      return;
+    }
+    pinCampos.hidden = false;
+    setText(revokeHint, "Quem estiver usando o painel pela rede vai precisar digitar o PIN de novo.");
     const showLocal = auth.supported && auth.local;
     const showRemote = auth.supported && !auth.local && auth.authenticated;
     netSection.hidden = !(showLocal || showRemote);
     netLocal.hidden = !showLocal;
     netRemote.hidden = !showRemote;
+    netContas.hidden = !(showLocal && auth.precisaCriarAdm); // v2.8: a passagem para as contas (só no PC das caixas)
     if (showLocal) {
       setText(netState, auth.pinConfigured
         ? "PIN definido — outros aparelhos da rede entram com ele."
@@ -9697,7 +10035,7 @@
 
   /** Lê a lista de pendentes (só local). Chamada ao abrir as Configurações e depois de aprovar. */
   async function segLoadRemotos() {
-    if (!(auth.supported && auth.local) || seg.remotosBusy || authLocked) return;
+    if (!(auth.supported && auth.local) || !pode("seguranca") || seg.remotosBusy || authLocked) return;
     seg.remotosBusy = true;
     try {
       const r = await getJSON("/api/seguranca/remotos", { timeout: 8000 });
@@ -10092,6 +10430,7 @@
       const { ok, data } = await postJSON("/api/auth/revogar", revValores(revUi.revoke));
       if (ok && data.ok) {
         revokeConfirm.hidden = true;
+        if (auth.modoContas) { boot(); return; } // v2.8: a sessão de quem revogou também caiu: volta a tela de entrar
         toast("Todos os aparelhos foram desconectados.", "success");
         if (!revisaoToast(data.revisao)) remoteProgNotice(data);
         revisaoAtualiza();
@@ -10145,7 +10484,7 @@
 
   /** Aviso discreto no PC da loja: sem PIN, o celular não consegue controlar. */
   function maybeShowPinHint() {
-    if (!(auth.supported && auth.local && !auth.pinConfigured)) return;
+    if (!(auth.supported && auth.local && !auth.pinConfigured) || auth.modoContas) return; // v2.8: com contas não há PIN
     try {
       if (window.sessionStorage.getItem(PIN_HINT_KEY)) return;
       window.sessionStorage.setItem(PIN_HINT_KEY, "1");
@@ -10175,7 +10514,7 @@
   }
 
   async function bootInner() {
-    stopAll();
+    fecharPorta(); // v2.8: o Tocador da loja que já tocava no PC das caixas não para (Sair, sessão vencida, retry)
     if (gateMode === "") showGate("boot");
     let st = null;
     let unreachable = false;
@@ -10197,13 +10536,384 @@
     auth.pinConfigured = !st.legacy && st.pin_configurado === true;
     auth.authenticated = st.legacy ? true : st.autenticado === true;
     // v2.5: só o PC do Proclamare recebe pode_desligar=true (o servidor recusa o resto de qualquer jeito)
+    // v2.8: em modo contas, e só para quem pode desligar (gerente/ADM logados no PC das caixas)
     auth.podeDesligar = !st.legacy && st.local === true && st.pode_desligar === true;
     btnPower.hidden = !auth.podeDesligar;
+    lerConta(st);
+    renderConta();
     if (auth.local) readLocalAuthInfo(st);
+    if (auth.modoContas) {
+      // v2.8 (B6b): com contas o PC das caixas também entra com usuário e senha
+      if (auth.authenticated && auth.conta) { enterApp(); return; }
+      iniciarTocadorSemLogin(); // a aba Tocador do PC das caixas começa a tocar por trás da tela de entrar
+      showGate("login");
+      return;
+    }
     if (auth.local || auth.authenticated) enterApp();
     else if (!auth.pinConfigured) showGate("off", auth.loopbackSuspenso ? { tunnel: true } : undefined);
     else showGate("pin");
   }
+
+  // ---- Conta logada e permissões (v2.8, Parte B) ----
+  const PERFIL_NOMES = { adm: "Administrador", gerente: "Gerente", funcionario: "Funcionário" };
+  const CAPACIDADES = ["anunciar", "mensagens_editar", "voz", "musica", "programacao", "historico_todos",
+    "contas", "som", "seguranca", "spotify_config", "desligar"]; // = contas.CAPACIDADES (lista fixa: o resto é ignorado)
+  const USUARIO_RE = /^[a-z0-9._]{3,30}$/; // = contas.normalizar_usuario
+  const SENHA_MIN = 8;
+  const SENHA_MAX = 128;
+
+  /** Lê modo, conta e permissões do /api/auth/status (só campos conhecidos; textos cortados no tamanho do contrato). */
+  function lerConta(st) {
+    auth.modoContas = !st.legacy && st.modo_contas === true;
+    auth.precisaCriarAdm = !st.legacy && st.precisa_criar_adm === true && st.local === true && !auth.modoContas;
+    auth.permissoes = Array.isArray(st.permissoes) ? CAPACIDADES.filter((c) => st.permissoes.includes(c)) : [];
+    const c = st.conta;
+    auth.conta = auth.modoContas && c && typeof c === "object" && typeof c.id === "string" ? {
+      id: c.id.slice(0, 64),
+      usuario: str(c.usuario, 30),
+      nome: str(c.nome, 60),
+      funcao: str(c.funcao, 40),
+      perfil: Object.prototype.hasOwnProperty.call(PERFIL_NOMES, c.perfil) ? c.perfil : "",
+    } : null;
+  }
+
+  /** Iniciais do nome para o avatar (até 2 letras). */
+  function iniciais(nome) {
+    const partes = nome.trim().split(/\s+/).filter(Boolean);
+    if (!partes.length) return "";
+    const a = Array.from(partes[0])[0] || "";
+    const b = partes.length > 1 ? Array.from(partes[partes.length - 1])[0] || "" : "";
+    return (a + b).toUpperCase();
+  }
+
+  /** Barra da conta no topo + o convite do 1º ADM (modo PIN, só no PC das caixas). */
+  function renderConta() {
+    const c = auth.modoContas ? auth.conta : null;
+    contaBar.hidden = !c;
+    if (c) {
+      setText(contaAvatar, iniciais(c.nome || c.usuario));
+      setText(contaNome, c.nome || c.usuario);
+      const perfil = PERFIL_NOMES[c.perfil] || "";
+      setText(contaFuncao, c.funcao && perfil && c.funcao.toLowerCase() !== perfil.toLowerCase() ? c.funcao + " · " + perfil : c.funcao || perfil);
+      contaBar.title = (c.nome || "") + (c.usuario ? " (" + c.usuario + ")" : "");
+      senhaUsuario.value = c.usuario;
+    } else {
+      senhaUsuario.value = "";
+    }
+    renderConvite();
+  }
+
+  const CONVITE_KEY = "proclamare_adm_convite"; // sessionStorage: "Agora não" vale até fechar o navegador
+  function renderConvite() {
+    let adiado = false;
+    try { adiado = window.sessionStorage.getItem(CONVITE_KEY) === "1"; } catch (e) { /* sem sessionStorage */ }
+    admConvite.hidden = !(auth.precisaCriarAdm && auth.local && !auth.modoContas) || adiado;
+  }
+
+  /**
+   * Esconde o que o perfil não pode usar. `data-perm="a b"` = precisa de pelo menos uma das capacidades;
+   * `data-perm-sem="a"` = aparece só para quem NÃO tem. Usa a classe "perm-off" (display:none !important), e não o
+   * atributo hidden, para o código que liga/desliga `hidden` (ex.: Editar mensagens, Som da loja) não reexibir o que
+   * o perfil não vê. `data-perm-manter` (painel Música): sai de vista mas continua renderizado, porque o player do
+   * YouTube da aba Tocador não pode ir para display:none. Em modo PIN tudo aparece, como antes.
+   */
+  function aplicarPermissoes() {
+    for (const el of document.querySelectorAll("[data-perm]")) {
+      const ok = el.dataset.perm.split(/\s+/).filter(Boolean).some(pode);
+      el.classList.toggle("perm-off", !ok);
+      if (el.hasAttribute("data-perm-manter")) el.inert = !ok;
+    }
+    for (const el of document.querySelectorAll("[data-perm-sem]")) {
+      el.classList.toggle("perm-off", pode(el.dataset.permSem));
+    }
+    // Abas do celular: só as do perfil; com uma aba só (funcionário) a barra some
+    const abas = Array.from(tabbar.querySelectorAll("[data-value]")).filter((b) => !b.classList.contains("perm-off"));
+    tabbar.classList.toggle("perm-off", abas.length <= 1);
+    if (!pode("musica") && !pode("programacao")) rootEl.dataset.soAnuncio = "1";
+    else delete rootEl.dataset.soAnuncio;
+    if ((activeTab === "music" && !pode("musica")) || (activeTab === "prog" && !pode("programacao"))) {
+      tabGroup.set("announce"); // chama setTab
+    }
+  }
+
+  /** 403 "sem_permissao" fora do esperado: relê o status (no máximo a cada 30 s) e reaplica as permissões. */
+  let permissoesRelidoEm = -Infinity;
+  let permissoesRelendo = false;
+  async function permissoesReler() {
+    if (!auth.modoContas || permissoesRelendo || authLocked || performance.now() - permissoesRelidoEm < 30000) return;
+    permissoesRelendo = true;
+    permissoesRelidoEm = performance.now();
+    try {
+      const r = await getJSON("/api/auth/status", { auth: true, timeout: 6000 });
+      if (!r.ok || typeof r.data.local !== "boolean" || authLocked) return;
+      if (r.data.modo_contas === true && r.data.autenticado !== true) {
+        lockApp("pin_requerido", { codigo: "login_requerido" });
+        return;
+      }
+      lerConta(r.data);
+      auth.podeDesligar = r.data.local === true && r.data.pode_desligar === true;
+      btnPower.hidden = !auth.podeDesligar;
+      renderConta();
+      aplicarPermissoes();
+      renderNetSection();
+      scheduler.refresh();
+    } catch (e) {
+      /* mantém o que já está na tela */
+    } finally {
+      permissoesRelendo = false;
+    }
+  }
+
+  /**
+   * PC das caixas (modo contas): a sessão vence após 5 min sem uso. Passado esse tempo sem clique/tecla, confere o
+   * status (rota pública, não renova nada) e, se a sessão acabou, mostra a tela de entrar na hora, para a próxima
+   * pessoa não encontrar o painel aberto com o nome de quem esqueceu de sair.
+   */
+  async function conferirSessaoOciosa() {
+    if (!(auth.modoContas && auth.local) || authLocked || performance.now() - ultimaAtividade < SESSAO_LOCAL_OCIOSA_MS) return;
+    try {
+      const r = await getJSON("/api/auth/status", { auth: true, timeout: 5000 });
+      if (r.ok && r.data.modo_contas === true && r.data.autenticado !== true && !authLocked) {
+        lockApp("pin_requerido", { codigo: "login_requerido" });
+      }
+    } catch (e) { /* sem resposta: a próxima sondagem decide */ }
+  }
+
+  /** Esquece o que a pessoa digitou e o histórico local de anúncios (PC das caixas, que é compartilhado). */
+  function limparComposerEHistorico() {
+    messageText.value = "";
+    updateCounter();
+    history = [];
+    store.remove(LS.history);
+    renderHistory(false);
+  }
+
+  /** Outra pessoa entrou neste navegador: some o que a anterior digitou e o histórico local dela. */
+  function limparDaPessoaAnterior() {
+    if (!auth.conta) return;
+    const salvo = store.get(LS.conta);
+    const anterior = contaUltima || salvo;
+    if (anterior && anterior !== auth.conta.id) limparComposerEHistorico();
+    contaUltima = auth.conta.id;
+    if (salvo !== auth.conta.id) store.set(LS.conta, auth.conta.id);
+  }
+
+  // ---- Sair (v2.8) ----
+  btnContaSair.addEventListener("click", async () => {
+    if (btnContaSair.getAttribute("aria-disabled") === "true") return;
+    btnContaSair.setAttribute("aria-disabled", "true");
+    btnContaSair.classList.add("is-loading");
+    try {
+      const r = await postJSON("/api/auth/logout", {}, { auth: true, timeout: 8000 });
+      if (!r.ok || r.data.ok === false) throw new Error("logout recusado");
+      // PC das caixas (compartilhado): some o que esta pessoa digitou e o histórico local; o modo Tocador, a fonte de
+      // música e o tema ficam (são da loja). Aparelho da rede: como o "Sair" do PIN (fica só o tema).
+      if (auth.local) limparComposerEHistorico();
+      else wipeBrowserData();
+      gateUser.value = "";
+      contaUltima = null;
+      boot();
+    } catch (err) {
+      toast("Não foi possível sair agora. Tente de novo.", "error");
+    } finally {
+      btnContaSair.removeAttribute("aria-disabled");
+      btnContaSair.classList.remove("is-loading");
+    }
+  });
+
+  // ---- Trocar minha senha (v2.8): POST /api/conta/senha {senha_atual, senha_nova} ----
+  let senhaBusy = false;
+  const SENHA_MOTIVOS = {
+    tamanho: "A senha nova precisa ter de 8 a 128 caracteres.",
+    igual_usuario: "A senha nova não pode ser igual ao usuário.",
+    mesma_senha: "A senha nova precisa ser diferente da atual.",
+    caractere: "A senha nova tem um caractere que não é aceito.",
+  };
+
+  function showSenhaError(text, campo) {
+    senhaError.hidden = !text;
+    setText(senhaError, text || "");
+    for (const el of [senhaAtual, senhaNova, senhaNova2]) el.removeAttribute("aria-invalid");
+    if (campo) { campo.setAttribute("aria-invalid", "true"); campo.focus(); }
+  }
+
+  function limparSenhaForm() {
+    senhaAtual.value = "";
+    senhaNova.value = "";
+    senhaNova2.value = "";
+    showSenhaError("");
+  }
+
+  function openSenhaDialog() {
+    if (!auth.modoContas || !auth.conta || authLocked || senhaDialog.open) return;
+    limparSenhaForm();
+    senhaUsuario.value = auth.conta.usuario;
+    senhaDialog.showModal();
+    senhaAtual.focus();
+  }
+
+  function closeSenhaDialog() {
+    if (senhaBusy) return;
+    limparSenhaForm();
+    closeDialogAnimated(senhaDialog);
+  }
+
+  btnContaSenha.addEventListener("click", openSenhaDialog);
+  btnSenhaCancel.addEventListener("click", closeSenhaDialog);
+  senhaDialog.addEventListener("cancel", (e) => { e.preventDefault(); closeSenhaDialog(); });
+  onBackdropClick(senhaDialog, closeSenhaDialog);
+  senhaDialog.addEventListener("close", limparSenhaForm); // a senha nunca fica num diálogo fechado
+
+  senhaForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (senhaBusy || !auth.conta) return;
+    const atual = senhaAtual.value;
+    const nova = senhaNova.value;
+    if (!atual) return showSenhaError("Digite a sua senha atual.", senhaAtual);
+    if (nova.length < SENHA_MIN || nova.length > SENHA_MAX) return showSenhaError(SENHA_MOTIVOS.tamanho, senhaNova);
+    if (nova.trim().toLowerCase() === auth.conta.usuario) return showSenhaError(SENHA_MOTIVOS.igual_usuario, senhaNova);
+    if (nova === atual) return showSenhaError(SENHA_MOTIVOS.mesma_senha, senhaNova);
+    if (nova !== senhaNova2.value) return showSenhaError("As duas senhas novas não são iguais.", senhaNova2);
+    showSenhaError("");
+    senhaBusy = true;
+    btnSenhaSave.classList.add("is-loading");
+    btnSenhaSave.setAttribute("aria-disabled", "true");
+    try {
+      const { ok, status, data } = await postJSON("/api/conta/senha", { senha_atual: atual, senha_nova: nova }, { timeout: 15000 });
+      if (ok && data.ok) {
+        senhaBusy = false;
+        closeSenhaDialog();
+        toast("Senha trocada. Os outros aparelhos com a sua conta saíram.", "success");
+        return;
+      }
+      const erro = typeof data.error === "string" && data.error ? str(data.error, 200) : "";
+      if (status === 400 && data.campo === "senha_atual") {
+        senhaAtual.value = "";
+        showSenhaError(data.codigo === "senha_errada" ? "A senha atual está incorreta." : erro || "Confira a senha atual.", senhaAtual);
+      } else if (status === 400 && data.campo === "senha_nova") {
+        showSenhaError(SENHA_MOTIVOS[data.codigo] || erro || "Senha nova inválida.", senhaNova);
+      } else if (status === 429) {
+        showSenhaError(erro || "Muitas tentativas. Espere um pouco e tente de novo.");
+      } else if (status !== 401) { // 401: a porta já fechou (request -> lockApp)
+        showSenhaError(erro || "Não foi possível trocar a senha. Tente de novo.");
+      }
+    } catch (err) {
+      if (err.name !== "AuthLockedError") showSenhaError("Não foi possível falar com o servidor. Tente de novo.");
+    } finally {
+      senhaBusy = false;
+      btnSenhaSave.classList.remove("is-loading");
+      btnSenhaSave.removeAttribute("aria-disabled");
+    }
+  });
+
+  // ---- Criar a conta de administrador (v2.8, modo PIN, só no PC das caixas) ----
+  // POST /api/auth/primeiro-adm {usuario, nome, funcao, senha} -> 201 {ok, conta, permissoes} + sessão do PC.
+  // Depois disso o PIN deixa de valer: o painel relê o status e já entra como o novo ADM.
+  let admBusy = false;
+  const ADM_CAMPOS = { nome: admNome, funcao: admFuncao, usuario: admUsuario, senha: admSenha };
+  const ADM_MOTIVOS = {
+    usuario: "Use de 3 a 30 letras minúsculas, números, ponto ou sublinhado (sem espaços nem acentos).",
+    nome: "Digite o seu nome (até 60 caracteres, numa linha só).",
+    funcao: "Digite a sua função (até 40 caracteres, numa linha só).",
+    senha: "A senha precisa ter de 8 a 128 caracteres.",
+  };
+
+  function showAdmError(text, campo) {
+    admError.hidden = !text;
+    setText(admError, text || "");
+    for (const el of [admNome, admFuncao, admUsuario, admSenha, admSenha2]) el.removeAttribute("aria-invalid");
+    if (campo) { campo.setAttribute("aria-invalid", "true"); campo.focus(); }
+  }
+
+  function limparAdmSenhas() {
+    admSenha.value = "";
+    admSenha2.value = "";
+  }
+
+  function openAdmDialog() {
+    if (!(auth.precisaCriarAdm && auth.local && !auth.modoContas) || authLocked || admDialog.open || shuttingDown) return;
+    if (settingsDialog.open) closeSettings();
+    showAdmError("");
+    limparAdmSenhas();
+    admDialog.showModal();
+    (admNome.value ? admUsuario : admNome).focus();
+  }
+
+  function closeAdmDialog() {
+    if (admBusy) return;
+    limparAdmSenhas();
+    closeDialogAnimated(admDialog);
+  }
+
+  btnAdmConvite.addEventListener("click", openAdmDialog);
+  btnNetCriarAdm.addEventListener("click", openAdmDialog);
+  btnAdmConviteDepois.addEventListener("click", () => {
+    try { window.sessionStorage.setItem(CONVITE_KEY, "1"); } catch (e) { /* sem sessionStorage: some só agora */ }
+    admConvite.hidden = true;
+    toast("Quando quiser, crie a conta em Configurações → Acesso pela rede.", "info", { duration: 6000 });
+  });
+  btnAdmCancel.addEventListener("click", closeAdmDialog);
+  admDialog.addEventListener("cancel", (e) => { e.preventDefault(); closeAdmDialog(); });
+  onBackdropClick(admDialog, closeAdmDialog);
+  admDialog.addEventListener("close", limparAdmSenhas);
+
+  admForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (admBusy) return;
+    const nome = cleanMsgText(admNome.value, false);
+    const funcao = cleanMsgText(admFuncao.value, false);
+    const usuario = admUsuario.value.trim().toLowerCase();
+    const senha = admSenha.value;
+    if (!nome || nome.length > 60) return showAdmError(ADM_MOTIVOS.nome, admNome);
+    if (!funcao || funcao.length > 40) return showAdmError(ADM_MOTIVOS.funcao, admFuncao);
+    if (!USUARIO_RE.test(usuario)) return showAdmError(ADM_MOTIVOS.usuario, admUsuario);
+    if (senha.length < SENHA_MIN || senha.length > SENHA_MAX) return showAdmError(ADM_MOTIVOS.senha, admSenha);
+    if (senha.trim().toLowerCase() === usuario) return showAdmError("A senha não pode ser igual ao usuário.", admSenha);
+    if (senha !== admSenha2.value) return showAdmError("As duas senhas não são iguais.", admSenha2);
+    showAdmError("");
+    admBusy = true;
+    btnAdmSave.classList.add("is-loading");
+    btnAdmSave.setAttribute("aria-disabled", "true");
+    try {
+      const { status, data } = await postJSON("/api/auth/primeiro-adm", { usuario, nome, funcao, senha }, { auth: true, timeout: 20000 });
+      if (status === 201 && data.ok) {
+        admBusy = false;
+        limparAdmSenhas();
+        admNome.value = "";
+        admFuncao.value = "";
+        admUsuario.value = "";
+        if (admDialog.open) admDialog.close();
+        gateUser.value = usuario;
+        // já entra como o novo ADM (o servidor abriu a sessão do PC); a tela de entrar volta após 5 min sem uso
+        boot();
+        setTimeout(() => toast("Conta de administrador criada. Agora cada pessoa entra com o próprio usuário.", "success", { duration: 7000 }), 800);
+        return;
+      }
+      const erro = typeof data.error === "string" && data.error ? str(data.error, 200) : "";
+      if (status === 409 && data.codigo === "ja_existe") {
+        admBusy = false;
+        if (admDialog.open) admDialog.close();
+        boot(); // outra aba criou antes: a tela de entrar aparece
+      } else if ((status === 400 || status === 409) && typeof data.campo === "string" && Object.prototype.hasOwnProperty.call(ADM_CAMPOS, data.campo)) {
+        const motivo = data.codigo === "usuario_repetido" ? "Esse usuário já existe."
+          : data.campo === "senha" && data.codigo === "igual_usuario" ? "A senha não pode ser igual ao usuário."
+          : ADM_MOTIVOS[data.campo];
+        showAdmError(motivo || erro || "Confira os campos.", ADM_CAMPOS[data.campo]);
+      } else if (status === 429) {
+        showAdmError(erro || "Muitas tentativas. Espere um minuto e tente de novo.");
+      } else if (status === 403) {
+        showAdmError(erro || "A conta de administrador só pode ser criada no computador da loja.");
+      } else {
+        showAdmError(erro || "Não foi possível criar a conta. Tente de novo.");
+      }
+    } catch (err) {
+      showAdmError("Não foi possível falar com o servidor. Tente de novo.");
+    } finally {
+      admBusy = false;
+      btnAdmSave.classList.remove("is-loading");
+      btnAdmSave.removeAttribute("aria-disabled");
+    }
+  });
 
   // ======================================================================
   // 17c. Som da loja (tile, avisos e assistente "Minhas saídas de som")
@@ -11155,7 +11865,13 @@
 
   // ---- Tudo que fala com o servidor começa aqui (só depois da porta de PIN) ----
   function startApp() {
+    const tocadorJaTocava = tocadorSobrevivendo && ytMode === "player"; // v2.8: o Tocador seguiu tocando atrás da porta
     authLocked = false;
+    tocadorSobrevivendo = false;
+    // v2.8: interface do perfil ANTES das tarefas (área escondida = poller desligado pelo enabled())
+    renderConta();
+    aplicarPermissoes();
+    limparDaPessoaAnterior();
     sp.connected = null; // reavalia o Spotify do zero (inclusive após novo login)
     // as assinaturas de render valem só para a sessão anterior: força o primeiro desenho a escrever
     sp.lampSig = sp.noticeSig = sp.calloutSig = sp.alertSig = SIG_REINICIO;
@@ -11167,44 +11883,51 @@
     setLamp(lampInternetBulb, "off");
     setText(lampInternetLabel, "Verificando…");
 
-    // Modo salvo neste navegador (padrão: controle remoto)
-    const savedMode = store.get(LS.ytMode) === "player" ? "player" : "control";
-    applyYoutubeMode(savedMode, false);
+    // Modo salvo neste navegador (padrão: controle remoto). v2.8: o Tocador só vale no PC das caixas ou para quem
+    // tem "musica" (um funcionário pela rede nunca vira tocador); se ele já tocava atrás da porta, segue sem reiniciar.
+    const savedMode = store.get(LS.ytMode) === "player" && (auth.local || pode("musica")) ? "player" : "control";
+    if (!(tocadorJaTocava && savedMode === "player")) applyYoutubeMode(savedMode, false);
     syncPanes();
 
     // Tarefas de polling (todas passam pelo agendador único)
     scheduler.add("status", pollStatus, 15000, { immediate: true });
     // Segurança (v2.7.1): selo de alerta no botão de Configurações, só no PC da loja; pausa com a aba oculta
-    scheduler.add("seg", refreshLocalAuthInfo, 60000, { enabled: () => auth.supported && auth.local && !authLocked && !settingsDialog.open });
-    // Som da loja: tile a cada 10 s; a lista do assistente a 1 s, só com o diálogo aberto
+    scheduler.add("seg", refreshLocalAuthInfo, 60000, { enabled: () => auth.supported && auth.local && pode("seguranca") && !authLocked && !settingsDialog.open });
+    // v2.8: PC das caixas em modo contas: depois de 5 min sem uso, confere se a sessão acabou (tela de entrar na hora)
+    scheduler.add("sessao-ociosa", conferirSessaoOciosa, 15000, { enabled: () => auth.modoContas && auth.local });
+    // Som da loja: tile a cada 10 s; a lista do assistente a 1 s, só com o diálogo aberto (v2.8: só com "som")
     somReiniciar();
-    scheduler.add("som-estado", pollSomEstado, 10000, { immediate: true });
-    scheduler.add("som-saidas", pollSomSaidas, 1000, { enabled: () => somAberto });
+    scheduler.add("som-estado", pollSomEstado, 10000, { immediate: true, enabled: () => pode("som") });
+    scheduler.add("som-saidas", pollSomSaidas, 1000, { enabled: () => somAberto && pode("som") });
     scheduler.add("spotify-now", pollSpotifyNow, 4000, { enabled: spotifyActive });
     // Reconfere a conexão do Spotify (falha transitória no 1º carregamento, token revogado, login em outro PC)
     // (a linha de status do topo é visível em qualquer aba/fonte, então a lâmpada não pode ficar velha)
-    scheduler.add("spotify-status", refreshSpotifyStatus, 15000);
+    scheduler.add("spotify-status", refreshSpotifyStatus, 15000, { enabled: () => pode("musica") });
     scheduler.add("yt-state", pollYoutubeState, 4000, { enabled: youtubeActive, immediate: true });
     // Com o YouTube fora de vista, só confere a lâmpada "Tocador YouTube" com calma
-    scheduler.add("yt-lamp", pollYoutubeState, 15000, { enabled: () => !youtubeActive(), immediate: true });
+    // (v2.8: sem "musica" só na aba Tocador do PC das caixas, que precisa da fila do servidor para avançar direito)
+    scheduler.add("yt-lamp", pollYoutubeState, 15000, { enabled: ytLampAtivo, immediate: true });
     // O tocador NUNCA pausa em segundo plano: precisa obedecer comandos e manter o heartbeat.
+    // (v2.8: sem checar perfil: no PC das caixas a aba Tocador toca para qualquer pessoa logada, ou sem ninguém)
     scheduler.add("yt-heartbeat", pushYoutubeState, 3000, { always: true, immediate: true, enabled: () => ytMode === "player" });
     // Minhas músicas: só confere a pasta enquanto a lista está à vista (a versão muda -> recarrega)
     scheduler.add("lib", libPoll, 15000, { enabled: libActive, immediate: true });
     // Voz da loja (v2.8): lê agora e relê a cada minuto (pausa com a aba oculta e enquanto há mudança a gravar)
-    scheduler.add("voz", vozCarregar, VOZ_POLL_MS, { immediate: true, enabled: () => !vozOcupada() });
+    scheduler.add("voz", vozCarregar, VOZ_POLL_MS, { immediate: true, enabled: () => pode("voz") && !vozOcupada() });
     // Mensagens prontas (v2.5): lê agora e relê a cada minuto, pausado com a aba oculta e com o editor aberto
     scheduler.add("mensagens", refreshMessages, MSG_POLL_MS, { immediate: true, enabled: () => !msgsDialog.open });
     // Listas (v2.6): só com a biblioteca à vista (a versão do arquivo muda quando outro aparelho edita)
     scheduler.add("lib-lists", listsPoll, 20000, { enabled: libActive, immediate: true });
     // Programação (v2.6): a cada 5 s com o bloco à vista; fora de vista só confere de vez em quando (avisos e o ponto da aba)
     scheduler.add("prog", progPoll, PROG_POLL_MS, { enabled: progVisible, immediate: true });
-    scheduler.add("prog-bg", progPoll, PROG_BG_POLL_MS, { enabled: () => !progVisible(), immediate: true });
+    scheduler.add("prog-bg", progPoll, PROG_BG_POLL_MS, { enabled: () => pode("programacao") && !progVisible(), immediate: true });
     // Playlists salvas do Spotify (v2.7): só com a área do Spotify à vista; some sozinho se o servidor não tiver a função
     scheduler.add("sp-atalhos", saTask, SA_POLL_MS, { enabled: () => spotifyActive() && !sa.missing, immediate: true });
 
-    refreshSpotifyStatus();
-    finishSpotifyRedirectBack();
+    if (pode("musica")) {
+      refreshSpotifyStatus();
+      finishSpotifyRedirectBack();
+    }
 
     // O script da API do YouTube é "defer" e roda depois deste arquivo; se por
     // algum motivo ele já estiver pronto, cria o player agora.
