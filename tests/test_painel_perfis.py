@@ -321,6 +321,134 @@ class TesteHistoricoNoPainel(unittest.TestCase):
             self.assertIn(trecho, esquecer)
 
 
+class TesteRevisaoFinalParte2(unittest.TestCase):
+    """Correções da revisão final da v2.8 B no painel (P1 a P8): o que a tela promete bate com o servidor."""
+
+    def test_p1_autor_lido_nos_quatro_parsers_e_nunca_enviado(self) -> None:
+        for funcao, leitura in (("parseMessages", "autorNomeLido(m.autor_nome)"),
+                                ("progItemParse", "autorNomeLido(it.autor_nome)"),
+                                ("listsParse", "autorNomeLido(l.autor_nome)"),
+                                ("saParse", "autorNomeLido(a.autor_nome)")):
+            with self.subTest(parser=funcao):
+                self.assertIn(leitura, _funcao_js(funcao))
+        # "autor_nome" só aparece como LEITURA de uma resposta (x.autor_nome), nunca como chave de um corpo
+        self.assertEqual(re.findall(r"(?<![.\w])autor_nome\b", re.sub(r"//[^\n]*|/\*.*?\*/", "", JS, flags=re.S)), [])
+        self.assertNotIn("autor", _funcao_js("progPayloadItem"))
+        self.assertIn("{ id: d.id, titulo: d.titulo, texto: d.texto } : { titulo: d.titulo, texto: d.texto }", JS)
+        self.assertIn("pendingDraft = { items: draft.map((d) => ({ id: d.id, titulo: d.titulo, texto: d.texto }))", JS)
+        # e o servidor continua recusando o carimbo vindo do cliente
+        self.assertIn("autor_nome", server.CHAVES_CARIMBO_SERVIDOR)
+        self.assertIn("autor_id", server.CHAVES_CARIMBO_SERVIDOR)
+        self.assertIn(f"const AUTOR_NOME_MAX = {contas.NOME_MAX};", JS)
+
+    def test_p1_por_nome_so_em_modo_contas_e_selo_do_celular_so_em_modo_pin(self) -> None:
+        rotulo = _funcao_js("autorRotulo")
+        self.assertIn('if (!auth.modoContas) return "";', rotulo)
+        self.assertIn('"Por " + nome', rotulo)
+        self.assertIn('"Antes das contas"', rotulo)
+        self.assertIn("it.remoto && !auth.modoContas", _funcao_js("progBadges"))
+        for funcao, chamada in (("updateProgRow", "pintarAutor(r.autor, it.autorNome)"),
+                                ("updateListCard", "pintarAutor(r.autor, l.autorNome)"),
+                                ("updateAtalhoCard", "pintarAutor(r.autor, a.autorNome)"),
+                                ("buildMsgCard", "pintarAutor(autor, it.autorNome")):
+            with self.subTest(cartao=funcao):
+                self.assertIn(chamada, _funcao_js(funcao))
+        # o nome entra por textContent (setText) e a assinatura do render muda com o modo e com o autor
+        self.assertIn("setText(el, t)", _funcao_js("pintarAutor"))
+        self.assertIn("auth.modoContas", _funcao_js("listsRender"))
+        self.assertIn("l.autorNome", _funcao_js("listsRender"))
+        self.assertIn("a.autorNome", _funcao_js("saRender"))
+        self.assertIn("auth.modoContas", _funcao_js("progRenderList"))
+
+    def test_p2_desconectar_todos_em_modo_contas_vai_sem_opcoes(self) -> None:
+        self.assertIn('postJSON("/api/auth/revogar", auth.modoContas ? {} : revValores(revUi.revoke))', JS)
+        self.assertIn("revokeRevHost.hidden = true;", _funcao_js("renderNetSection"))
+        self.assertIn("revokeRevHost.hidden = false;", _funcao_js("renderNetSection"))
+        self.assertIn("if (!auth.modoContas) revLoad(revUi.revoke);", JS)
+        trecho = JS[JS.index('postJSON("/api/auth/revogar"'):]
+        trecho = trecho[:trecho.index("return;")]
+        self.assertLess(trecho.index("revisaoResumo(data.revisao)"), trecho.index("boot({ aviso:"))
+        self.assertIn("opts.aviso", _funcao_js("bootInner"))
+
+    def test_p3_pop_429_espera_e_tenta_de_novo(self) -> None:
+        corpo = _funcao_js("ytQueuePop")
+        self.assertIn("r.status === 429 && tentativa < POP_TENTATIVAS_MAX", corpo)
+        self.assertIn("r.retryAfter || POP_ESPERA_PADRAO_S", corpo)
+        self.assertIn("continue;", corpo)
+        self.assertIn("return { adiado: true };", corpo)
+        self.assertIn("const POP_ESPERA_PADRAO_S = 5;", JS)
+        m = re.search(r"const POP_TENTATIVAS_MAX = (\d+);", JS)
+        self.assertIsNotNone(m)
+        # as tentativas cobrem a janela de 1 minuto do limite do servidor
+        self.assertGreaterEqual(int(m.group(1)) * 5, 60)
+        self.assertEqual(server.POP_TOCADOR_MAX_POR_MIN, 120)
+        # os três que chamam o pop tratam o "adiado" (não é fila vazia: nada para nem avança)
+        self.assertEqual(len(re.findall(r"if \(d && d\.adiado\)", JS)), 3)
+
+    def test_p4_sair_de_todos_os_aparelhos(self) -> None:
+        barra = HTML[HTML.index('id="conta-acts"'):HTML.index("</section>", HTML.index('id="conta-acts"'))]
+        self.assertIn('id="btn-conta-todos"', barra)
+        self.assertIn('aria-label="Sair de todos os aparelhos"', _tag_com_id("btn-conta-todos"))
+        self.assertIn('<dialog id="todos-dialog"', HTML)
+        self.assertIn('postJSON("/api/conta/sair-de-todos", {}', JS)
+        rotas = {(m, r.rule) for r in server.app.url_map.iter_rules() for m in r.methods or ()}
+        self.assertIn(("POST", "/api/conta/sair-de-todos"), rotas)
+        self.assertIn(("POST", "/api/conta/sair-de-todos"), server.PERMISSOES_ROTAS)
+        self.assertIn("btnTodosCancel.focus()", _funcao_js("openTodosDialog"))
+        self.assertIn("todosDialog", _funcao_js("pararMenosTocadorComum"))
+        self.assertIn("limparAoSair()", JS[JS.index('postJSON("/api/conta/sair-de-todos"'):][:600])
+
+    def test_p5_pc_das_caixas_sem_gerenciador_de_senhas(self) -> None:
+        corpo = _funcao_js("ajustarCamposDeSenha")
+        self.assertIn("const pc = auth.supported && auth.local;", corpo)
+        self.assertIn('gateUser.setAttribute("autocomplete", pc ? "off" : "username")', corpo)
+        self.assertIn('gatePass.setAttribute("autocomplete", pc ? "new-password" : "current-password")', corpo)
+        self.assertIn("senhaUsuario.disabled = pc;", corpo)
+        self.assertIn("ajustarCamposDeSenha();", _funcao_js("bootInner"))
+        # nos aparelhos pessoais fica o padrão do HTML; o 1º ADM nasce sempre no PC
+        self.assertIn('autocomplete="username"', _tag_com_id("gate-user"))
+        self.assertIn('autocomplete="current-password"', _tag_com_id("gate-pass"))
+        self.assertIn('autocomplete="off"', _tag_com_id("adm-usuario"))
+        self.assertIn("hidden", _tag_com_id("gate-pc-hint"))
+
+    def test_p6_pelo_painel(self) -> None:
+        self.assertIn('digitado: "Pelo painel"', _objeto_js("HIST_TIPOS"))
+        self.assertNotIn('"Digitado"', JS)
+
+    def test_p7_contas_indisponiveis_tela_sem_laco(self) -> None:
+        self.assertIn('"contas_indisponivel"', (RAIZ / "server.py").read_text(encoding="utf-8"))
+        corpo = _funcao_js("request")
+        self.assertIn('res.status === 503 && out.data.codigo === "contas_indisponivel"', corpo)
+        self.assertLess(corpo.index('"contas_indisponivel"'), corpo.index("if (!o.auth) {"))
+        mostrar = _funcao_js("mostrarContasIndisponiveis")
+        self.assertIn("fecharPorta()", mostrar)   # o Tocador do PC das caixas continua (pararMenosTocador)
+        self.assertIn('showGate("contas"', mostrar)
+        self.assertNotRegex(mostrar, r"setTimeout|setInterval|scheduler\.|boot\(")
+        boot = _funcao_js("bootInner")
+        self.assertIn("st.contas_indisponivel === true", boot)
+        trecho = boot[boot.index("st.contas_indisponivel === true"):]
+        self.assertLess(trecho.index("iniciarTocadorSemLogin()"), trecho.index('showGate("contas")'))
+        self.assertIn('gateContasView.hidden = mode !== "contas"', _funcao_js("showGate"))
+        self.assertIn("mostrarContasIndisponiveis(null)", _funcao_js("permissoesReler"))
+        self.assertIn("mostrarContasIndisponiveis(null)", _funcao_js("conferirConta"))
+        # o texto padrão da tela é o mesmo do servidor (o 503 traz o "error", que o substitui)
+        m = re.search(r'<p class="callout__text" id="gate-contas-text">([^<]*)</p>', HTML)
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), server.MSG_CONTAS_INDISPONIVEIS)
+
+    def test_p8_senha_fraca_nos_quatro_formularios(self) -> None:
+        m = re.search(r'const SENHA_FRACA_MSG = "([^"]*)";', JS)
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), server.MSG_SENHA_FRACA)
+        self.assertIn('"fraca"', (RAIZ / "contas.py").read_text(encoding="utf-8") + (RAIZ / "server.py").read_text(encoding="utf-8"))
+        # trocar a minha (senha_nova), 1º ADM, nova conta e definir senha (contaMotivo com a resposta)
+        self.assertIn('data.campo === "senha_nova" && data.codigo === "fraca"', JS)
+        self.assertIn('data.campo === "senha" && data.codigo === "fraca" ? senhaFracaTexto(data)', JS)
+        self.assertIn('if (codigo === "fraca") return senhaFracaTexto(data);', _funcao_js("contaMotivo"))
+        self.assertIn("contaMotivo(campo, codigo, data)", JS)
+        self.assertIn('contaMotivo("senha", data.codigo, data)', JS)
+
+
 class TesteCspDoHtml(unittest.TestCase):
     def test_sem_inline(self) -> None:
         self.assertEqual(re.findall(r"<script(?![^>]*\bsrc=)[^>]*>", HTML), [])

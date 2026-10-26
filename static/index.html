@@ -70,6 +70,7 @@
     <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 10h18M8 2v4M16 2v4"/></symbol>
     <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15 19 4M15.5 7.5l2.5 2.5M17.5 5.5 20 8"/></symbol>
     <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></symbol>
+    <symbol id="i-devices" viewBox="0 0 24 24"><rect x="2" y="4" width="14" height="10" rx="2"/><path d="M6 18h6M9 14v4"/><rect x="17" y="8" width="5" height="12" rx="1.5"/></symbol>
     <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
   </defs>
 </svg>
@@ -132,7 +133,20 @@
           <span>Entrar</span>
         </button>
       </form>
+      <!-- v2.8 (P5): só no PC das caixas (o JS tira os autocompletes que acionam o gerenciador de senhas) -->
+      <p class="hint gate__help" id="gate-pc-hint" hidden>Computador compartilhado: se o navegador oferecer para salvar a senha, escolha “Nunca”.</p>
       <p class="hint gate__help">Esqueceu a senha? Peça a um gerente ou administrador para definir uma nova.</p>
+    </section>
+
+    <!-- v2.8 (P7): o servidor está em modo contas, mas o contas.json sumiu ou estragou (503 "contas_indisponivel").
+         Ninguém entra (falha fechada); a aba Tocador do PC das caixas e os horários continuam. Sem novas tentativas
+         sozinhas: só o botão (ou voltar para a aba) confere de novo. -->
+    <section class="gate__view gate__view--off" id="gate-contas" aria-labelledby="gate-contas-title" hidden>
+      <span class="callout__icon callout__icon--danger" aria-hidden="true"><svg class="icon"><use href="#i-alert"/></svg></span>
+      <h2 class="callout__title" id="gate-contas-title" tabindex="-1">Ninguém consegue entrar agora</h2>
+      <p class="callout__text" id="gate-contas-text">As contas do Proclamare sumiram (o arquivo contas.json está faltando ou estragado). Restaure a cópia do contas.json na pasta do programa ou use a recuperação no PC das caixas (python server.py --esquecer-contas).</p>
+      <p class="seg__note seg__note--soft gate__nota" id="gate-contas-musica">Os horários agendados continuam tocando.</p>
+      <button type="button" class="btn btn--ghost" id="btn-gate-contas-retry">Conferir de novo</button>
     </section>
 
     <!-- Proclamare desligado pelo botão ⏻ (v2.5): tela calma, sem tentar reconectar -->
@@ -187,7 +201,7 @@
     </div>
   </header>
 
-  <!-- Conta logada (v2.8, modo contas): nome, função, "Trocar minha senha" e "Sair".
+  <!-- Conta logada (v2.8, modo contas): nome, função, "Trocar minha senha", "Sair de todos os aparelhos" e "Sair".
        #conta-acts recebe depois os atalhos de Histórico e Contas (B8). Texto só por textContent. -->
   <section class="conta-bar" id="conta-bar" aria-label="Sua conta" hidden>
     <span class="conta-bar__avatar" id="conta-avatar" aria-hidden="true"></span>
@@ -199,6 +213,11 @@
       <button type="button" class="btn btn--ghost btn--sm conta-bar__btn" id="btn-conta-senha" aria-haspopup="dialog" aria-label="Trocar minha senha" title="Trocar minha senha">
         <svg class="icon" aria-hidden="true"><use href="#i-key"/></svg>
         <span class="conta-bar__label">Trocar minha senha</span>
+      </button>
+      <!-- v2.8 (P4): encerra a conta em todos os aparelhos, inclusive neste (com confirmação) -->
+      <button type="button" class="btn btn--ghost btn--sm conta-bar__btn" id="btn-conta-todos" aria-haspopup="dialog" aria-label="Sair de todos os aparelhos" title="Sair de todos os aparelhos">
+        <svg class="icon" aria-hidden="true"><use href="#i-devices"/></svg>
+        <span class="conta-bar__label conta-bar__label--largo">Sair de todos</span>
       </button>
       <button type="button" class="btn btn--ghost btn--sm conta-bar__btn" id="btn-conta-sair">
         <span class="spinner" aria-hidden="true"></span>
@@ -1260,7 +1279,7 @@
         <div class="net__confirm" id="revoke-confirm" role="group" aria-labelledby="revoke-title" hidden>
           <p class="net__confirm-title" id="revoke-title">Desconectar todos os aparelhos?</p>
           <p class="hint" id="revoke-hint">Quem estiver usando o painel pela rede vai precisar digitar o PIN de novo.</p>
-          <div class="rev" id="revoke-rev"></div>
+          <div class="rev" id="revoke-rev"></div><!-- v2.8 (P2): escondido em modo contas (vai sem opções) -->
           <div class="actions">
             <button type="button" class="btn btn--danger-solid" id="btn-revoke-yes">Sim, desconectar</button>
             <button type="button" class="btn btn--ghost" id="btn-revoke-no">Manter</button>
@@ -1431,7 +1450,7 @@
     </div>
     <div class="field">
       <label class="label" for="adm-usuario">Usuário (para entrar)</label>
-      <div class="input"><input type="text" id="adm-usuario" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="30" aria-describedby="adm-usuario-hint adm-error"></div>
+      <div class="input"><input type="text" id="adm-usuario" name="proclamare-pc-novo-usuario" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="30" aria-describedby="adm-usuario-hint adm-error"></div>
       <p class="hint" id="adm-usuario-hint">De 3 a 30 letras minúsculas, números, ponto ou sublinhado. Ex.: maria.souza</p>
     </div>
     <div class="conta-form__pair">
@@ -1444,7 +1463,7 @@
         <div class="input"><input type="password" id="adm-senha2" autocomplete="new-password" maxlength="128" aria-describedby="adm-error"></div>
       </div>
     </div>
-    <p class="hint" id="adm-senha-hint">Pelo menos 8 caracteres, diferente do usuário. Guarde bem: se esquecer, só dá para redefinir por linha de comando neste computador.</p>
+    <p class="hint" id="adm-senha-hint">Pelo menos 8 caracteres, diferente do usuário e nada fácil de adivinhar (como 12345678, senha123 ou o seu nome). Guarde bem: se esquecer, só dá para redefinir por linha de comando neste computador.</p>
     <p class="form-error" id="adm-error" role="alert" hidden></p>
     <div class="actions actions--end">
       <button type="button" class="btn btn--ghost" id="btn-adm-cancel">Cancelar</button>
@@ -1478,7 +1497,7 @@
         <div class="input"><input type="password" id="senha-nova2" autocomplete="new-password" maxlength="128" aria-describedby="senha-error"></div>
       </div>
     </div>
-    <p class="hint" id="senha-nova-hint">De 8 a 128 caracteres, diferente do usuário e da senha atual.</p>
+    <p class="hint" id="senha-nova-hint">De 8 a 128 caracteres, diferente do usuário e da senha atual, e nada fácil de adivinhar (como 12345678, senha123 ou o seu nome).</p>
     <p class="form-error" id="senha-error" role="alert" hidden></p>
     <div class="actions actions--end">
       <button type="button" class="btn btn--ghost" id="btn-senha-cancel">Cancelar</button>
@@ -1488,6 +1507,26 @@
       </button>
     </div>
   </form>
+</dialog>
+
+<!-- ================= SAIR DE TODOS OS APARELHOS (v2.8, P4) =================
+     POST /api/conta/sair-de-todos {}: todas as sessões da conta caem, inclusive esta (o cookie vem apagado).
+     O foco começa em "Cancelar". -->
+<dialog id="todos-dialog" class="dialog--narrow" aria-labelledby="todos-title" aria-describedby="todos-text">
+  <div class="sheet sheet--power">
+    <span class="callout__icon callout__icon--danger" aria-hidden="true"><svg class="icon"><use href="#i-devices"/></svg></span>
+    <h2 class="sheet__title" id="todos-title">Sair de todos os aparelhos?</h2>
+    <p class="callout__text" id="todos-text">A sua conta sai de todos os celulares, computadores e navegadores em que estiver aberta, inclusive deste. Use quando perder o celular ou achar que alguém entrou com a sua conta.</p>
+    <p class="hint">Para voltar, entre de novo com o seu usuário e senha. Se alguém pode saber a sua senha, troque-a logo depois.</p>
+    <p class="form-error" id="todos-error" role="alert" hidden></p>
+    <div class="actions actions--end">
+      <button type="button" class="btn btn--ghost" id="btn-todos-cancel">Cancelar</button>
+      <button type="button" class="btn btn--danger-solid" id="btn-todos-confirm">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Sair de todos</span>
+      </button>
+    </div>
+  </div>
 </dialog>
 
 <!-- ======================= NOVA / EDITAR CONTA (v2.8 B8) =======================
@@ -1531,7 +1570,7 @@
         <div class="input"><input type="password" id="cf-senha2" autocomplete="new-password" maxlength="128" aria-describedby="cf-error"></div>
       </div>
     </div>
-    <p class="hint" id="cf-senha-hint">De 8 a 128 caracteres, diferente do usuário. Combine a senha com a pessoa; ela pode trocar depois em “Trocar minha senha”.</p>
+    <p class="hint" id="cf-senha-hint">De 8 a 128 caracteres, diferente do usuário e nada fácil de adivinhar (como 12345678, senha123 ou o nome da pessoa). Combine a senha com a pessoa; ela pode trocar depois em “Trocar minha senha”.</p>
     <div class="conta-form__extra" id="cf-extra" hidden>
       <button type="button" class="btn btn--ghost" id="btn-conta-definir-senha" aria-haspopup="dialog">
         <svg class="icon" aria-hidden="true"><use href="#i-key"/></svg>
@@ -1570,7 +1609,7 @@
         <div class="input"><input type="password" id="csenha-nova2" autocomplete="new-password" maxlength="128" aria-describedby="csenha-error"></div>
       </div>
     </div>
-    <p class="hint" id="csenha-hint">De 8 a 128 caracteres, diferente do usuário.</p>
+    <p class="hint" id="csenha-hint">De 8 a 128 caracteres, diferente do usuário e nada fácil de adivinhar (como 12345678, senha123 ou o nome da pessoa).</p>
     <p class="form-error" id="csenha-error" role="alert" hidden></p>
     <div class="actions actions--end">
       <button type="button" class="btn btn--ghost" id="btn-csenha-cancel">Cancelar</button>

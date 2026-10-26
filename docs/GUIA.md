@@ -594,10 +594,13 @@ logado e o PC ganha sessão longa (14 dias), como um celular.
 ### Histórico de anúncios
 
 No bloco **Histórico** do painel, **Ver tudo** abre a lista de anúncios com data e hora, quem fez (nome e função),
-o texto, o resultado (tocou, ocupado, erro, sem internet, interrompido) e se foi digitado, "tocar agora" ou
-agendado. Dá para filtrar por período (De/Até), por pessoa (gerente e administrador) e por trecho do texto, e carregar mais
+o texto, o resultado (tocou, ocupado, erro, sem internet, interrompido) e se foi feito "pelo painel" (digitado ou
+com uma mensagem pronta), "tocar agora" ou agendado. Dá para filtrar por período (De/Até), por pessoa (gerente e administrador) e por trecho do texto, e carregar mais
 páginas. O **funcionário vê só os próprios anúncios**. Anúncios de antes das contas aparecem como "antes das
 contas".
+
+Os horários, as listas, as playlists salvas do Spotify e as mensagens prontas também mostram **quem mexeu por
+último** ("Por Maria Souza"); o que foi feito antes das contas aparece como "Antes das contas".
 
 ### Privacidade do histórico
 

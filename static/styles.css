@@ -3186,3 +3186,33 @@ html[data-so-anuncio] .conta-bar { width: 100%; max-width: 920px; margin-inline:
   .hist__day { padding-inline: 12px; }
   .hrow__texto { font-size: 16px; }
 }
+
+/* =====================================================================
+   15. Correções da revisão final (v2.8 B, parte 2)
+   ===================================================================== */
+
+/* ---- P1: autor de horários, listas, playlists salvas e mensagens prontas (só modo contas) ---- */
+.autor {
+  display: block; min-width: 0;
+  font-size: 12px; line-height: 16px; color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.autor--antes { font-style: italic; }
+.lcard__autor { margin-top: 2px; }
+.msg-card__autor { margin-top: -6px; }   /* o cartão tem gap 14px: o autor fica colado ao "Mensagem N" */
+
+/* ---- P4: "Sair de todos os aparelhos" na barra da conta ---- */
+/* até 900px o botão vira só o ícone (o nome completo segue no aria-label e no title) */
+@media (max-width: 899.98px) {
+  .conta-bar__label--largo {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+  #btn-conta-todos.btn--sm { width: 44px; padding: 0; }
+}
+@media (max-width: 599.98px) {
+  .conta-bar__acts { gap: 4px; }   /* três botões a 390px sem espremer demais o nome */
+}
+
+/* ---- P7: as contas sumiram (porta "contas") ---- */
+.gate__nota { max-width: 36ch; text-align: center; }

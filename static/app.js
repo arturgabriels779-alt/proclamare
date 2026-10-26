@@ -296,6 +296,28 @@
     return !auth.modoContas || auth.permissoes.includes(capacidade);
   }
 
+  // ---- Autor (v2.8, P1): quem criou/alterou por último um horário, lista, playlist salva ou mensagem pronta ----
+  // O servidor manda só "autor_nome" (e só quando existe). Em modo contas a tela mostra "Por <nome>" ou, sem autor,
+  // "Antes das contas"; em modo PIN, nada (lá continua o selo "pelo celular" de sempre). O nome entra só por
+  // textContent e NUNCA volta num POST: os corpos de gravação são montados campo a campo (listas brancas).
+  const AUTOR_NOME_MAX = 60; // = contas.NOME_MAX
+  /** autor_nome do servidor: uma linha, cortado em code points; "" se não veio. */
+  function autorNomeLido(v) {
+    return typeof v === "string" ? Array.from(v.replace(/\s+/g, " ").trim()).slice(0, AUTOR_NOME_MAX).join("") : "";
+  }
+  /** Texto do autor ("" em modo PIN). `semAutor` troca o "Antes das contas" (ex.: mensagens de fábrica). */
+  function autorRotulo(nome, semAutor) {
+    if (!auth.modoContas) return "";
+    return nome ? "Por " + nome : semAutor || "Antes das contas";
+  }
+  /** Pinta a linha do autor de um cartão (some quando não há o que mostrar). */
+  function pintarAutor(el, nome, semAutor) {
+    const t = autorRotulo(nome, semAutor);
+    setText(el, t);
+    el.hidden = !t;
+    el.classList.toggle("autor--antes", !!t && !nome);
+  }
+
   // ---- Atividade (v2.8): a sessão do PC das caixas vence após 5 min sem uso ----
   // O servidor só renova essa sessão em requisições com "X-Proclamare-Atividade: 1"; o painel manda o cabeçalho só
   // nas requisições feitas até 60 s depois do último clique/tecla. Sondagens sem ninguém mexendo NÃO o mandam: é
@@ -365,6 +387,12 @@
       const out = { ok: res.ok, status: res.status, data: data && typeof data === "object" ? data : {} };
       const retry = Number(res.headers.get("Retry-After")); // segundos (429 do /api/som/*)
       out.retryAfter = Number.isFinite(retry) && retry > 0 ? retry : 0;
+      // v2.8 (P7): o servidor está em modo contas e o contas.json sumiu: ninguém entra até alguém resolver no PC.
+      // Vale também para /api/auth/* (login, 1º ADM): mostra a tela de aviso uma vez, sem tentar de novo sozinho.
+      if (res.status === 503 && out.data.codigo === "contas_indisponivel") {
+        mostrarContasIndisponiveis(out.data);
+        return out;
+      }
       // Sessão expirada / PIN trocado / acesso remoto desativado: centralizado aqui.
       // (chamadas de /api/auth/* passam `auth: true` e tratam a própria resposta)
       if (!o.auth) {
@@ -841,6 +869,13 @@
   const gateLoginMsg = $("gate-login-msg");
   const gateLoginCount = $("gate-login-count");
   const btnGateEntrar = $("btn-gate-entrar");
+  const gatePcHint = $("gate-pc-hint"); // v2.8 (P5)
+  // contas indisponíveis (v2.8, P7)
+  const gateContasView = $("gate-contas");
+  const gateContasTitle = $("gate-contas-title");
+  const gateContasText = $("gate-contas-text");
+  const gateContasMusica = $("gate-contas-musica");
+  const btnGateContasRetry = $("btn-gate-contas-retry");
   // conta logada, convite do 1º ADM e diálogos (v2.8)
   const contaBar = $("conta-bar");
   const contaAvatar = $("conta-avatar");
@@ -848,6 +883,11 @@
   const contaFuncao = $("conta-funcao");
   const btnContaSenha = $("btn-conta-senha");
   const btnContaSair = $("btn-conta-sair");
+  const btnContaTodos = $("btn-conta-todos"); // v2.8 (P4)
+  const todosDialog = $("todos-dialog");
+  const todosError = $("todos-error");
+  const btnTodosCancel = $("btn-todos-cancel");
+  const btnTodosConfirm = $("btn-todos-confirm");
   const admConvite = $("adm-convite");
   const btnAdmConvite = $("btn-adm-convite");
   const btnAdmConviteDepois = $("btn-adm-convite-depois");
@@ -874,6 +914,7 @@
   const btnNetCriarAdm = $("btn-net-criar-adm");
   const pinCampos = $("pin-campos");
   const revokeHint = $("revoke-hint");
+  const revokeRevHost = $("revoke-rev"); // v2.8 (P2): opções de revisão (só modo PIN)
   // desligar pelo painel (v2.5)
   const btnPower = $("btn-power");
   const powerDialog = $("power-dialog");
@@ -1403,7 +1444,7 @@
     const items = [];
     for (const m of data.mensagens.slice(0, MSG_MAX)) {
       if (!m || typeof m.id !== "string" || typeof m.titulo !== "string" || typeof m.texto !== "string") return null;
-      items.push({ id: m.id.slice(0, 40), titulo: m.titulo.slice(0, MSG_TITLE_MAX), texto: m.texto.slice(0, MSG_TEXT_MAX) });
+      items.push({ id: m.id.slice(0, 40), titulo: m.titulo.slice(0, MSG_TITLE_MAX), texto: m.texto.slice(0, MSG_TEXT_MAX), autorNome: autorNomeLido(m.autor_nome) });
     }
     return { versao: data.versao, deFabrica: data.de_fabrica === true, items };
   }
@@ -1466,7 +1507,7 @@
   }
 
   // ---- Rascunho do editor ----
-  let draft = []; // [{key, id, titulo, texto, errTitulo, errTexto, isNew}]
+  let draft = []; // [{key, id, titulo, texto, autorNome (só leitura; nunca vai no POST), errTitulo, errTexto, isNew}]
   let draftKey = 0;
   let draftBase = ""; // assinatura do rascunho recém-carregado (para saber se mudou)
   let draftVersao = 0; // versão do servidor sobre a qual o rascunho foi feito
@@ -1618,7 +1659,14 @@
       buildToolButton("remove", "trash", "Remover a mensagem " + num, false),
     );
     head.append(h, tools);
-    li.append(head, buildMsgField(it, "titulo"), buildMsgField(it, "texto"));
+    li.append(head);
+    if (it.id) {
+      // v2.8 (P1): quem gravou esta mensagem por último (só modo contas); mensagem nova ainda não tem autor
+      const autor = mk("p", "autor msg-card__autor");
+      pintarAutor(autor, it.autorNome, msgs.deFabrica ? "Mensagem de fábrica" : "");
+      if (!autor.hidden) li.append(autor);
+    }
+    li.append(buildMsgField(it, "titulo"), buildMsgField(it, "texto"));
     it.isNew = false;
     return li;
   }
@@ -1650,7 +1698,7 @@
   }
 
   function startDraft(m) {
-    draft = m.items.map((x) => ({ key: ++draftKey, id: x.id, titulo: x.titulo, texto: x.texto, errTitulo: "", errTexto: "", isNew: false }));
+    draft = m.items.map((x) => ({ key: ++draftKey, id: x.id, titulo: x.titulo, texto: x.texto, autorNome: x.autorNome, errTitulo: "", errTexto: "", isNew: false }));
     draftVersao = m.versao;
     draftBase = draftSig();
     draftRemoved = null;
@@ -1733,10 +1781,10 @@
 
   /** Põe no editor os cartões de `items` sobre a versão atual `m` do servidor (id que sumiu vira mensagem nova). */
   function adoptDraft(items, m) {
-    const existing = new Set(m.items.map((x) => x.id));
+    const existing = new Map(m.items.map((x) => [x.id, x.autorNome])); // id -> autor da versão atual
     draft = items.map((x) => ({
       key: ++draftKey, id: x.id && existing.has(x.id) ? x.id : null, titulo: x.titulo, texto: x.texto,
-      errTitulo: "", errTexto: "", isNew: false,
+      autorNome: x.id && existing.has(x.id) ? existing.get(x.id) : "", errTitulo: "", errTexto: "", isNew: false,
     }));
     draftVersao = m.versao; // draftBase continua sendo a lista do servidor: o editor segue "sujo"
     draftRemoved = null;
@@ -3461,7 +3509,9 @@
     let started = false;
     try {
       const d = await ytQueuePop();
-      if (d) {
+      if (d && d.adiado) {
+        // outra música começou enquanto o limite do servidor segurava o "pop": nada a fazer
+      } else if (d) {
         startQueued(d);
         started = true;
       } else if (ytResume && ytPlayer && ytReady) {
@@ -4290,11 +4340,33 @@
     ytLastIdx = ytCurrentIndex(ids, vid);
   }
 
-  /** Pop na fila do servidor; devolve {yt: params de load} ou {file: faixa} do primeiro item, ou null. */
+  // v2.8 (P3): o servidor limita o "pop" (120 por minuto). Um 429 NÃO é fila vazia: o Tocador espera e tenta de
+  // novo (essa rota não manda Retry-After: 5 s), senão a música pararia numa lista com vários vídeos
+  // indisponíveis seguidos (cada um gasta um "pop").
+  const POP_ESPERA_PADRAO_S = 5;
+  const POP_TENTATIVAS_MAX = 24; // ~2 min no pior caso; o limite do servidor é por minuto
+
+  /**
+   * Pop na fila do servidor. Devolve {yt: params de load} ou {file: faixa} do primeiro item; null = fila vazia ou
+   * sem resposta; {adiado: true} = enquanto esperava o limite, outra música começou (ou o Tocador saiu): quem
+   * chamou não mexe em nada.
+   */
   async function ytQueuePop() {
-    try {
-      const { ok, data } = await postJSON("/api/youtube/queue", { op: "pop" }, { timeout: 6000 });
-      if (ok && data.ok && data.item) {
+    const seq = ytLoadSeq; // playFile/loadYoutube/destroy sobem o contador
+    for (let tentativa = 0; ; tentativa++) {
+      let r = null;
+      try {
+        r = await postJSON("/api/youtube/queue", { op: "pop" }, { timeout: 6000 });
+      } catch (e) {
+        return null; // sem resposta: segue sem fila
+      }
+      if (r.status === 429 && tentativa < POP_TENTATIVAS_MAX) {
+        await sleep(clamp(r.retryAfter || POP_ESPERA_PADRAO_S, 1, 60) * 1000);
+        if (seq !== ytLoadSeq || ytMode !== "player" || shuttingDown) return { adiado: true };
+        continue;
+      }
+      const data = r.data;
+      if (r.ok && data.ok && data.item) {
         scheduler.kick("yt-state");
         const it = data.item;
         const p = it.kind === "arquivo" ? null : sanitizeYtLoad(it);
@@ -4306,8 +4378,8 @@
         }
         return file ? { file } : { yt: p };
       }
-    } catch (e) { /* sem resposta: segue sem fila */ }
-    return null;
+      return null;
+    }
   }
 
   /**
@@ -4330,7 +4402,9 @@
     try {
       const list = ytCurList;
       const d = await ytQueuePop();
-      if (d) {
+      if (d && d.adiado) {
+        interrupted = true; // outra música assumiu durante a espera do limite: a playlist não volta a tocar aqui
+      } else if (d) {
         ytResume = { list, index: idx };
         startQueued(d);
         interrupted = true;
@@ -4357,6 +4431,7 @@
       const idx = ytCurList ? ytCurrentIndex(ids, ytCurrentVideoId()) : null;
       const hasNext = idx !== null && idx + 1 < ids.length;
       const d = await ytQueuePop();
+      if (d && d.adiado) return; // outra música assumiu durante a espera do limite do servidor
       if (d) {
         if (!ytResume && ytCurList && hasNext) ytResume = { list: ytCurList, index: idx + 1 };
         startQueued(d);
@@ -6429,6 +6504,7 @@
         total: Number.isInteger(l.total) && l.total >= 0 ? l.total : 0,
         youtube: Number.isInteger(l.youtube) && l.youtube >= 0 ? l.youtube : 0, // v2.7: quantos itens são do YouTube (o total conta tudo)
         disponiveis: Number.isInteger(l.disponiveis) && l.disponiveis >= 0 ? l.disponiveis : null, // null: pasta ainda sendo lida
+        autorNome: autorNomeLido(l.autor_nome), // v2.8 (P1): só leitura
       });
     }
     return { versao: Number.isInteger(data.versao) ? data.versao : 0, acervoPronto: data.acervo_pronto !== false, items };
@@ -6493,8 +6569,10 @@
     ico.appendChild(makeIcon("list"));
     const name = mk("span", "lcard__name");
     const sub = mk("span", "lcard__sub");
+    const autor = mk("span", "autor lcard__autor"); // v2.8 (P1)
+    autor.hidden = true;
     const text = mk("span", "lcard__text");
-    text.append(name, sub);
+    text.append(name, sub, autor);
     const edit = mkBtn("btn btn--icon", "edit", "edit");
     const rm = mkBtn("btn btn--icon lcard__rm", "remove", "trash");
     rm.appendChild(mk("span", "lcard__rm-t", "Apagar?"));
@@ -6508,7 +6586,7 @@
     acts.append(play, shuf);
     const warn = mk("p", "hint lcard__warn");
     li.append(top, acts, warn);
-    li._l = { name, sub, play, shuf, edit, rm, warn };
+    li._l = { name, sub, autor, play, shuf, edit, rm, warn };
     return li;
   }
 
@@ -6521,6 +6599,7 @@
     if (falt > 0) sub += " · " + plural(falt, "indisponível", "indisponíveis");
     setText(r.sub, sub);
     r.sub.classList.toggle("is-warn", falt > 0);
+    pintarAutor(r.autor, l.autorNome);
     const vazia = l.total === 0 || (l.disponiveis === 0 && l.youtube === 0);
     r.warn.hidden = !vazia;
     setText(r.warn, l.total === 0 ? "A lista está vazia. Toque em editar para acrescentar músicas ou links do YouTube." : vazia ? "Nenhuma música desta lista está na pasta agora." : "");
@@ -6550,7 +6629,7 @@
     const cheio = n >= LISTAS_MAX;
     btnListNew.setAttribute("aria-disabled", String(cheio));
     btnListNew.title = cheio ? "Você já tem " + LISTAS_MAX + " listas. Apague uma para criar outra." : "";
-    const sig = lists.busyId + "|" + lists.acervoPronto + "|" + lists.items.map((l) => [l.id, l.nome, l.total, l.youtube, l.disponiveis].join(",")).join(";");
+    const sig = lists.busyId + "|" + lists.acervoPronto + "|" + auth.modoContas + "|" + lists.items.map((l) => [l.id, l.nome, l.total, l.youtube, l.disponiveis, l.autorNome].join(",")).join(";");
     if (sig !== lists.sig) {
       lists.sig = sig;
       reconcileList(listsGrid, lists.items, (l) => l.id, makeListCard, updateListCard);
@@ -7555,6 +7634,7 @@
       remoto: it.origem === "remoto", // criado/alterado por um aparelho remoto (o servidor decide; nunca é enviado de volta)
       criadoPor: it.criado_por === "remoto" ? "remoto" : "local", // v2.7.1 (só leitura; nunca vai no POST)
       alteradoEm: isNum(it.alterado_em) && it.alterado_em > 0 ? it.alterado_em : null, // epoch em segundos
+      autorNome: autorNomeLido(it.autor_nome), // v2.8 (P1): só leitura; progPayloadItem nunca o envia
     };
   }
 
@@ -7806,8 +7886,10 @@
     days.append(...chips);
     const sub = mk("span", "prow__sub");
     const badges = mk("span", "prow__badges");
+    const autor = mk("span", "autor prow__autor"); // v2.8 (P1): "Por <nome>" (modo contas)
+    autor.hidden = true;
     const main = mk("div", "prow__main");
-    main.append(title, when, days, sub, badges);
+    main.append(title, when, days, sub, autor, badges);
 
     const sw = mk("label", "switch prow__sw");
     const inp = mk("input", "switch__input");
@@ -7828,7 +7910,7 @@
     acts.append(test, edit, rm);
 
     li.append(ico, main, sw, acts);
-    li._p = { ico, title, hora, rep, days, chips, sub, badges, inp, swText, test, edit, rm, badgeSig: "" };
+    li._p = { ico, title, hora, rep, days, chips, sub, autor, badges, inp, swText, test, edit, rm, badgeSig: "" };
     return li;
   }
 
@@ -7844,7 +7926,8 @@
       else out.push(["Música não está na pasta", "badge--bad"]);
     }
     if (it.data && it.ativo && !it.proxima && prog.agora) out.push(["Já passou", ""]);
-    if (it.remoto) out.push([it.criadoPor === "remoto" ? "Criado pelo celular" : "Alterado pelo celular", ""]);
+    // modo PIN: o selo de sempre; modo contas (v2.8, P1): no lugar dele, a linha "Por <nome>"
+    if (it.remoto && !auth.modoContas) out.push([it.criadoPor === "remoto" ? "Criado pelo celular" : "Alterado pelo celular", ""]);
     return out;
   }
 
@@ -7862,6 +7945,7 @@
     else if (it.alvoNome && it.alvoNome !== it.rotulo) sub = (it.tipo === "lista" ? "Lista: " : it.tipo === "spotify" ? "Playlist: " : "Áudio: ") + it.alvoNome;
     setText(r.sub, sub);
     r.sub.hidden = !sub;
+    pintarAutor(r.autor, it.autorNome);
     const bsig = JSON.stringify(progBadges(it));
     if (bsig !== r.badgeSig) {
       r.badgeSig = bsig;
@@ -7883,7 +7967,7 @@
   }
 
   function progRenderList() {
-    const sig = prog.busyId + "|" + (prog.tocando ? prog.tocando.id : "") + "|" + JSON.stringify(prog.itens);
+    const sig = prog.busyId + "|" + (prog.tocando ? prog.tocando.id : "") + "|" + auth.modoContas + "|" + JSON.stringify(prog.itens);
     if (sig === prog.sig.list) return;
     prog.sig.list = sig;
     reconcileList(progList, prog.itens, (it) => it.id, makeProgRow, updateProgRow);
@@ -8735,6 +8819,7 @@
         versao: Number.isInteger(a.versao) ? a.versao : 1,
         url: info.error ? "" : a.url,
         sid: info.error ? "" : info.sid,
+        autorNome: autorNomeLido(a.autor_nome), // v2.8 (P1): só leitura
       });
     }
     return { versao: Number.isInteger(d.versao) ? d.versao : 0, limites, items };
@@ -8801,8 +8886,10 @@
     ico.appendChild(makeIcon("music"));
     const name = mk("span", "lcard__name");
     const sub = mk("span", "lcard__sub");
+    const autor = mk("span", "autor lcard__autor"); // v2.8 (P1)
+    autor.hidden = true;
     const text = mk("span", "lcard__text");
-    text.append(name, sub);
+    text.append(name, sub, autor);
     const edit = mkBtn("btn btn--icon", "edit", "edit");
     const rm = mkBtn("btn btn--icon lcard__rm", "remove", "trash");
     rm.appendChild(mk("span", "lcard__rm-t", "Apagar?"));
@@ -8814,7 +8901,7 @@
     const acts = mk("div", "lcard__acts");
     acts.append(play);
     li.append(top, acts);
-    li._a = { name, sub, play, edit, rm };
+    li._a = { name, sub, autor, play, edit, rm };
     return li;
   }
 
@@ -8822,6 +8909,7 @@
     const r = li._a;
     setText(r.name, a.nome);
     setText(r.sub, a.tipo === "album" ? "Álbum do Spotify" : "Playlist do Spotify");
+    pintarAutor(r.autor, a.autorNome);
     const busy = !!sa.busyId;
     r.play.setAttribute("aria-disabled", String(busy));
     r.play.classList.toggle("is-loading", busy && sa.busyId === a.id);
@@ -8861,7 +8949,7 @@
         if (was) playEnter(atalhosCtx);
       }
     }
-    const sig = sa.busyId + "|" + sa.items.map((a) => [a.id, a.nome, a.tipo].join(",")).join(";");
+    const sig = sa.busyId + "|" + auth.modoContas + "|" + sa.items.map((a) => [a.id, a.nome, a.tipo, a.autorNome].join(",")).join(";");
     if (sig !== sa.sig) {
       sa.sig = sig;
       reconcileList(atalhosGrid, sa.items, (a) => a.id, makeAtalhoCard, updateAtalhoCard);
@@ -9385,7 +9473,7 @@
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
     toastHost.replaceChildren();
     contasHistLimpar(); // v2.8 (B8): a lista de contas e o histórico de anúncios não ficam para a próxima pessoa
-    for (const d of [settingsDialog, msgsDialog, powerDialog, admDialog, senhaDialog]) if (d.open) d.close();
+    for (const d of [settingsDialog, msgsDialog, powerDialog, admDialog, senhaDialog, todosDialog]) if (d.open) d.close();
   }
 
   /**
@@ -9422,7 +9510,10 @@
     if (ytMode !== "player") applyYoutubeMode("player", false);
   }
 
-  /** Mostra a porta: "pin" (digitar), "login" (usuário e senha), "off" (desativado/sem conexão) ou "boot" (verificando). */
+  /**
+   * Mostra a porta: "pin" (digitar), "login" (usuário e senha), "off" (desativado/sem conexão), "contas" (v2.8, P7:
+   * as contas sumiram; ninguém entra) ou "boot" (verificando).
+   */
   function showGate(mode, opts) {
     const o = opts || {};
     gateMode = mode;
@@ -9439,6 +9530,7 @@
     gateLoginView.hidden = mode !== "login";
     gateOffView.hidden = mode !== "off";
     gateDownView.hidden = mode !== "down";
+    gateContasView.hidden = mode !== "contas";
     gateTunnel.hidden = !(mode === "pin" && auth.loopbackSuspenso);
     if (mode === "pin") {
       endBlock(true);
@@ -9466,7 +9558,38 @@
       btnGateRetry.focus();
     } else if (mode === "down") {
       gateDownTitle.focus();
+    } else if (mode === "contas") {
+      if (typeof o.message === "string" && o.message) setText(gateContasText, str(o.message, 400));
+      // o servidor segue tocando os horários; a música desta aba só se ela for o Tocador da loja do PC das caixas
+      setText(gateContasMusica, tocadorSobrevivendo
+        ? "A música desta aba e os horários agendados continuam tocando."
+        : "Os horários agendados continuam tocando.");
+      gateContasTitle.focus();
     }
+  }
+
+  /**
+   * v2.8 (P7): 503 "contas_indisponivel" (ou o campo do /api/auth/status). Fecha a porta como no fim da sessão (o
+   * Tocador do PC das caixas continua) e mostra o aviso. Sem novas tentativas automáticas: o servidor não volta
+   * sozinho (é preciso restaurar o contas.json ou rodar --esquecer-contas); "Conferir de novo" relê uma vez.
+   */
+  function mostrarContasIndisponiveis(data) {
+    const msg = data && typeof data.error === "string" && data.error ? data.error : "";
+    if (authLocked && gateMode === "contas") {
+      if (msg) setText(gateContasText, str(msg, 400));
+      return;
+    }
+    const anterior = auth.conta;
+    fecharPorta();
+    contaUltima = anterior && typeof anterior.id === "string" ? anterior.id : contaUltima;
+    auth.modoContas = true;
+    auth.authenticated = false;
+    auth.conta = null;
+    auth.permissoes = [];
+    auth.precisaCriarAdm = false;
+    if (auth.local) gateUser.value = "";
+    renderConta();
+    showGate("contas", { message: msg });
   }
 
   /** Chamado pelo helper de API quando o servidor recusa por falta de sessão/PIN. */
@@ -9657,6 +9780,8 @@
       } else if (status === 403 && data.auth === "pin_nao_configurado") {
         auth.pinConfigured = false;
         showGate("off");
+      } else if (status === 503 && data.codigo === "contas_indisponivel") {
+        // v2.8 (P7): request() já mostrou a tela "Ninguém consegue entrar agora"
       } else if (status === 400 && data.codigo === "modo_contas") {
         // v2.8: criaram a primeira conta enquanto esta tela estava aberta: agora é usuário e senha
         auth.modoContas = true;
@@ -9783,6 +9908,8 @@
         setLoginFeedback(base + extra, true);
         shakeLogin();
         gatePass.focus();
+      } else if (status === 503 && data.codigo === "contas_indisponivel") {
+        // v2.8 (P7): request() já mostrou a tela "Ninguém consegue entrar agora"
       } else if (status === 400 && data.codigo === "modo_contas") {
         boot(); // o servidor voltou a pedir PIN (não deveria acontecer): relê e mostra a tela certa
       } else {
@@ -9799,10 +9926,15 @@
   });
 
   btnGateRetry.addEventListener("click", () => { if (!booting) boot(); });
+  // v2.8 (P7): uma leitura por clique (nunca em laço)
+  btnGateContasRetry.addEventListener("click", () => {
+    if (booting || btnGateContasRetry.getAttribute("aria-disabled") === "true") return;
+    boot();
+  });
 
   /** Fecha a porta com um fade e inicia o painel. */
   function enterApp() {
-    const fromGate = gateMode === "pin" || gateMode === "off" || gateMode === "login";
+    const fromGate = gateMode === "pin" || gateMode === "off" || gateMode === "login" || gateMode === "contas";
     // v2.8: com o Tocador por trás, o painel aparece durante o fade da porta: já com a conta, as permissões e sem o
     // texto da pessoa anterior
     renderConta();
@@ -9843,12 +9975,15 @@
       pinDisableConfirm.hidden = true;
       setText(netState, "O Proclamare usa contas: cada pessoa entra com o próprio usuário e senha.");
       netState.classList.add("is-on");
-      setText(revokeHint, "Todas as pessoas conectadas, inclusive você, vão precisar entrar de novo.");
+      // v2.8 (P2): sem opções de revisão (o servidor as deixa desligadas em modo contas): nada é desativado
+      setText(revokeHint, "Todas as pessoas conectadas, inclusive você, vão precisar entrar de novo. Horários, listas e mensagens ficam como estão.");
+      revokeRevHost.hidden = true;
       netRevokeRow.hidden = !showAdm;
       if (!showAdm) revokeConfirm.hidden = true;
       return;
     }
     pinCampos.hidden = false;
+    revokeRevHost.hidden = false;
     setText(revokeHint, "Quem estiver usando o painel pela rede vai precisar digitar o PIN de novo.");
     const showLocal = auth.supported && auth.local;
     const showRemote = auth.supported && !auth.local && auth.authenticated;
@@ -10328,13 +10463,10 @@
     setText(ui.count, texto);
   }
 
-  /** Resumo curto do resultado da revisão. Devolve true se mostrou algo (o aviso antigo não precisa aparecer). */
-  function revisaoToast(rev) {
-    if (!rev || typeof rev !== "object") return false;
-    if (rev.falhou === true) {
-      toast("A mudança valeu, mas a revisão do que a rede deixou falhou. Confira em Segurança.", "warn", { duration: 9000 });
-      return true;
-    }
+  /** Resumo curto do resultado da revisão: {texto, kind} ou null (sem revisão na resposta). */
+  function revisaoResumo(rev) {
+    if (!rev || typeof rev !== "object") return null;
+    if (rev.falhou === true) return { texto: "A mudança valeu, mas a revisão do que a rede deixou falhou. Confira em Segurança.", kind: "warn" };
     const n = (k) => segInt(rev[k]);
     const p = [];
     if (n("horarios_desativados")) p.push(plural(n("horarios_desativados"), "horário desativado", "horários desativados"));
@@ -10345,7 +10477,14 @@
     if (n("mensagens_removidas")) p.push(plural(n("mensagens_removidas"), "mensagem apagada", "mensagens apagadas"));
     if (rev.mensagens_restauradas === true || n("mensagens_restauradas")) p.push("mensagens de fábrica de volta");
     if (rev.fila_limpa === true) p.push("fila do Tocador limpa");
-    toast("Revisão: " + (p.length ? p.join(", ") : "nada para mudar") + ".", p.length ? "success" : "info", { duration: 8000 });
+    return { texto: "Revisão: " + (p.length ? p.join(", ") : "nada para mudar") + ".", kind: p.length ? "success" : "info" };
+  }
+
+  /** Mostra o resumo da revisão num toast. Devolve true se mostrou algo (o aviso antigo não precisa aparecer). */
+  function revisaoToast(rev) {
+    const r = revisaoResumo(rev);
+    if (!r) return false;
+    toast(r.texto, r.kind, { duration: r.kind === "warn" ? 9000 : 8000 });
     return true;
   }
 
@@ -10519,7 +10658,7 @@
     pinDisableConfirm.hidden = true;
     pinChangeConfirm.hidden = true;
     playEnter(revokeConfirm);
-    revLoad(revUi.revoke);
+    if (!auth.modoContas) revLoad(revUi.revoke); // v2.8 (P2): em modo contas não há o que revisar
     btnRevokeNo.focus();
   });
   btnRevokeNo.addEventListener("click", () => {
@@ -10530,10 +10669,17 @@
     if (btnRevokeYes.getAttribute("aria-disabled") === "true") return;
     btnRevokeYes.setAttribute("aria-disabled", "true");
     try {
-      const { ok, data } = await postJSON("/api/auth/revogar", revValores(revUi.revoke));
+      // v2.8 (P2): em modo contas vai sem opções (todas desligadas no servidor; nenhum horário de gerente cai)
+      const { ok, data } = await postJSON("/api/auth/revogar", auth.modoContas ? {} : revValores(revUi.revoke));
       if (ok && data.ok) {
         revokeConfirm.hidden = true;
-        if (auth.modoContas) { boot(); return; } // v2.8: a sessão de quem revogou também caiu: volta a tela de entrar
+        if (auth.modoContas) {
+          // a sessão de quem revogou também caiu: o resumo vai para a tela de entrar (um toast sumiria com a porta)
+          const rev = revisaoResumo(data.revisao);
+          const extra = !rev ? "" : rev.kind === "info" ? "Nenhum horário, lista ou mensagem mudou." : rev.texto;
+          boot({ aviso: ("Todos os aparelhos foram desconectados, inclusive este. " + extra).trim() });
+          return;
+        }
         toast("Todos os aparelhos foram desconectados.", "success");
         if (!revisaoToast(data.revisao)) remoteProgNotice(data);
         revisaoAtualiza();
@@ -10602,21 +10748,42 @@
 
   /** Descobre quem somos (local/remoto, PIN) e abre a porta certa. */
   let booting = false;
-  async function boot() {
+  /** `opts.aviso` (v2.8): recado para a tela de entrar, se for ela que abrir (ex.: depois de "Sair de todos"). */
+  async function boot(opts) {
     if (booting || shuttingDown) return; // evita boot/startApp duplicados (duplo clique, retry + logout)
     booting = true;
     btnGateRetry.setAttribute("aria-disabled", "true");
+    btnGateContasRetry.setAttribute("aria-disabled", "true");
     btnLogout.setAttribute("aria-disabled", "true");
     try {
-      await bootInner();
+      await bootInner(opts || {});
     } finally {
       booting = false;
       btnGateRetry.removeAttribute("aria-disabled");
+      btnGateContasRetry.removeAttribute("aria-disabled");
       btnLogout.removeAttribute("aria-disabled");
     }
   }
 
-  async function bootInner() {
+  /**
+   * v2.8 (P5): o PC das caixas é compartilhado; o navegador não deve oferecer nem guardar a senha de ninguém. Lá a
+   * tela de entrar e o "Trocar minha senha" ficam sem os nomes/autocompletes que acionam o gerenciador de senhas
+   * (o "new-password" também impede o preenchimento automático de uma senha salva). Nos aparelhos pessoais fica o
+   * padrão do HTML (username/current-password), que ajuda cada pessoa a entrar no próprio celular.
+   */
+  function ajustarCamposDeSenha() {
+    const pc = auth.supported && auth.local;
+    gateUser.setAttribute("autocomplete", pc ? "off" : "username");
+    gateUser.setAttribute("name", pc ? "proclamare-pc-usuario" : "username");
+    gatePass.setAttribute("autocomplete", pc ? "new-password" : "current-password");
+    gatePass.setAttribute("name", pc ? "proclamare-pc-senha" : "password");
+    senhaUsuario.setAttribute("autocomplete", pc ? "off" : "username");
+    senhaUsuario.disabled = pc; // sem o usuário oculto, a senha nova não fica ligada a uma conta no navegador
+    senhaAtual.setAttribute("autocomplete", pc ? "off" : "current-password");
+    gatePcHint.hidden = !pc;
+  }
+
+  async function bootInner(opts) {
     fecharPorta(); // v2.8: o Tocador da loja que já tocava no PC das caixas não para (Sair, sessão vencida, retry)
     if (gateMode === "") showGate("boot");
     let st = null;
@@ -10644,12 +10811,19 @@
     btnPower.hidden = !auth.podeDesligar;
     lerConta(st);
     renderConta();
+    ajustarCamposDeSenha(); // v2.8 (P5)
     if (auth.local) readLocalAuthInfo(st);
+    if (!st.legacy && st.contas_indisponivel === true) {
+      // v2.8 (P7): as contas sumiram; ninguém entra (o Tocador do PC das caixas continua por trás do aviso)
+      iniciarTocadorSemLogin();
+      showGate("contas");
+      return;
+    }
     if (auth.modoContas) {
       // v2.8 (B6b): com contas o PC das caixas também entra com usuário e senha
       if (auth.authenticated && auth.conta) { enterApp(); return; }
       iniciarTocadorSemLogin(); // a aba Tocador do PC das caixas começa a tocar por trás da tela de entrar
-      showGate("login");
+      showGate("login", { notice: typeof opts.aviso === "string" ? opts.aviso : "" });
       return;
     }
     if (auth.local || auth.authenticated) enterApp();
@@ -10666,6 +10840,13 @@
   const SENHA_MAX = 128;
   const NOME_MAX = 60; // = contas.NOME_MAX
   const FUNCAO_MAX = 40; // = contas.FUNCAO_MAX
+  // v2.8 (P8): 400 {codigo:"fraca", campo:"senha"|"senha_nova"} = senha comum, repetida, em sequência ou com o nome.
+  // O texto que aparece é o "error" do servidor; esta cópia (= server.MSG_SENHA_FRACA) só vale se ele faltar.
+  const SENHA_FRACA_MSG = "Senha fácil demais de adivinhar. Evite senhas comuns (12345678, senha123, brasil2024), letras ou números repetidos ou em sequência (aaaaaaaa, abcdefgh) e o seu nome ou usuário.";
+  /** Texto da senha fraca: o do servidor (cortado) ou a cópia acima. */
+  function senhaFracaTexto(data) {
+    return data && typeof data.error === "string" && data.error ? str(data.error, 300) : SENHA_FRACA_MSG;
+  }
   /** Tamanho em code points (o len() do Python), não em unidades UTF-16 (um emoji conta 1, como no servidor). */
   const tamanho = (texto) => Array.from(texto).length;
 
@@ -10755,6 +10936,7 @@
     try {
       const r = await getJSON("/api/auth/status", { auth: true, timeout: 6000 });
       if (!r.ok || typeof r.data.local !== "boolean" || authLocked) return;
+      if (r.data.contas_indisponivel === true) { mostrarContasIndisponiveis(null); return; } // v2.8 (P7)
       if (r.data.modo_contas === true && r.data.autenticado !== true) {
         lockApp("pin_requerido", { codigo: "login_requerido" });
         return;
@@ -10815,8 +10997,11 @@
       const d = r.data;
       if (authLocked) {
         if (gateMode === "login" && d.modo_contas === true && d.autenticado === true) boot();
+        // v2.8 (P7): alguém restaurou as contas (conferido só ao voltar para a aba / outra aba mexer: sem laço)
+        else if (gateMode === "contas" && d.contas_indisponivel !== true) boot();
         return;
       }
+      if (d.contas_indisponivel === true) { mostrarContasIndisponiveis(null); return; } // v2.8 (P7)
       if (d.modo_contas === true && !auth.modoContas) { boot(); return; } // criaram o 1º ADM em outra aba
       if (!auth.modoContas) return;
       if (d.autenticado !== true) lockApp("pin_requerido", { codigo: "login_requerido" });
@@ -10857,6 +11042,19 @@
   }
 
   // ---- Sair (v2.8) ----
+  /**
+   * Depois de "Sair" ou "Sair de todos os aparelhos". PC das caixas (compartilhado): some o que esta pessoa digitou
+   * e o histórico local; o modo Tocador, a fonte de música e o tema ficam (são da loja). Aparelho da rede: como o
+   * "Sair" do PIN (fica só o tema).
+   */
+  function limparAoSair() {
+    if (auth.local) limparComposerEHistorico();
+    else wipeBrowserData();
+    store.remove(LS.conta); // as outras abas deste navegador recebem o evento "storage" e conferem a sessão
+    gateUser.value = "";
+    contaUltima = null;
+  }
+
   btnContaSair.addEventListener("click", async () => {
     if (btnContaSair.getAttribute("aria-disabled") === "true") return;
     btnContaSair.setAttribute("aria-disabled", "true");
@@ -10864,19 +11062,70 @@
     try {
       const r = await postJSON("/api/auth/logout", {}, { auth: true, timeout: 8000 });
       if (!r.ok || r.data.ok === false) throw new Error("logout recusado");
-      // PC das caixas (compartilhado): some o que esta pessoa digitou e o histórico local; o modo Tocador, a fonte de
-      // música e o tema ficam (são da loja). Aparelho da rede: como o "Sair" do PIN (fica só o tema).
-      if (auth.local) limparComposerEHistorico();
-      else wipeBrowserData();
-      store.remove(LS.conta); // as outras abas deste navegador recebem o evento "storage" e conferem a sessão
-      gateUser.value = "";
-      contaUltima = null;
+      limparAoSair();
       boot();
     } catch (err) {
       toast("Não foi possível sair agora. Tente de novo.", "error");
     } finally {
       btnContaSair.removeAttribute("aria-disabled");
       btnContaSair.classList.remove("is-loading");
+    }
+  });
+
+  // ---- Sair de todos os aparelhos (v2.8, P4): POST /api/conta/sair-de-todos {} ----
+  // 200 {ok} + cookie apagado: TODAS as sessões desta conta caíram (inclusive esta) -> tela de entrar com o recado.
+  // 409 modo_pin / 403 sem_permissao (sessão já velha) / 429 limite / 400: o "error" do servidor no diálogo.
+  let todosBusy = false;
+
+  function showTodosError(text) {
+    todosError.hidden = !text;
+    setText(todosError, text || "");
+  }
+
+  function openTodosDialog() {
+    if (!auth.modoContas || !auth.conta || authLocked || todosDialog.open || shuttingDown) return;
+    showTodosError("");
+    todosDialog.showModal();
+    btnTodosCancel.focus(); // o padrão seguro é NÃO sair
+  }
+
+  function closeTodosDialog() {
+    if (todosBusy) return;
+    closeDialogAnimated(todosDialog);
+  }
+
+  btnContaTodos.addEventListener("click", openTodosDialog);
+  btnTodosCancel.addEventListener("click", closeTodosDialog);
+  todosDialog.addEventListener("cancel", (e) => { e.preventDefault(); closeTodosDialog(); });
+  onBackdropClick(todosDialog, closeTodosDialog);
+
+  btnTodosConfirm.addEventListener("click", async () => {
+    if (todosBusy || !auth.conta) return;
+    todosBusy = true;
+    showTodosError("");
+    btnTodosConfirm.classList.add("is-loading");
+    btnTodosConfirm.setAttribute("aria-disabled", "true");
+    btnTodosCancel.setAttribute("aria-disabled", "true");
+    try {
+      const r = await postJSON("/api/conta/sair-de-todos", {}, { timeout: 10000 });
+      if (r.ok && r.data.ok === true) {
+        todosBusy = false;
+        if (todosDialog.open) todosDialog.close();
+        limparAoSair();
+        boot({ aviso: "A sua conta saiu de todos os aparelhos. Entre de novo para continuar." });
+        return;
+      }
+      if (authLocked) return; // 401: request() já fechou a porta (tela de entrar)
+      const erro = typeof r.data.error === "string" && r.data.error ? str(r.data.error, 200) : "";
+      if (r.status === 429) showTodosError(erro || "Muitos pedidos seguidos. Aguarde um minuto.");
+      else showTodosError(erro || "Não foi possível sair dos aparelhos agora. Tente de novo.");
+    } catch (err) {
+      if (err.name !== "AuthLockedError") showTodosError("Não foi possível falar com o servidor. Tente de novo.");
+    } finally {
+      todosBusy = false;
+      btnTodosConfirm.classList.remove("is-loading");
+      btnTodosConfirm.removeAttribute("aria-disabled");
+      btnTodosCancel.removeAttribute("aria-disabled");
     }
   });
 
@@ -10949,6 +11198,10 @@
       if (status === 400 && data.campo === "senha_atual") {
         senhaAtual.value = "";
         showSenhaError(data.codigo === "senha_errada" ? "A senha atual está incorreta." : erro || "Confira a senha atual.", senhaAtual);
+      } else if (status === 400 && data.campo === "senha_nova" && data.codigo === "fraca") {
+        senhaNova.value = ""; // v2.8 (P8): senha fácil demais; as duas novas saem do formulário
+        senhaNova2.value = "";
+        showSenhaError(senhaFracaTexto(data), senhaNova);
       } else if (status === 400 && data.campo === "senha_nova") {
         showSenhaError(SENHA_MOTIVOS[data.codigo] || erro || "Senha nova inválida.", senhaNova);
       } else if (status === 429) {
@@ -11054,8 +11307,10 @@
         if (admDialog.open) admDialog.close();
         boot(); // outra aba criou antes: a tela de entrar aparece
       } else if ((status === 400 || status === 409) && typeof data.campo === "string" && Object.prototype.hasOwnProperty.call(ADM_CAMPOS, data.campo)) {
+        if (data.campo === "senha") limparAdmSenhas(); // senha recusada (v2.8 P8: inclusive a fácil demais)
         const motivo = data.codigo === "usuario_repetido" ? "Esse usuário já existe."
           : data.campo === "senha" && data.codigo === "igual_usuario" ? "A senha não pode ser igual ao usuário."
+          : data.campo === "senha" && data.codigo === "fraca" ? senhaFracaTexto(data)
           : ADM_MOTIVOS[data.campo];
         showAdmError(motivo || erro || "Confira os campos.", ADM_CAMPOS[data.campo]);
       } else if (status === 429) {
@@ -11282,14 +11537,15 @@
   // ---- Diálogo "Nova conta" / "Editar conta" ----
   const CF_CAMPOS = { nome: cfNome, funcao: cfFuncao, usuario: cfUsuario, perfil: cfPerfil, senha: cfSenha };
 
-  /** Texto para um campo recusado (codigo = motivo do servidor ou o código do erro). */
-  function contaMotivo(campo, codigo) {
+  /** Texto para um campo recusado (codigo = motivo do servidor ou o código do erro; data = a resposta, se houver). */
+  function contaMotivo(campo, codigo, data) {
     if (campo === "nome") return codigo === "caractere" ? "O nome tem um caractere que não é aceito." : "Digite o nome (até " + NOME_MAX + " caracteres, numa linha só).";
     if (campo === "funcao") return codigo === "caractere" ? "A função tem um caractere que não é aceito." : "Digite a função (até " + FUNCAO_MAX + " caracteres, numa linha só).";
     if (campo === "usuario") return codigo === "usuario_repetido" ? "Esse usuário já existe. Escolha outro." : ADM_MOTIVOS.usuario;
     if (campo === "perfil") return "Escolha um perfil da lista.";
     if (campo === "senha") {
       if (codigo === "igual_usuario") return "A senha não pode ser igual ao usuário.";
+      if (codigo === "fraca") return senhaFracaTexto(data); // v2.8 (P8): o texto do servidor
       if (codigo === "caractere") return "A senha tem um caractere que não é aceito.";
       return "A senha precisa ter de " + SENHA_MIN + " a " + SENHA_MAX + " caracteres.";
     }
@@ -11509,7 +11765,7 @@
         showCfError(msgDoServidor(data) || "Limite de " + CONTAS_MAX + " contas atingido.");
       } else if ((status === 400 || codigo === "usuario_repetido") && Object.prototype.hasOwnProperty.call(CF_CAMPOS, campo)) {
         if (campo === "senha") limparCfSenhas();
-        showCfError(contaMotivo(campo, codigo) || msgDoServidor(data), CF_CAMPOS[campo]);
+        showCfError(contaMotivo(campo, codigo, data) || msgDoServidor(data), CF_CAMPOS[campo]);
       } else {
         showCfError(contaErroTexto(status, data));
       }
@@ -11583,7 +11839,7 @@
       limparCsenha();
       const tratado = contaErroComum(status, data, (m) => showCsenhaError(m, csenhaNova));
       if (tratado) { await tratado; return; }
-      if (status === 400 && data.campo === "senha") showCsenhaError(contaMotivo("senha", data.codigo), csenhaNova);
+      if (status === 400 && data.campo === "senha") showCsenhaError(contaMotivo("senha", data.codigo, data), csenhaNova);
       else showCsenhaError(contaErroTexto(status, data));
     } catch (err) {
       limparCsenha();
@@ -11710,7 +11966,8 @@
     interrompido: ["Interrompido", "badge--warn"],
   };
   const HIST_ORIGENS = { local: "PC das caixas", rede: "Pela rede" };
-  const HIST_TIPOS = { digitado: "Digitado", tocar_agora: "Tocar agora", agendado: "Agendado" };
+  // v2.8 (P6): "Pelo painel" (antes era Digitado): inclui as mensagens prontas, que ninguém digitou na hora
+  const HIST_TIPOS = { digitado: "Pelo painel", tocar_agora: "Tocar agora", agendado: "Agendado" };
   const temChave = (obj, k) => typeof k === "string" && Object.prototype.hasOwnProperty.call(obj, k);
   const histDiaFmt = new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long" });
   const histDiaAnoFmt = new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
