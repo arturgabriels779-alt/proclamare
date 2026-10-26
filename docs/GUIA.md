@@ -493,7 +493,8 @@ computador da loja livre).
 1. No **computador da loja**, abra o painel. No topo aparece o aviso **Criar conta de administrador** (ou vá em
    **Configurações → Acesso pela rede → Criar conta de administrador**).
 2. Preencha seu nome, a função (por exemplo, "Dona da loja"), o usuário (3 a 30 letras minúsculas, números,
-   ponto ou sublinhado; ex.: `maria.souza`) e uma senha de 8 a 128 caracteres, diferente do usuário.
+   ponto ou sublinhado; ex.: `maria.souza`) e uma senha de 8 a 128 caracteres, diferente do usuário (veja
+   "Escolha uma senha boa", abaixo).
 3. Pronto: essa conta é o **administrador** e pode tudo. **A partir daí o PIN deixa de valer**: os celulares que
    estavam conectados com PIN saem e todos, **inclusive o computador da loja**, passam a entrar com usuário e senha.
    A aba **Tocador da loja** e os horários programados continuam tocando normalmente.
@@ -501,6 +502,23 @@ computador da loja livre).
    `PROCLAMARE_CONFIAR_LOOPBACK=0`, nenhum aparelho é "o computador da loja" e **não é possível criar o primeiro
    administrador**: inicie sem essa opção, crie a conta e depois volte a usá-la se precisar.
 5. Depois, crie as contas de todo mundo: **Configurações → Contas → Nova conta**.
+6. **O histórico de anúncios começa aqui**: enquanto não existe nenhuma conta (modo PIN), o Proclamare não guarda
+   o histórico (sem conta não dá para saber quem anunciou).
+
+### Escolha uma senha boa
+
+- **Use uma senha só para o Proclamare**, diferente da do e-mail, do banco ou do celular.
+- O Proclamare **recusa senhas fáceis de adivinhar**: as mais comuns (`12345678`, `123456789`, `senha123`,
+  `mudar123`, `brasil2024`, `password`...), letras ou números todos iguais (`aaaaaaaa`), sequências
+  (`abcdefgh`, `qwertyui`, `87654321`, `12121212`), só espaços e senhas que contêm o usuário ou o primeiro nome da
+  pessoa. Uma frase com 3 ou 4 palavras e um número (ex.: "trem azul 4 bananas") é fácil de lembrar e difícil de
+  adivinhar. Quem já tinha uma senha continua entrando com ela.
+- **No computador da loja, não deixe o navegador salvar a senha** (quando ele perguntar "Salvar senha?", clique
+  em **Nunca**). Se já salvou: no **Chrome**, menu ⋮ → Configurações → Preenchimento automático e senhas →
+  Gerenciador de senhas → Configurações, desligue **Oferecer para salvar senhas** e apague a senha do Proclamare
+  da lista; no **Edge**, menu ⋯ → Configurações → Perfis → Senhas, desligue **Oferecer para salvar senhas** e
+  apague a do Proclamare. Senha salva no PC da loja é a porta aberta para qualquer um entrar com a conta de outra
+  pessoa.
 
 ### O que cada perfil pode fazer
 
@@ -527,17 +545,28 @@ administrador). Isso vale mesmo que a pessoa tente por fora do painel.
 - **Editar:** nome, função, perfil e situação da conta. O **usuário (o nome de entrada) não muda**. Ninguém edita
   a própria conta por essa tela (a própria senha é em **Trocar minha senha**).
 - **Definir uma senha nova para outra pessoa** (ela esqueceu): um **gerente** (para funcionários) ou um
-  **administrador** (para qualquer um) abre a conta e usa **Definir senha nova**. As sessões abertas dessa pessoa
-  são encerradas e ela entra com a senha nova.
+  **administrador** (para qualquer um, inclusive gerentes) abre a conta e usa **Definir senha nova**. As sessões
+  abertas dessa pessoa são encerradas e ela entra com a senha nova.
 - **Desativar:** quem saiu da equipe é **desativado**, não apagado. A pessoa não consegue mais entrar e a sessão
   dela cai. **Contas nunca são apagadas**, de propósito: o histórico continua mostrando o nome de quem anunciou.
   Dá para **Reativar** depois.
 - Sempre fica pelo menos **um administrador ativo**: o Proclamare não deixa desativar ou rebaixar o último.
 - Limite de 50 contas. Quem erra a senha muitas vezes é bloqueado por alguns minutos (10 erros em 15 minutos).
+  No **celular ou computador onde a pessoa já entrou antes**, a conta tem um limite próprio: se alguém na Wi-Fi
+  errar a senha dela de propósito, ela continua conseguindo entrar no aparelho dela.
+
+### Perdi o celular: "Sair de todos os aparelhos"
+
+Na barra da sua conta (no topo do painel), **Sair de todos os aparelhos** encerra **todas** as sessões da sua
+conta: no celular perdido, nos outros aparelhos e neste também (você entra de novo em seguida). Use também se
+desconfiar que alguém viu a sua senha, e depois troque a senha. O botão **Sair** comum encerra só o aparelho em
+que você está.
 
 ### Esqueci a senha
 
-- **Gerente ou administrador:** peça a outro gerente/administrador para definir uma senha nova (veja acima).
+- **Funcionário:** peça a um gerente ou administrador para definir uma senha nova (veja acima).
+- **Gerente:** peça a um **administrador** (um gerente não mexe na conta de outro gerente).
+- **Administrador:** peça a outro administrador, se houver.
 - **Era o último administrador:** no **computador da loja**, com o Proclamare **desligado** (Menu Iniciar →
   *Desligar Proclamare*), abra um terminal na pasta do Proclamare e rode (troque `maria.souza` pelo seu usuário):
 
@@ -546,7 +575,9 @@ administrador). Isso vale mesmo que a pessoa tente por fora do painel.
   ```
 
   Ele pede a senha nova duas vezes (sem mostrar na tela, como no `--definir-pin`). As sessões abertas dessa conta
-  são encerradas. Depois é só ligar o Proclamare e entrar.
+  são encerradas. Depois é só ligar o Proclamare e entrar. A senha nova segue as mesmas regras do painel (nada de
+  senha fácil). Rode o comando direto no Prompt de Comando: se a senha vier de um arquivo ou de outro programa, ele
+  avisa que ela pode aparecer na tela.
 
 ### O computador da loja sai sozinho (5 minutos)
 
@@ -556,6 +587,9 @@ atividade. Nos celulares e outros computadores a pessoa fica lembrada por 14 dia
 
 **O som não para:** com ninguém logado, a aba **Tocador da loja** e os **horários da programação** continuam
 tocando; só não dá para anunciar nem mexer em nada até alguém entrar.
+
+Com `PROCLAMARE_CONFIAR_LOOPBACK=0`, nenhum navegador é "o computador da loja": o Tocador só toca com alguém
+logado e o PC ganha sessão longa (14 dias), como um celular.
 
 ### Histórico de anúncios
 
@@ -568,18 +602,32 @@ contas".
 ### Privacidade do histórico
 
 O Proclamare guarda, para cada anúncio, o **nome, a função e o texto** falado (e a data, a hora e o resultado), no
-arquivo `anuncios.jsonl` ao lado do `config.json`. **Depois de 90 dias isso é apagado automaticamente.** **Ninguém
-pode editar nem apagar** esses registros pelo painel (nem o administrador). Avise a equipe de que isso existe e
+arquivo `anuncios.jsonl` ao lado do `config.json`. **Depois de 90 dias isso é apagado automaticamente.** **Pelo
+painel, ninguém pode editar nem apagar** esses registros (nem o administrador). Avise a equipe de que isso existe e
 evite nomes completos, CPF e placas nos anúncios (veja a seção 10). Os registros de segurança (`auditoria.log`)
 continuam sem o texto dos anúncios.
 
 ### Cuidados importantes
 
-- **Faça backup do `contas.json`** (fica ao lado do `config.json`, nunca vai para o Git). Se ele for **apagado
-  ou ficar ilegível**, o Proclamare volta ao modo antigo **sem PIN**: o computador da loja fica livre, mas a
-  **rede fica bloqueada** até alguém restaurar o backup ou criar o administrador de novo (a cópia do arquivo
-  estragado fica guardada como `contas.json.corrompido-...`).
+- **Faça backup do `contas.json`** (fica ao lado do `config.json`, nunca vai para o Git).
+- **Se aparecer "As contas do Proclamare sumiram"**: o `contas.json` foi apagado ou estragou. Por segurança o
+  Proclamare **não volta ao modo antigo**: ninguém entra (nem no computador da loja) até resolver, mas a aba
+  **Tocador da loja** e os **horários** continuam tocando. Para resolver:
+  1. **Melhor:** desligue o Proclamare, copie o seu backup do `contas.json` de volta para a pasta do Proclamare e
+     ligue de novo. Todos entram como antes. (A cópia do arquivo estragado fica guardada como
+     `contas.json.corrompido-...`.)
+  2. **Sem backup:** no **computador da loja**, com o Proclamare **desligado**, abra um terminal na pasta do
+     Proclamare e rode `.venv\Scripts\python.exe server.py --esquecer-contas`. Ele pede para digitar `ESQUECER`
+     para confirmar. Depois ligue o Proclamare: o painel volta a pedir **Criar conta de administrador** e as contas
+     antigas não valem mais (crie todas de novo).
 - Com contas, `--definir-pin` e `--remover-pin` não funcionam mais: o PIN não vale.
+- **Quem usa o Windows do computador da loja consegue mexer nos arquivos do Proclamare** (contas, histórico,
+  configuração) e, com isso, se tornar administrador ou apagar o histórico. O Proclamare não tem como impedir quem
+  já está dentro do Windows. Por isso: **bloqueie o Windows** (tecla Windows + L) quando sair do computador e, se
+  possível, crie um **usuário do Windows separado para os funcionários** (usuário padrão, **sem** ser
+  administrador), só para usar o navegador, deixando o Proclamare rodando no usuário do dono.
+- **A Wi-Fi dos clientes deve ser separada** da Wi-Fi da equipe (a maioria dos roteadores tem a opção "rede de
+  convidados"). Assim um cliente nem chega a ver o Proclamare.
 
 ---
 
