@@ -350,7 +350,8 @@ class TesteAparelhoDoDono(BaseContas):
         r = self.login_conta("ana.adm", SENHA_ADM, ip=40)
         aparelho = _cookie_aparelho(r)
         self.assertIsNotNone(aparelho)
-        self.assertIn(server.conta_por_usuario("ana.adm")["id"],
+        conta = server.conta_por_usuario("ana.adm")
+        self.assertIn((conta["id"], conta["sessao_v"]),   # rodada 2 (N6): a ligação leva a sessao_v
                       server._aparelho_contas(aparelho, server.load_config()))
         # 10 senhas erradas de 3 IPs desconhecidos (abaixo do limite por IP e da faixa)
         for ip, n in ((51, 4), (52, 3), (53, 3)):
@@ -384,11 +385,12 @@ class TesteAparelhoDoDono(BaseContas):
     def test_cookie_de_aparelho_guarda_no_maximo_5_contas_e_renova_com_elas(self) -> None:
         cfg = {"acesso_chave": server._b64u(b"k" * 32), "acesso_versao": 1, "acesso_pin_hash": "x"}
         with mock.patch.object(server, "_sessoes_possiveis", return_value=True):
-            ids = tuple(f"{i:08x}" for i in range(7))
-            ligadas: tuple[str, ...] = ()
-            for c in ids:
-                ligadas = server._ligar_conta(ligadas, c)
+            ids = tuple((f"{i:08x}", i) for i in range(7))
+            ligadas: tuple[tuple[str, int], ...] = ()
+            for c, sv in ids:
+                ligadas = server._ligar_conta(ligadas, c, sv)
             self.assertEqual(ligadas, ids[-5:])
+            self.assertEqual(server._ligar_conta(ligadas, ids[-1][0], 9)[-1], (ids[-1][0], 9))   # uma por conta
             token = server._emitir_cookie_aparelho(cfg, "a" * 16, ligadas)
             self.assertEqual(server._aparelho_contas(token, cfg), ids[-5:])
             self.assertEqual(server._aparelho_valido(token, cfg), "a" * 16)

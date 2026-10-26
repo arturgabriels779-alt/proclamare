@@ -560,7 +560,12 @@ administrador). Isso vale mesmo que a pessoa tente por fora do painel.
 Na barra da sua conta (no topo do painel), **Sair de todos os aparelhos** encerra **todas** as sessões da sua
 conta: no celular perdido, nos outros aparelhos e neste também (você entra de novo em seguida). Use também se
 desconfiar que alguém viu a sua senha, e depois troque a senha. O botão **Sair** comum encerra só o aparelho em
-que você está.
+que você está. **Se alguém pode ter copiado a sua sessão** (mexeu no seu celular ou no navegador desbloqueado),
+use **Sair de todos os aparelhos**, não o **Sair** comum.
+
+O **Sair** comum fica guardado na memória do Proclamare: se o Proclamare for **desligado ou reiniciado**, ele
+"esquece" esses avisos e uma sessão copiada antes de você sair voltaria a valer. O **Sair de todos os aparelhos**
+não tem esse problema: ele vale mesmo depois de reiniciar.
 
 ### Esqueci a senha
 

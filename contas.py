@@ -121,9 +121,12 @@ proclamare proclamare1 proclamare123 anuncio anuncio123 anuncios musica musica12
 # Sequências simples (a senha inteira, sem espaços, contida numa delas, nos dois sentidos): 12345678, abcdefgh,
 # qwertyui, 87654321, 1qaz2wsx...
 _SEQUENCIAS = ("0123456789" * 3, "abcdefghijklmnopqrstuvwxyz" * 2, "qwertyuiop", "asdfghjkl", "zxcvbnm",
-               "1qaz2wsx3edc4rfv5tgb6yhn7ujm", "qazwsxedcrfvtgbyhnujmikolp", "1q2w3e4r5t6y7u8i9o0p")
+               "1qaz2wsx3edc4rfv5tgb6yhn7ujm", "qazwsxedcrfvtgbyhnujmikolp", "1q2w3e4r5t6y7u8i9o0p",
+               "zaq1xsw2cde3vfr4bgt5nhy6mju7", "q1w2e3r4t5y6u7i8o9p0")
 _CONTIDO_MIN = 4   # o usuário ou o 1º nome, com 4+ letras, não pode estar dentro da senha
 _PONTAS_RE = re.compile(r"^[\W\d_]+|[\W\d_]+$")
+_SIMBOLOS_RE = re.compile(r"[\W_]")
+_PONTAS_CORTADAS = 2   # rodada 2 (N4): "12345678!", "a12345678" = a forma fraca com 1-2 caracteres nas pontas
 
 
 def _dobrar(texto: str) -> str:
@@ -132,23 +135,46 @@ def _dobrar(texto: str) -> str:
     return "".join(c for c in decomposto if not unicodedata.combining(c))
 
 
+def _forma_fraca(texto: str) -> bool:
+    """A forma (sem olhar usuário/nome) é fraca? Lista (inteira ou o miolo), só 1-2 caracteres diferentes, bloco de até
+    4 repetido ou sequência simples. Textos com menos de 4 caracteres não são julgados aqui."""
+    if len(texto) < 4:
+        return False
+    miolo = _PONTAS_RE.sub("", texto)
+    if texto in SENHAS_COMUNS or (miolo and miolo in SENHAS_COMUNS):
+        return True
+    if len(set(texto)) <= 2:   # aaaaaaa1, 11112222, 00000001, 12121212
+        return True
+    for k in (3, 4):           # bloco repetido: abcabcab, 12341234
+        if texto == (texto[:k] * len(texto))[:len(texto)]:
+            return True
+    return any(texto in seq or texto in seq[::-1] for seq in _SEQUENCIAS)
+
+
+def _variantes(compacta: str) -> set[str]:
+    """A senha e as formas "disfarçadas" que também são julgadas (rodada 2, N4): sem símbolos no meio
+    ("1-2-3-4-5-6-7-8") e com até 2 caracteres cortados das pontas ("12345678!", "a12345678", "xabcdefghx")."""
+    bases = {compacta, _SIMBOLOS_RE.sub("", compacta)}
+    saida: set[str] = set()
+    for b in bases:
+        for i in range(_PONTAS_CORTADAS + 1):
+            for j in range(_PONTAS_CORTADAS + 1 - i):
+                saida.add(b[i:len(b) - j])
+    return saida
+
+
 def senha_fraca(senha: str, usuario: str | None = None, nome: str | None = None) -> bool:
     """
     Senha fácil de adivinhar? Só espaços; da lista SENHAS_COMUNS (inteira ou o miolo sem números/símbolos nas
-    pontas); todos os caracteres iguais; bloco de até 4 caracteres repetido (12121212, abcabcab); sequência simples
-    (12345678, abcdefgh, qwertyui, 87654321); ou que contém o usuário (inteiro) ou o primeiro nome da pessoa (só com
-    4+ letras: "ana" dentro de "bananada" não conta). Sem diferenciar maiúsculas nem acentos.
+    pontas); só 1 ou 2 caracteres diferentes; bloco de até 4 caracteres repetido (12121212, abcabcab); sequência
+    simples (12345678, abcdefgh, qwertyui, 87654321, zaq1xsw2) - tudo isso também sem os símbolos do meio e com até 2
+    caracteres cortados das pontas (_variantes) -; ou que contém o usuário (inteiro) ou o primeiro nome da pessoa (só
+    com 4+ letras: "ana" dentro de "bananada" não conta). Sem diferenciar maiúsculas nem acentos.
     """
     if not senha.strip():
         return True
     compacta = "".join(_dobrar(senha).split())
-    miolo = _PONTAS_RE.sub("", compacta)
-    if compacta in SENHAS_COMUNS or (miolo and miolo in SENHAS_COMUNS):
-        return True
-    for k in (1, 2, 3, 4):   # 1 = todos iguais; 2..4 = bloco repetido (12121212, abcabcab, 12341234)
-        if len(compacta) > k and compacta == (compacta[:k] * len(compacta))[:len(compacta)]:
-            return True
-    if any(compacta in seq or compacta in seq[::-1] for seq in _SEQUENCIAS):
+    if any(_forma_fraca(v) for v in _variantes(compacta)):
         return True
     proibidos: set[str] = set()
     if usuario:
@@ -313,6 +339,10 @@ def conferir_senha(senha: Any, armazenado: Any) -> bool:
         calc = hashlib.pbkdf2_hmac("sha256", senha.encode("utf-8"), sal, it)
     except (ValueError, UnicodeError):
         return False
+    if it < ITERACOES:
+        # Rodada 2 (N3): hash antigo (menos iterações) paga a DIFERENÇA num PBKDF2 descartado: a conta com hash de
+        # 200.000 (ativa ou desativada) leva o mesmo tempo que o hash fictício de um usuário que não existe.
+        hashlib.pbkdf2_hmac("sha256", b"proclamare-equalizar", sal, ITERACOES - it)
     return hmac.compare_digest(calc, esperado)
 
 
@@ -326,7 +356,8 @@ def precisa_atualizar_hash(armazenado: Any) -> bool:
 # Hash de um valor aleatório descartado: usuário inexistente também paga o PBKDF2 (iguala o tempo de resposta).
 # Calculado na PRIMEIRA vez que é pedido, com as ITERACOES de agora (e de novo se elas mudarem: os testes as
 # rebaixam), não no import: a CLI e os testes não pagam 600.000 iterações só por importar o módulo. Uma conta com
-# hash antigo (200.000) responde mais rápido que o fictício só até o próximo login certo dela (precisa_atualizar_hash).
+# hash antigo (200.000) paga a diferença em conferir_senha (N3): mesmo custo do fictício. O que sobra de diferença é
+# só o login CERTO de uma conta com hash antigo, que custa um PBKDF2 a mais UMA vez (a regravação).
 _ficticio: dict[int, str] = {}
 _ficticio_lock = threading.Lock()
 
