@@ -401,7 +401,7 @@ Contrato v2.8 (Parte A: voz da loja)
   fala e a sineta do fim tocam; assim que a fala acaba o sinal volta a ser interrompível (interrompivel_de_novo) e um
   "Parar" durante a sineta do fim a corta. "Parar" na sineta do fim não faz do anúncio "interrompido" (a fala inteira
   saiu: SinalParada.fala_cortada). Falha da sineta do fim = só o tipo do erro no log, o anúncio conta como ok; no
-  legado a espera por ela é AVISO_MAX_S + 3 s. aviso_*.tmp órfãos (mais de 10 min) são apagados pela limpeza (e ao
+  legado a espera por ela é AVISO_MAX_S + 8 s. aviso_*.tmp órfãos (mais de 10 min) são apagados pela limpeza (e ao
   ligar). Histórico e auditoria não mudam.
   Toca: /api/announce sem "teste" (digitado e Mensagens prontas) e o tipo "anuncio" da Programação (motor/
   voz/velocidade do item, aviso da loja, com a sineta do fim se houver). No teto de 60 min/dia da Programação cada
@@ -4192,7 +4192,7 @@ def ip_local() -> str:
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 # Tetos: o cliente (app.js) espera até 240 s (240000 ms) por /api/announce; a soma dos tetos do servidor
 # (geração 30 s + duck/restore do Spotify + áudio) precisa ficar abaixo disso. Pior caso com a sineta do fim (v2.8):
-# legado = geração 30 + aviso (espera AVISO_MAX_S + 15 = 18) + fala 90 + sineta do fim (AVISO_MAX_S + 3 = 6) = 144 s;
+# legado = geração 30 + aviso (espera AVISO_MAX_S + 15 = 18) + fala 90 + sineta do fim (AVISO_MAX_S + 8 = 11) = 149 s;
 # saída fixada = geração 30 + aviso, fala e fim numa chamada só de até 90 s = 120 s; mais duck/restore do Spotify.
 TIMEOUT_AUDIO_S = 90.0  # teto de espera por um anúncio (fala + reprodução)
 TIMEOUT_REPRODUCAO_S = 80.0  # teto do laço de reprodução do mp3 (< TIMEOUT_AUDIO_S)
@@ -7071,16 +7071,17 @@ def _tocar_aviso_legado(caminho: Path | None, parar: Any) -> bool:
 def _tocar_aviso_fim_legado(caminho: Path | None, parar: Any) -> None:
     """
     v2.8: a sineta do FIM no caminho legado, logo depois da fala e ainda com a música abaixada/pausada. Não toca se
-    não há (None) ou se `parar` chegou antes/durante a fala. Espera no máximo AVISO_MAX_S + 3 s (Red Team L1: a
-    trava dos anúncios não fica presa 18 s a mais por um enfeite; o laço legado do aviso já corta em AVISO_MAX_S +
-    1 s). Qualquer falha (inclusive esse TimeoutError) vira SÓ uma linha no log com o tipo do erro: a fala já saiu, o
+    não há (None) ou se `parar` chegou antes/durante a fala. Espera no máximo AVISO_MAX_S + 8 s (Red Team L1: a
+    trava dos anúncios não fica presa 18 s a mais por um enfeite; revisão: + 3 s era apertado demais - o prazo conta
+    desde o envio e cobre mixer.init/load num PC lento, e estourá-lo troca a thread de áudio; o laço legado do aviso
+    já corta em AVISO_MAX_S + 1 s). Qualquer falha (inclusive esse TimeoutError) vira SÓ uma linha no log com o tipo do erro: a fala já saiu, o
     anúncio conta como ok.
     """
     if caminho is None or (parar is not None and parar.is_set()):
         return
     try:
         executar_no_audio(_tocar_aviso, caminho, *(() if parar is None else (parar,)),
-                          timeout=AVISO_MAX_S + 3.0)
+                          timeout=AVISO_MAX_S + 8.0)
     except Exception as exc:  # noqa: BLE001 - só o tipo no log; o anúncio já foi falado
         # M-5: o aviso de INÍCIO só engole erro de reprodução (um TimeoutError lá sobe: a fala nem saiu e o anúncio
         # tem de falhar). Aqui a fala JÁ saiu: qualquer erro só vai para o log, senão o anúncio daria 500 e alguém

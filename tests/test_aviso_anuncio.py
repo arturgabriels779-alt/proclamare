@@ -532,7 +532,7 @@ class TestSinetaDoFim(BaseAviso):
 
         def executar(func: Any, *args: Any, timeout: float = server.TIMEOUT_AUDIO_S) -> Any:
             if func is server._tocar_aviso and args and args[0].name == ARQ_FIM:
-                self.assertEqual(timeout, aviso_mod.AVISO_MAX_S + 3.0)    # espera curta: a trava não fica presa
+                self.assertEqual(timeout, aviso_mod.AVISO_MAX_S + 8.0)    # espera curta: a trava não fica presa
                 raise TimeoutError("A reprodução de áudio excedeu o tempo limite.")
             return executar_original(func, *args, timeout=timeout)
 
