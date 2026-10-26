@@ -554,9 +554,10 @@ class TesteFilaDeExecucao(BaseRemotos):
 
 class TesteTetosDiarios(BaseRemotos):
     def test_estimativa_de_fala_e_soma_com_o_audio(self) -> None:
-        # v2.8 (A3): a estimativa é a fala + o aviso sonoro no pior caso (AVISO_MAX_S), mesmo com o aviso "nenhum"
-        # (detalhes: tests/test_aviso_anuncio.py).
-        aviso_s = server.AVISO_MAX_S
+        # v2.8 (A3): a estimativa é a fala + as sinetas no pior caso (AVISO_PIOR_CASO_S = antes + fim), mesmo com o
+        # aviso "nenhum" (detalhes: tests/test_aviso_anuncio.py).
+        aviso_s = server.AVISO_PIOR_CASO_S
+        self.assertEqual(aviso_s, 2 * server.AVISO_MAX_S)
         server.save_config({**server.load_config(), "voz_loja": {"aviso": "nenhum"}})
         item = {"tipo": "anuncio", "alvo": "a" * 70, "ativo": True, "dias": [1]}
         self.assertAlmostEqual(server._prog_segundos_fala(item), 10.0 + aviso_s)

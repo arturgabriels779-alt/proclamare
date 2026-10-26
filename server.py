@@ -374,7 +374,7 @@ Contrato v2.8 (Parte A: voz da loja)
 ------------------------------------
   A voz dos anúncios é da LOJA, não de cada aparelho: mora em config.json["voz_loja"] =
   {"motor": auto|online|offline, "voz": francisca|antonio, "velocidade": -50..50, "aviso": nenhum|ding_dong|
-  aeroporto|suave|sino}. Padrão (VOZ_LOJA_PADRAO): auto / francisca / 0 / aeroporto. voz_loja() nunca levanta:
+  aeroporto|suave|sino|comissario|aeroporto_inicio_fim}. Padrão (VOZ_LOJA_PADRAO): auto / francisca / 0 / aeroporto. voz_loja() nunca levanta:
   chave ausente ou campo torto cai no padrão campo a campo; "definida" = a chave existe no config.
   GET  /api/voz   -> {ok, voz_loja:{motor,voz,velocidade,aviso,definida}, opcoes:{motores,vozes[{id,nome}],avisos[{id,nome}]}}
   POST /api/voz   -> qualquer subconjunto (>= 1) de motor/voz/velocidade/aviso; o resto é preservado. Chave fora da
@@ -389,10 +389,18 @@ Contrato v2.8 (Parte A: voz da loja)
   (ErroReproducao na saída fixada, qualquer erro no legado) vira só um aviso no log e a fala sai; o "parar" da
   Programação antes ou durante o aviso não deixa a fala começar (a voz do Windows só fica "não interrompível" depois
   do aviso). O cache audios_temp/aviso_<nome>.wav é conferido pelo CONTEÚDO (não só pelo tamanho) e regravado se
-  diferir. Toca: /api/announce sem "teste" (digitado e Mensagens prontas) e o tipo "anuncio" da Programação (motor/
-  voz/velocidade do item, aviso da loja). No teto de 60 min/dia da Programação cada anúncio conta o aviso como o
-  PIOR caso, AVISO_MAX_S (3 s), qualquer que seja o aviso atual (até "nenhum"): trocar o aviso depois nunca põe
-  horários já gravados acima do teto. NÃO toca: "teste": true ("Testar caixas"), áudio agendado ("audio"),
+  diferir. Sineta do FIM (v2.8): os avisos de som.aviso.AVISOS_COM_FIM (hoje só "aeroporto_inicio_fim": dó-mi-sol-dó
+  subindo antes, dó-sol-mi-dó descendo depois) tocam também uma sineta DEPOIS da fala, ainda com a música baixa:
+  aviso -> fala -> fim, na thread de áudio única. Arquivo próprio audios_temp/aviso_<nome>.fim.wav (mesma lista
+  branca, mesma conferência de conteúdo e gravação atômica; caminho_do_aviso(nome, fim=True)). Legado: chamada própria
+  (_tocar_aviso, mesmos tetos do aviso); saída fixada: na mesma chamada e no mesmo prazo de 85 s de
+  _som_tocar_anuncio, com o prazo da FALA antecipado em AVISO_MAX_S (a sineta do fim tem sempre >= 3 s; a fala perde
+  no máximo ~0,05 s do teto de 80 s, pois o aviso de início dura ~2 s). "parar" durante a fala = sem sineta do fim;
+  falha da sineta do fim = só o tipo do erro no log, o anúncio conta como ok. Histórico e auditoria não mudam.
+  Toca: /api/announce sem "teste" (digitado e Mensagens prontas) e o tipo "anuncio" da Programação (motor/
+  voz/velocidade do item, aviso da loja, com a sineta do fim se houver). No teto de 60 min/dia da Programação cada
+  anúncio conta as sinetas como o PIOR caso, AVISO_PIOR_CASO_S = AVISO_MAX_S x 2 (6 s: a de antes + a do fim),
+  qualquer que seja o aviso atual (até "nenhum"): trocar o aviso depois nunca põe horários já gravados acima do teto. NÃO toca: "teste": true ("Testar caixas"), áudio agendado ("audio"),
   /api/som/testar, listas e Spotify.
   POST /api/announce -> lê SÓ "text" e "teste" (bool, opcional; outro tipo = 400). Motor/voz/velocidade vêm de
                      voz_loja() e a voz offline é a padrão (pt-BR se houver); "engine"/"voice"/"speed"/
@@ -402,7 +410,8 @@ Contrato v2.8 (Parte A: voz da loja)
   GET  /api/voices -> SÓ LOCAL (403 para remoto, mesmo com PIN): o painel não a usa mais; fica para diagnóstico.
   POST /api/voz/ouvir {"aviso"} -> aviso em AVISOS e diferente de "nenhum" (senão 400 com "campo":"aviso"; outra
                      chave = 400). Toca SÓ o aviso, pela saída fixada se houver (503 com "codigo" se ela não abrir),
-                     senão pelo mixer padrão, SEM abaixar a música. Mesma trava dos anúncios, sem esperar: 409 "Já
+                     senão pelo mixer padrão, SEM abaixar a música; aviso com sineta do fim toca a de início,
+                     AVISO_OUVIR_PAUSA_S (0,6 s) de silêncio e a do fim (espera legada 2 x AVISO_MAX_S + 0,6 + 15 s). Mesma trava dos anúncios, sem esperar: 409 "Já
                      existe um anúncio tocando..." ou "Programação tocando: <nome>"; 503 motor_contaminado; 429 com
                      6/min por IP remoto (o PC da loja é isento) ou 20 por 10 min no total ("voz_ouvir:global", vale
                      para todos, inclusive o PC local). Resposta {ok:true}. Auditoria: só o resultado (ok, erro,
@@ -1157,7 +1166,8 @@ from werkzeug.http import parse_cookie
 # pycaw/pygame entram de forma tardia e tolerante dentro dele.
 import som as som_pkg
 from som import modelo as som_modelo
-from som.aviso import AVISO_MAX_S, AVISO_PADRAO, AVISOS, NOMES_AVISO, wav_do_aviso
+from som.aviso import (AVISO_MAX_S, AVISO_PADRAO, AVISO_PIOR_CASO_S, AVISOS, NOMES_AVISO, wav_do_aviso,
+                       wav_do_aviso_fim)
 from som.motor import frase_de_teste, gerar_bipe, texto_para_sapi
 
 # Acervo "Minhas músicas" (contrato v2.4). O módulo só usa stdlib na carga (mutagen entra
@@ -4328,26 +4338,29 @@ def apagar_audio(caminho: Path | None) -> None:
             caminho.unlink(missing_ok=True)
 
 
-def caminho_do_aviso(nome: str) -> Path | None:
+def caminho_do_aviso(nome: str, *, fim: bool = False) -> Path | None:
     """
     v2.8 (A3): o WAV do aviso sonoro em AUDIO_DIR/aviso_<nome>.wav (fora do padrão anuncio_* do
     limpar_audios_antigos, então nunca é apagado pela limpeza nem pelo anúncio). Grava uma vez só (de novo só se
     o arquivo sumiu ou o CONTEÚDO mudou: o mesmo tamanho não basta, o arquivo pode ter sido trocado), sempre num
     temporário + os.replace. None para "nenhum"; ValueError para nome fora de AVISOS (o nome vira parte do
     caminho: nunca aceita outra coisa).
+    `fim=True`: a sineta de DEPOIS da fala, em AUDIO_DIR/aviso_<nome>.fim.wav (os ids de AVISOS não têm ponto, então
+    esse nome nunca coincide com o de outro aviso); None para todo aviso sem sineta do fim. Mesmas regras.
     """
     if nome not in AVISOS:
         raise ValueError("Aviso sonoro desconhecido.")
-    dados = wav_do_aviso(nome)
+    dados = wav_do_aviso_fim(nome) if fim else wav_do_aviso(nome)
     if dados is None:
         return None
-    destino = AUDIO_DIR / f"aviso_{nome}.wav"
+    base = f"aviso_{nome}.fim" if fim else f"aviso_{nome}"
+    destino = AUDIO_DIR / f"{base}.wav"
     try:
         if destino.read_bytes() == dados:   # ~50-90 KB: comparar tudo é barato
             return destino
     except OSError:
         pass   # ainda não existe (ou não deu para ler): grava
-    temporario = AUDIO_DIR / f"aviso_{nome}.{uuid.uuid4().hex}.tmp"
+    temporario = AUDIO_DIR / f"{base}.{uuid.uuid4().hex}.tmp"
     try:
         temporario.write_bytes(dados)
         os.replace(temporario, destino)
@@ -4363,6 +4376,19 @@ def _tocar_aviso(caminho: Path, parar: Any = None) -> None:
     os testes trocam esta função por um registrador (tests/__init__.py) e nunca tocam som de verdade.
     """
     _reproduzir_legado(caminho, AVISO_MAX_S + 1.0, parar)
+
+
+AVISO_OUVIR_PAUSA_S = 0.6   # "Ouvir" de um aviso com sineta do fim: início, este silêncio, fim
+
+
+def _tocar_aviso_e_fim(caminho: Path, fim: Path) -> None:
+    """
+    (Thread de áudio) v2.8: o "Ouvir" (caminho legado) de um aviso com sineta do fim: a de início, um silêncio de
+    AVISO_OUVIR_PAUSA_S e a do fim. Passa SEMPRE por `_tocar_aviso` (a única entrada legada do aviso no pygame).
+    """
+    _tocar_aviso(caminho)
+    time.sleep(AVISO_OUVIR_PAUSA_S)
+    _tocar_aviso(fim)
 
 
 _ultima_limpeza = 0.0
@@ -6915,7 +6941,8 @@ VOZ_OUVIR_GLOBAL_JANELA_S = 600.0  # por 10 min: vários aparelhos com PIN não 
 def voz_ouvir() -> Response | tuple[Response, int]:
     """
     v2.8 (A3): botão "Ouvir" — toca SÓ o aviso escolhido nas caixas (pela saída fixada, se houver; senão pelo
-    mixer padrão), SEM abaixar a música. Mesma trava dos anúncios: 409 se outro anúncio/teste/programação toca.
+    mixer padrão), SEM abaixar a música. Aviso com sineta do fim ("aeroporto_inicio_fim"): a de início, ~0,6 s de
+    silêncio e a do fim. Mesma trava dos anúncios: 409 se outro anúncio/teste/programação toca.
     Limites: 6/min por aparelho remoto e 20 por 10 min no total ("voz_ouvir:global", vale também para o PC local).
     """
     corpo = corpo_json()
@@ -6939,12 +6966,17 @@ def voz_ouvir() -> Response | tuple[Response, int]:
         som = SOM.config_som()
         try:
             caminho = caminho_do_aviso(nome)   # disco cheio/sem permissão: cai no 500 genérico abaixo
+            fim = caminho_do_aviso(nome, fim=True)   # v2.8: só "aeroporto_inicio_fim" tem (senão None)
             if som is not None and som["saida_anuncio"] is not None:
                 _abrir_saida_som(SOM.candidatas_anuncio(som))   # 503 com "codigo" se não houver saída
-                duracoes = executar_no_audio(_som_medir, [caminho])
-                executar_no_audio(_som_tocar, [caminho], duracoes)
-            else:
+                partes = [caminho] if fim is None else [caminho, fim]
+                duracoes = executar_no_audio(_som_medir, partes)
+                executar_no_audio(_som_tocar, partes, duracoes, None, AVISO_OUVIR_PAUSA_S)
+            elif fim is None:
                 executar_no_audio(_tocar_aviso, caminho, timeout=AVISO_MAX_S + 15.0)   # teto próprio do aviso
+            else:   # início + silêncio + fim: o teto de espera soma as duas sinetas e a pausa
+                executar_no_audio(_tocar_aviso_e_fim, caminho, fim,
+                                  timeout=2 * AVISO_MAX_S + AVISO_OUVIR_PAUSA_S + 15.0)
         except ErroSom:
             raise
         except Exception as exc:  # noqa: BLE001 - só o tipo no log (a mensagem pode ter caminho do disco)
@@ -6978,14 +7010,18 @@ def musica_abaixada(spotify: bool = True, youtube: bool = True) -> Iterator[None
             youtube_enqueue("restore")
 
 
-def _preparar_aviso(aviso: str) -> Path | None:
-    """v2.8 (A3): o WAV do aviso, preparado ANTES de abaixar a música. Falha aqui não impede o anúncio (sem aviso)."""
+def _preparar_aviso(aviso: str, *, fim: bool = False) -> Path | None:
+    """
+    v2.8 (A3): o WAV do aviso, preparado ANTES de abaixar a música. Falha aqui não impede o anúncio (sem aviso).
+    `fim=True`: a sineta de DEPOIS da fala (None se o aviso não tem uma).
+    """
     if aviso == "nenhum":
         return None
     try:
-        return caminho_do_aviso(aviso)
+        return caminho_do_aviso(aviso, fim=fim)
     except Exception:  # noqa: BLE001 - disco cheio, nome torto...: o anúncio sai sem o aviso
-        log.warning("Não foi possível preparar o aviso sonoro; o anúncio sai sem ele.")
+        log.warning("Não foi possível preparar o aviso sonoro%s; o anúncio sai sem ele.",
+                    " do fim" if fim else "")
         return None
 
 
@@ -7010,6 +7046,21 @@ def _tocar_aviso_legado(caminho: Path | None, parar: Any) -> bool:
     return not (parar is not None and parar.is_set())
 
 
+def _tocar_aviso_fim_legado(caminho: Path | None, parar: Any) -> None:
+    """
+    v2.8: a sineta do FIM no caminho legado, logo depois da fala e ainda com a música abaixada/pausada. Não toca se
+    não há (None) ou se `parar` chegou antes/durante a fala. Qualquer falha (inclusive a thread de áudio presa por
+    mais de AVISO_MAX_S + 15 s) vira SÓ uma linha no log com o tipo do erro: a fala já saiu, o anúncio conta como ok.
+    """
+    if caminho is None or (parar is not None and parar.is_set()):
+        return
+    try:
+        executar_no_audio(_tocar_aviso, caminho, *(() if parar is None else (parar,)),
+                          timeout=AVISO_MAX_S + 15.0)
+    except Exception as exc:  # noqa: BLE001 - só o tipo no log; o anúncio já foi falado
+        log.warning("Falha ao tocar a sineta do fim do anúncio (%s).", type(exc).__name__)
+
+
 def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
               voz_offline_id: Any, usar_online: bool, *,
               contexto: Callable[[], Any] | None = None, parar: Any = None,
@@ -7022,7 +7073,8 @@ def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
     anúncio agendado PAUSA e retoma a música) e `parar` (SinalParada) corta a reprodução; a voz do
     Windows falando direto (SAPI) não tem como ser cortada e avisa o sinal disso.
     v2.8 (A3): `aviso` (nome em AVISOS) toca DENTRO do abaixar, antes da fala: abaixa -> aviso -> fala ->
-    restaura. "parar" durante o aviso corta também a fala.
+    [sineta do fim, só em AVISOS_COM_FIM] -> restaura. "parar" durante o aviso corta também a fala; "parar" durante
+    a fala tira a sineta do fim. Falha da sineta do fim só vai para o log.
     """
     abaixar = contexto or musica_abaixada
     alerta: str | None = None
@@ -7042,20 +7094,24 @@ def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
             # (o cliente poderia ouvir duas vezes); sobe como erro 500.
             if caminho is not None:
                 arquivo_aviso = _preparar_aviso(aviso)   # antes de abaixar a música
+                arquivo_fim = _preparar_aviso(aviso, fim=True)
                 with abaixar():
                     if _tocar_aviso_legado(arquivo_aviso, parar):
                         # apaga o mp3 ao terminar
                         executar_no_audio(_tocar_mp3, caminho, *(() if parar is None else (parar,)))
+                        _tocar_aviso_fim_legado(arquivo_fim, parar)
                 return "online", None
         finally:
             apagar_audio(caminho)  # no-op se já foi apagado
     voz_id = resolver_voz_offline(voz_offline_id)
     arquivo_aviso = _preparar_aviso(aviso)
+    arquivo_fim = _preparar_aviso(aviso, fim=True)
     with abaixar():
         if _tocar_aviso_legado(arquivo_aviso, parar):
             if parar is not None:
                 parar.nao_interrompivel()   # pyttsx3.runAndWait não tem como ser interrompido de fora
             executar_no_audio(_falar_offline, texto, VELOCIDADE_OFFLINE_WPM, voz_id)
+            _tocar_aviso_fim_legado(arquivo_fim, parar)   # "parar" pedido durante a fala: sem a sineta do fim
     return ("offline_fallback" if alerta else "offline"), alerta
 
 
@@ -7383,41 +7439,59 @@ def _som_medir(caminhos: list[Path]) -> list[float | None]:
 
 
 def _som_tocar(caminhos: list[Path], duracoes: list[float | None] | None = None,
-               parar: Any = None) -> float:
-    """(Thread de áudio) Toca os arquivos em sequência com o vigia de progresso; devolve segundos."""
+               parar: Any = None, pausa_s: float = 0.0) -> float:
+    """
+    (Thread de áudio) Toca os arquivos em sequência com o vigia de progresso; devolve segundos.
+    `pausa_s` (v2.8, "Ouvir" de um aviso com sineta do fim): silêncio entre um arquivo e o próximo.
+    """
     motor = SOM.motor
     prazo = motor.agora() + TIMEOUT_AUDIO_S - 5.0   # sempre antes do teto do executor
     medidas = duracoes if duracoes and len(duracoes) == len(caminhos) else [None] * len(caminhos)
     extra = {} if parar is None else {"parar": parar}   # v2.6: sem sinal, a chamada é a de sempre
     total = 0.0
-    for c, d in zip(caminhos, medidas):
+    for k, (c, d) in enumerate(zip(caminhos, medidas)):
         if parar is not None and parar.is_set():
             break
+        if k and pausa_s > 0:
+            time.sleep(pausa_s)
         total += motor.tocar(c, prazo=prazo, duracao=d, **extra)
     return total
 
 
 def _som_tocar_anuncio(aviso: Path | None, fala: Path, duracoes: list[float | None],
-                       parar: Any = None) -> float:
+                       parar: Any = None, fim: Path | None = None) -> float:
     """
-    (Thread de áudio) v2.8 (A3): o anúncio na saída fixada — aviso (opcional) e depois a fala, com UM prazo só
-    (TIMEOUT_AUDIO_S - 5, sempre antes do teto do executor). `duracoes` = [aviso, fala] ou [fala]. Falha do aviso
-    (ErroReproducao) é só um aviso no log e a fala segue; "parar" depois do aviso não deixa a fala começar.
+    (Thread de áudio) v2.8 (A3): o anúncio na saída fixada — aviso (opcional), a fala e a sineta do fim (opcional,
+    só em AVISOS_COM_FIM), com UM prazo só (TIMEOUT_AUDIO_S - 5 = 85 s, sempre antes do teto de 90 s do executor).
+    `duracoes` = as medidas de [aviso?, fala, fim?], na ordem. Falha do aviso (ErroReproducao) é só um aviso no
+    log e a fala segue; "parar" depois do aviso não deixa a fala começar; "parar" durante a fala tira o fim.
+    Com sineta do fim, a FALA tem o prazo antecipado em AVISO_MAX_S (3 s): a sineta do fim tem sempre ao menos 3 s
+    (>= a duração dela, ~2 s) e o total continua dentro dos 85 s. Falha da sineta do fim (qualquer erro) só vai para
+    o log com o tipo: a fala já saiu e o anúncio conta como ok.
     """
     motor = SOM.motor
     prazo = motor.agora() + TIMEOUT_AUDIO_S - 5.0
+    prazo_fala = prazo - AVISO_MAX_S if fim is not None else prazo
     extra = {} if parar is None else {"parar": parar}
-    d_fala = duracoes[-1] if duracoes else None
+    partes = [p for p in (aviso, fala, fim) if p is not None]
+    medidas = iter(duracoes if duracoes and len(duracoes) == len(partes) else [None] * len(partes))
     total = 0.0
     if aviso is not None:
-        d_aviso = duracoes[0] if len(duracoes) == 2 else None
+        d_aviso = next(medidas)
         try:
             total += motor.tocar(aviso, prazo=prazo, duracao=d_aviso, **extra)
         except som_pkg.ErroReproducao as exc:   # o aviso é um enfeite: a fala sai mesmo assim
             log.warning("Falha ao tocar o aviso sonoro (%s); seguindo com a fala.", type(exc).__name__)
         if parar is not None and parar.is_set():
             return total   # "parar" durante o aviso: a fala nem começa
-    return total + motor.tocar(fala, prazo=prazo, duracao=d_fala, **extra)
+    total += motor.tocar(fala, prazo=prazo_fala, duracao=next(medidas), **extra)
+    if fim is None or (parar is not None and parar.is_set()):
+        return total   # sem sineta do fim, ou "parar" durante a fala
+    try:
+        total += motor.tocar(fim, prazo=prazo, duracao=next(medidas), **extra)
+    except Exception as exc:  # noqa: BLE001 - a fala já saiu: só o tipo do erro no log
+        log.warning("Falha ao tocar a sineta do fim do anúncio (%s).", type(exc).__name__)
+    return total
 
 
 def _abrir_saida_som(candidatas: list[Any]) -> Any:
@@ -7441,9 +7515,9 @@ def _anunciar_na_saida(texto: str, modo: str, voz_online: str, velocidade: int,
     música -> toca -> restaura (finally). Voz offline: pyttsx3 -> WAV -> o mesmo motor.
     Sem saída utilizável: ErroSom 503 com "codigo" e a música nem chega a ser abaixada.
     v2.6: `contexto` (pausar em vez de abaixar a música) e `parar` (SinalParada), como em _anunciar.
-    v2.8 (A3): `aviso` toca antes da fala, no mesmo silenciar e com um prazo só (_som_tocar_anuncio), com a
-    duração medida junto (fora da janela com a música baixa); falha do aviso não impede a fala. O arquivo do aviso
-    é o cache (aviso_*.wav): nunca é apagado aqui.
+    v2.8 (A3): `aviso` toca antes da fala (e a sineta do fim, se o aviso tiver, depois dela), no mesmo silenciar e
+    com um prazo só (_som_tocar_anuncio), com as durações medidas juntas (fora da janela com a música baixa); falha
+    do aviso não impede a fala. Os arquivos do aviso são o cache (aviso_*.wav): nunca são apagados aqui.
     """
     alerta: str | None = None
     caminho: Path | None = None
@@ -7463,14 +7537,14 @@ def _anunciar_na_saida(texto: str, modo: str, voz_online: str, velocidade: int,
             caminho = AUDIO_DIR / f"anuncio_{uuid.uuid4().hex}.wav"
             executar_no_audio(_som_sintetizar, texto, resolver_voz_offline(voz_offline_id), caminho)
         arquivo_aviso = _preparar_aviso(aviso)
-        tocar = [caminho] if arquivo_aviso is None else [arquivo_aviso, caminho]
+        arquivo_fim = _preparar_aviso(aviso, fim=True)   # v2.8: só em AVISOS_COM_FIM (senão None)
+        tocar = [p for p in (arquivo_aviso, caminho, arquivo_fim) if p is not None]
         sid_medicao = usada.sid if usada.sid is not None else SOM.padrao_sid()
         duracoes = executar_no_audio(_som_medir, tocar)   # fora da janela com a música baixa
         silenciar = contexto() if contexto is not None else _musica_abaixada_som(som)
         with SOM.medir_sinal(sid_medicao) as medida, silenciar:
-            # aviso e fala no MESMO silenciar e na mesma chamada (um prazo só), mas a falha do aviso não leva a fala
-            executar_no_audio(_som_tocar_anuncio, arquivo_aviso, caminho, duracoes,
-                              *(() if parar is None else (parar,)))
+            # aviso, fala e fim no MESMO silenciar e na mesma chamada (um prazo só); falha do aviso não leva a fala
+            executar_no_audio(_som_tocar_anuncio, arquivo_aviso, caminho, duracoes, parar, arquivo_fim)
         sinal = medida.resultado
     finally:
         apagar_audio(caminho)  # mp3 ou wav da fala; no-op se já foi (o aviso NÃO é apagado)
@@ -11053,13 +11127,14 @@ def _prog_segundos_audio(item: dict) -> float:
 
 def _prog_segundos_fala(item: dict) -> float:
     """
-    Anúncio agendado: estimativa conservadora de fala (len/7 s, no máximo 80 s) + o aviso sonoro (v2.8 A3) no
-    PIOR caso, AVISO_MAX_S, qualquer que seja o aviso atual da loja (até "nenhum"): trocar o aviso depois nunca
-    faz horários já gravados passarem do teto de 60 min/dia.
+    Anúncio agendado: estimativa conservadora de fala (len/7 s, no máximo 80 s) + as sinetas (v2.8 A3) no PIOR
+    caso, AVISO_PIOR_CASO_S (= AVISO_MAX_S x 2: a de antes + a do fim do "aeroporto_inicio_fim"), qualquer que seja
+    o aviso atual da loja (até "nenhum"): trocar o aviso depois nunca faz horários já gravados passarem do teto de
+    60 min/dia.
     """
     if item["tipo"] != "anuncio":
         return 0.0
-    return min(PROG_FALA_MAX_S, len(item["alvo"]) / PROG_FALA_CARACTERES_POR_S) + AVISO_MAX_S
+    return min(PROG_FALA_MAX_S, len(item["alvo"]) / PROG_FALA_CARACTERES_POR_S) + AVISO_PIOR_CASO_S
 
 
 def _prog_audio_por_dia(itens: list[dict]) -> list[float]:

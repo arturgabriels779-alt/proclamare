@@ -104,10 +104,11 @@ class TestVozLoja(Base):
         self.assertEqual(codigos[:20], [200] * 20)
         self.assertEqual(codigos[20], 429)
 
-    def test_opcoes_trazem_cinco_avisos(self) -> None:
+    def test_opcoes_trazem_os_sete_avisos(self) -> None:
+        # v2.8: os dois novos (comissario, aeroporto_inicio_fim) entram no FIM; os cinco antigos não mudam de lugar
         o = self.c.get("/api/voz").get_json()["opcoes"]
         self.assertEqual([a["id"] for a in o["avisos"]],
-                         ["nenhum", "ding_dong", "aeroporto", "suave", "sino"])
+                         ["nenhum", "ding_dong", "aeroporto", "suave", "sino", "comissario", "aeroporto_inicio_fim"])
         self.assertEqual(o["motores"], ["auto", "online", "offline"])
         self.assertEqual([v["id"] for v in o["vozes"]], ["francisca", "antonio"])
 
