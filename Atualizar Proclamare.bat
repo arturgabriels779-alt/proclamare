@@ -134,8 +134,10 @@ $PadroesIgnorados = $PadroesDeDados + @('*.zip', '*.log', '*.log.*', '*.pyc', '*
 $PastasDeCodigo = @('static', 'som', 'tools', 'docs', 'tests', 'assets', '.github')
 # Arquivos da raiz que entram na copia mesmo que o pacote novo nao os traga.
 $PadroesCodigoRaiz = @('*.py', '*.pyw', '*.bat', '*.cmd', '*.ps1', '*.md', '*.txt', '*.lock', 'LICENSE', '.gitignore', '.gitattributes')
-$PadraoNomeBackup = '^\d{4}-\d{2}-\d{2}_\d{6}(_\d+)?$'
-$NomesReservados = '^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$'
+# Ancoras \A...\z e [0-9] (nunca $ nem \d): "$" casa antes de uma quebra de linha final e \d casa digitos nao ASCII.
+# Sempre usado com -cmatch.
+$PadraoNomeBackup = '\A[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}(_[0-9]{1,3})?\z'
+$NomesReservados = '\A(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?\z'
 
 # ---- Estado (usado pela volta automatica) ----------------------------------------------------------------
 $script:Raiz = $null
@@ -1024,7 +1026,7 @@ function Podar-Backups {
     $pastaBackups = Join-Path $script:Raiz 'backups'
     if (-not [System.IO.Directory]::Exists($pastaBackups) -or (Eh-Link (New-Object System.IO.DirectoryInfo($pastaBackups)))) { return }
     $nossas = @(Filhos $pastaBackups | Where-Object {
-            $_ -is [System.IO.DirectoryInfo] -and -not (Eh-Link $_) -and $_.Name -match $PadraoNomeBackup } |
+            $_ -is [System.IO.DirectoryInfo] -and -not (Eh-Link $_) -and $_.Name -cmatch $PadraoNomeBackup } |
         Sort-Object Name -Descending)
     if ($nossas.Count -le $BackupsManter) { return }
     foreach ($velha in $nossas[$BackupsManter..($nossas.Count - 1)]) {
@@ -1036,7 +1038,16 @@ function Podar-Backups {
 }
 
 # ---- Plano da instalacao (logs\atualizar.pendente) -------------------------------------------------------
-function Arq-Pendente { return (Join-Path $script:Raiz 'logs\atualizar.pendente') }
+# N2(d): logs\ que e link (atalho de pasta) nunca e usada para ler nem gravar a trava ou o plano.
+function Logs-Eh-Link {
+    $pastaLogs = Join-Path $script:Raiz 'logs'
+    if (-not [System.IO.Directory]::Exists($pastaLogs)) { return $false }
+    return (Eh-Link (New-Object System.IO.DirectoryInfo($pastaLogs)))
+}
+function Arq-Pendente {
+    if (Logs-Eh-Link) { throw 'a pasta logs é um link (atalho de pasta); por segurança não uso o registro da atualização' }
+    return (Join-Path $script:Raiz 'logs\atualizar.pendente')
+}
 
 function Gravar-Pendente {
     $obj = [ordered]@{
@@ -1051,8 +1062,18 @@ function Gravar-Pendente {
     [System.IO.File]::Copy($tmp, $arq, $true)
     [System.IO.File]::Delete($tmp)
 }
+# 3 tentativas com pausa (antivirus/indexador seguram arquivo recem-gravado), como Apagar-Arquivo.
 function Remover-Pendente {
-    try { $arq = Arq-Pendente; if ([System.IO.File]::Exists($arq)) { [System.IO.File]::Delete($arq) } } catch { Registrar ('pendente: ' + $_.Exception.Message) }
+    for ($i = 1; $i -le 3; $i++) {
+        try {
+            $arq = Arq-Pendente
+            if ([System.IO.File]::Exists($arq)) { [System.IO.File]::Delete($arq) }
+            return
+        } catch {
+            if ($i -eq 3) { Registrar ('pendente: ' + $_.Exception.Message); return }
+            Start-Sleep -Milliseconds (300 * $i)
+        }
+    }
 }
 # Nome de pasta/arquivo de primeiro nivel vindo do plano: so um nome simples, de codigo.
 function Nome-De-Plano-Ok($Nome) {
@@ -1060,6 +1081,17 @@ function Nome-De-Plano-Ok($Nome) {
     if (-not $n -or $n -eq '.' -or $n -eq '..' -or $n.IndexOfAny([char[]]'\/:*?"<>|') -ge 0) { return $false }
     if ((Eh-Protegida $n) -or (Eh-Ignorado $n) -or (Parece-Nome-Curto $n)) { return $false }
     return $true
+}
+
+# N2(c): o plano e um arquivo em logs\ e nao e de confianca: na recuperacao so entram nomes que estao na copia
+# ou que sao de codigo conhecido ($PastasDeCodigo / $PadroesCodigoRaiz). Outro nome (ex.: MeusArquivos) e ignorado.
+function Nome-De-Pasta-Do-Plano-Ok([string]$Nome, [string]$Copia) {
+    foreach ($p in $PastasDeCodigo) { if ([string]::Equals($Nome, $p, $OrdIC)) { return $true } }
+    return [System.IO.Directory]::Exists((Join-Path $Copia $Nome))
+}
+function Nome-De-Arquivo-Do-Plano-Ok([string]$Nome, [string]$Copia) {
+    if (Casa-Algum $Nome $PadroesCodigoRaiz) { return $true }
+    return [System.IO.File]::Exists((Join-Path $Copia $Nome))
 }
 
 # A ultima atualizacao parou no meio (falta de luz, janela fechada): poe de volta a versao anterior.
@@ -1070,7 +1102,7 @@ function Recuperar-Pendente {
     $plano = $null
     try { $plano = [System.IO.File]::ReadAllText($arq, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch { }
     $copia = $null
-    if ($plano -and ([string]$plano.backup) -match $PadraoNomeBackup) {
+    if ($plano -and ([string]$plano.backup) -cmatch $PadraoNomeBackup) {
         $c = Join-Path $script:Raiz ('backups\' + [string]$plano.backup)
         if ([System.IO.Directory]::Exists($c) -and -not (Achar-Link (Join-Path $script:Raiz 'backups'))) { $copia = $c }
     }
@@ -1084,8 +1116,8 @@ function Recuperar-Pendente {
             "    Feche essa janela ou use 'Desligar Proclamare' no Menu Iniciar e tente de novo.")
     }
     $script:Backup = $copia
-    $script:PastasTocadas = @(@($plano.pastas) | Where-Object { $_ -and (Nome-De-Plano-Ok $_.nome) } | ForEach-Object { @{ Nome = [string]$_.nome; Existia = [bool]$_.existia } })
-    $script:ArquivosTocados = @(@($plano.arquivos) | Where-Object { $_ -and (Nome-De-Plano-Ok $_.nome) } | ForEach-Object { @{ Nome = [string]$_.nome; Existia = [bool]$_.existia } })
+    $script:PastasTocadas = @(@($plano.pastas) | Where-Object { $_ -and (Nome-De-Plano-Ok $_.nome) -and (Nome-De-Pasta-Do-Plano-Ok $_.nome $copia) } | ForEach-Object { @{ Nome = [string]$_.nome; Existia = [bool]$_.existia } })
+    $script:ArquivosTocados = @(@($plano.arquivos) | Where-Object { $_ -and (Nome-De-Plano-Ok $_.nome) -and (Nome-De-Arquivo-Do-Plano-Ok $_.nome $copia) } | ForEach-Object { @{ Nome = [string]$_.nome; Existia = [bool]$_.existia } })
     $script:PipRodou = [bool]$plano.pip
     $script:Fase = 'voltando'
     if (-not (Voltar-Codigo-Com-Nova-Tentativa)) {
@@ -1139,6 +1171,8 @@ function Voltar-Codigo {
     foreach ($p in $script:PastasTocadas) {
         try {
             $origem = if ($p.Existia) { Join-Path $b $p.Nome } else { $null }
+            # N2(b): "existia" sem a pasta na copia e FALHA; nunca cai no modo apagar (origem vazia).
+            if ($p.Existia -and -not [System.IO.Directory]::Exists($origem)) { throw 'a pasta não está na cópia de segurança' }
             Espelhar $origem (Join-Path $script:Raiz $p.Nome)
         } catch { $falhas++; Registrar "volta: falhou a pasta $($p.Nome): $($_.Exception.Message)" }
     }
@@ -1284,6 +1318,10 @@ function Limpar-Temporarios-Antigos {
 
 # Trava "uma atualizacao por vez" em logs\atualizar.lock (some sozinha se a janela fechar).
 function Abrir-Trava {
+    if (Logs-Eh-Link) {
+        Recusar ("A pasta logs do Proclamare é um link (atalho de pasta); por segurança não vou usá-la.`n" +
+            '    Troque-a por uma pasta comum. Nada foi alterado.')
+    }
     $arq = Join-Path $script:Raiz 'logs\atualizar.lock'
     try {
         $script:Trava = [System.IO.File]::Open($arq, 'OpenOrCreate', 'ReadWrite', 'None')

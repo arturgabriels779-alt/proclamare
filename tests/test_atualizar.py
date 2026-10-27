@@ -795,18 +795,18 @@ class TesteAtualizador(unittest.TestCase):
         (pasta / "server.py").write_bytes(server_py("2.8"))
         (pasta / "som" / "novo.py").write_bytes(b"N = 1\n")
         plano = {"backup": copia.name, "pip": False,
-                 "pastas": [{"nome": "som", "existia": True}, {"nome": "pasta_nova", "existia": False},
+                 "pastas": [{"nome": "som", "existia": True}, {"nome": ".github", "existia": False},
                             {"nome": "..", "existia": True}, {"nome": "logs", "existia": True}],
                  "arquivos": [{"nome": "server.py", "existia": True}, {"nome": "config.json", "existia": True}]}
-        (pasta / "pasta_nova").mkdir()
-        (pasta / "pasta_nova" / "x.py").write_bytes(b"X = 1\n")
+        (pasta / ".github").mkdir()
+        (pasta / ".github" / "x.py").write_bytes(b"X = 1\n")
         (pasta / "logs" / "atualizar.pendente").write_text(json.dumps(plano), encoding="utf-8")
         r = self.rodar(pasta, "-SemReiniciar", "-SemRede")   # sem ZIP: recupera e depois recusa (sem fonte)
         self.assertEqual(r.returncode, 2, r.texto)
         self.assertIn("A última atualização foi interrompida", r.texto)
         self.assertEqual((pasta / "server.py").read_bytes(), server_py("2.7.1"))
         self.assertFalse((pasta / "som" / "novo.py").exists())
-        self.assertFalse((pasta / "pasta_nova").exists())
+        self.assertFalse((pasta / ".github").exists())
         self.assertFalse((pasta / "logs" / "atualizar.pendente").exists())
         self.assertTrue(copia.is_dir())
         self.assert_dados_intactos(pasta)
@@ -1049,6 +1049,86 @@ class TesteAtualizador(unittest.TestCase):
         self.assertIn("com_token=[http://127.0.0.1:9]", saida)
         self.assertIn("token_pasta=[]", saida)
         self.assertIn("sem_raiz=[]", saida)
+
+    def _pendente(self, pasta: Path, plano: dict) -> Path:
+        """Monta uma cópia 2.7.1 em backups\\ e grava o plano pendente (a instalação fica 'pela metade')."""
+        copia = pasta / "backups" / "2026-01-01_000000"
+        gravar_arvore(copia, codigo("2.7.1"))
+        (pasta / "logs" / "atualizar.pendente").write_text(json.dumps(plano), encoding="utf-8")
+        return copia
+
+    def test_n2a_nome_de_copia_com_quebra_de_linha_nao_vale(self) -> None:
+        """N2(a): "2026-01-01_000000\\n" casava com o padrão e virava 'restaurei' sem restaurar nada (e o espelho
+        em modo apagar destruía o código). Agora o nome é rígido (\\A...\\z) e o plano é descartado."""
+        pasta = self.instalacao("2.7.1")
+        (pasta / "static" / "app.js").write_bytes(b"// MEIO DA ATUALIZACAO\n")
+        antes = foto(pasta)
+        copia = self._pendente(pasta, {"backup": "2026-01-01_000000\n", "pip": False,
+                                       "pastas": [{"nome": "static", "existia": True}], "arquivos": []})
+        antes = {**antes, **{f"backups/{k}": v for k, v in foto(pasta / "backups").items()}}
+        r = self.rodar(pasta, "-SemReiniciar", "-SemRede")
+        self.assertEqual(r.returncode, 2, r.texto)
+        self.assertIn("não achei a cópia daquela atualização", r.texto)
+        self.assertNotIn("a versão anterior está de volta", r.texto)
+        self.assertEqual((pasta / "static" / "app.js").read_bytes(), b"// MEIO DA ATUALIZACAO\n")
+        self.assertTrue((pasta / "static" / "index.html").is_file(), "o código da pasta static foi apagado")
+        self.assertTrue(copia.is_dir())
+        self.assert_dados_intactos(pasta)
+
+    def test_n2b_pasta_que_existia_mas_nao_esta_na_copia_e_falha_e_nunca_apaga(self) -> None:
+        """N2(b): existia:true sem a pasta no backup = falha da volta (código 3); nunca cai no modo apagar."""
+        pasta = self.instalacao("2.7.1")
+        copia = self._pendente(pasta, {"backup": "2026-01-01_000000", "pip": False,
+                                       "pastas": [{"nome": "docs", "existia": True}], "arquivos": []})
+        shutil.rmtree(copia / "docs")
+        r = self.rodar(pasta, "-SemReiniciar", "-SemRede")
+        self.assertEqual(r.returncode, 3, r.texto)
+        self.assertIn("não consegui voltar todos os arquivos", r.texto)
+        self.assertEqual((pasta / "docs" / "GUIA.md").read_bytes(), codigo("2.7.1")["docs/GUIA.md"])
+        self.assertTrue((pasta / "logs" / "atualizar.pendente").is_file(), "o plano tem de ficar")
+        self.assert_dados_intactos(pasta)
+
+    def test_n2c_na_recuperacao_so_nomes_da_copia_ou_de_codigo(self) -> None:
+        """N2(c): pasta/arquivo de nome qualquer (fora da cópia e fora das listas de código) nunca é apagado."""
+        pasta = self.instalacao("2.7.1")
+        (pasta / "MeusArquivos").mkdir()
+        (pasta / "MeusArquivos" / "planilha.xlsx").write_bytes(b"planilha da loja")
+        (pasta / "planilha.xlsx").write_bytes(b"outra planilha")
+        (pasta / "novo.py").write_bytes(b"N = 1\n")        # padrão de código da raiz: pode sair
+        (pasta / "tools" / "novo.py").write_bytes(b"T = 1\n")
+        self._pendente(pasta, {"backup": "2026-01-01_000000", "pip": False,
+                               "pastas": [{"nome": "MeusArquivos", "existia": False}, {"nome": "tools", "existia": True}],
+                               "arquivos": [{"nome": "planilha.xlsx", "existia": False}, {"nome": "novo.py", "existia": False}]})
+        r = self.rodar(pasta, "-SemReiniciar", "-SemRede")
+        self.assertEqual(r.returncode, 2, r.texto)
+        self.assertIn("a versão anterior está de volta", r.texto)
+        self.assertEqual((pasta / "MeusArquivos" / "planilha.xlsx").read_bytes(), b"planilha da loja")
+        self.assertEqual((pasta / "planilha.xlsx").read_bytes(), b"outra planilha")
+        self.assertFalse((pasta / "novo.py").exists(), "arquivo de código novo devia sair na volta")
+        self.assertFalse((pasta / "tools" / "novo.py").exists())
+        self.assert_dados_intactos(pasta)
+
+    def test_n2d_logs_que_e_link_recusa_a_trava_e_o_plano(self) -> None:
+        """N2(d): se logs é um link (junção), nada é lido nem gravado através dele."""
+        pasta = self.instalacao("2.7.1")
+        fazer_zip(pasta / "proclamare-main.zip", codigo("2.8"))
+        alvo = self.tmp / "logs-de-outro-lugar"
+        shutil.move(str(pasta / "logs"), str(alvo))
+        r = subprocess.run(f'"{CMD}" /d /c mklink /J "{pasta / "logs"}" "{alvo}"', capture_output=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        antes = foto(pasta)
+        try:
+            res = self.rodar(pasta, "-SemReiniciar")
+            self.assertEqual(res.returncode, 2, res.texto)
+            self.assertIn("logs", res.texto)
+            self.assertIn("link", res.texto)
+            self.assertIn("Nada foi alterado", res.texto)
+            self.assertEqual(foto(pasta), antes)
+            self.assertFalse((alvo / "atualizar.lock").exists(), "gravou o trava através do link")
+            self.assertFalse((alvo / "atualizar.pendente").exists())
+        finally:
+            os.rmdir(pasta / "logs")   # remove só a junção
+            shutil.move(str(alvo), str(pasta / "logs"))
 
     # ---- ajudantes do servidor falso ------------------------------------------------------------------
     def ligar_antiga(self, pasta: Path) -> None:
