@@ -951,7 +951,8 @@ Contrato v2.4 ("Minhas músicas": arquivos de áudio na fila do Tocador da loja)
     GET /api/musicas, só para requisições locais). Tag ID3 patológica (milhares de quadros)
     não é lida (o mutagen é quadrático nela): o arquivo aparece só com o nome.
   * "titulo" de uma música = SEMPRE o nome do arquivo sem extensão (v2.8.2); a tag de título é ignorada
-    (artista, álbum, duração e capa vêm das tags). Para mudar o nome, renomeie o arquivo.
+    (artista, álbum, duração e capa vêm das tags). Para mudar o nome, renomeie o arquivo
+    (o id é o hash do caminho relativo: renomear/mover = outra música; listas e horários a deixam "indisponível").
   * GET  /api/musicas?q=&pasta=&offset=&limit=(1..100)&ordem=(recentes|titulo)
          "q": PALAVRAS (todas precisam aparecer, qualquer ordem, sem acento/caixa).
          -> {ok, versao, total, total_acervo, pastas:[{nome,total}], itens:[{id, titulo, artista,

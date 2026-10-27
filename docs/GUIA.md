@@ -945,6 +945,10 @@ Windows do computador da loja (se o Windows guarda suas Músicas no OneDrive,
   dentro do arquivo (tag) é ignorado, porque músicas baixadas costumam trazer
   um título errado. Para mudar o nome, renomeie o arquivo na pasta; o painel
   atualiza sozinho. Artista, álbum, duração e capa continuam vindo das tags.
+  **Atenção:** renomear ou mover o arquivo faz o painel tratá-lo como **outra
+  música**: ele sai das listas e dos horários onde estava (aparece como
+  "indisponível") e precisa ser adicionado de novo. Prefira acertar os nomes
+  **antes** de montar as listas e os horários.
 - A pasta fica **fora da pasta do programa**: baixar uma versão nova do
   Proclamare não apaga suas músicas. Para guardá-la em outro lugar, defina
   `PROCLAMARE_MUSICAS_DIR` (seção 2).
