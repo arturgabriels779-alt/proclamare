@@ -250,6 +250,34 @@ class TesteLeituraECriacao(Base):
         self.assertEqual(server.CONFIG_PATH.read_bytes(), antes)
 
 
+class TesteTituloDoArquivo(Base):
+    def test_item_mostra_o_nome_do_arquivo_e_o_get_nao_grava(self) -> None:
+        """v2.8.2: o título guardado numa lista antiga (da tag) não aparece: o GET usa o do acervo vivo."""
+        from mutagen.id3 import TIT2
+        from mutagen.mp3 import MP3
+
+        caminho = self.pasta / "Ave Maria - Coral.mp3"
+        self.pasta.mkdir(parents=True, exist_ok=True)
+        caminho.write_bytes(am.mp3_bytes())
+        audio = MP3(caminho)
+        audio.add_tags()
+        audio.tags.add(TIT2(encoding=3, text="Faixa 01"))
+        audio.save()
+        self._envelhecer(caminho)
+        self.acervo.varrer()
+        mid = musicas.id_da_musica("Ave Maria - Coral.mp3")
+        lista = self.nova_lista("Coral", [mid])
+        self.assertEqual(lista["musicas"][0]["titulo"], "Ave Maria - Coral")
+        # simula uma lista gravada antes da v2.8.2, com o título da tag
+        dados = self.listas_no_disco()
+        dados["listas"][0]["musicas"][0]["titulo"] = "Faixa 01"
+        self.arquivo_listas().write_text(json.dumps(dados), encoding="utf-8")
+        server._listas_arquivo.resetar()
+        antes = self.arquivo_listas().read_bytes()
+        self.assertEqual(self.detalhe(lista["id"])["musicas"][0]["titulo"], "Ave Maria - Coral")
+        self.assertEqual(self.arquivo_listas().read_bytes(), antes)       # GET não grava
+
+
 class TesteValidacaoDeCriar(Base):
     def test_nome_invalido(self) -> None:
         casos = [None, 5, True, [], {}, "", "   ", "x" * 41, "Linha\ndois", "Tab\taqui", "nulo\x00",

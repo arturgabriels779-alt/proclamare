@@ -897,7 +897,9 @@ class Acervo:
                 self._cache_meta[rel] = (chave, meta)
         pasta = rel.rsplit("/", 1)[0] if "/" in rel else ""
         stem = os.path.splitext(rel.rsplit("/", 1)[-1])[0]
-        titulo = meta["titulo"] or _limpar_texto(stem) or "Sem título"
+        # O nome mostrado é SEMPRE o do arquivo sem extensão (v2.8.2): a tag de título (muitas vezes lixo
+        # de download) não manda; o dono muda o nome renomeando o arquivo.
+        titulo = _limpar_texto(stem) or "Sem título"
         return Musica(
             id=id_da_musica(rel), caminho=caminho, rel=rel, pasta=pasta, formato=ext[1:],
             titulo=titulo, artista=meta["artista"], album=meta["album"],
@@ -909,13 +911,13 @@ class Acervo:
     @staticmethod
     def _ler_meta(caminho: Path, ext: str, so_na_nuvem: bool) -> dict[str, Any]:
         """Metadados via mutagen; arquivo que ele não entende = só o nome do arquivo, duração null."""
-        vazio = {"titulo": None, "artista": None, "album": None, "duracao_s": None, "tem_capa": False}
+        vazio = {"artista": None, "album": None, "duracao_s": None, "tem_capa": False}
         if so_na_nuvem:
             return vazio                      # ler dispararia o download do OneDrive
         audio = _abrir_mutagen(caminho, ext)
         if audio is None:
             return vazio
-        titulo, artista, album = _texto_das_tags(audio)
+        _titulo_da_tag, artista, album = _texto_das_tags(audio)   # a tag de título não é usada (v2.8.2)
         duracao = None
         try:
             comprimento = float(audio.info.length)
@@ -923,7 +925,7 @@ class Acervo:
                 duracao = max(1, int(round(comprimento)))
         except Exception:  # noqa: BLE001
             pass
-        return {"titulo": titulo, "artista": artista, "album": album, "duracao_s": duracao,
+        return {"artista": artista, "album": album, "duracao_s": duracao,
                 "tem_capa": _capa_das_tags(audio) is not None}
 
     def varrer(self) -> None:

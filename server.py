@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -950,6 +950,8 @@ Contrato v2.4 ("Minhas músicas": arquivos de áudio na fila do Tocador da loja)
     (16 hex); o cliente nunca envia nem recebe caminho absoluto (exceção: "pasta_local" no
     GET /api/musicas, só para requisições locais). Tag ID3 patológica (milhares de quadros)
     não é lida (o mutagen é quadrático nela): o arquivo aparece só com o nome.
+  * "titulo" de uma música = SEMPRE o nome do arquivo sem extensão (v2.8.2); a tag de título é ignorada
+    (artista, álbum, duração e capa vêm das tags). Para mudar o nome, renomeie o arquivo.
   * GET  /api/musicas?q=&pasta=&offset=&limit=(1..100)&ordem=(recentes|titulo)
          "q": PALAVRAS (todas precisam aparecer, qualquer ordem, sem acento/caixa).
          -> {ok, versao, total, total_acervo, pastas:[{nome,total}], itens:[{id, titulo, artista,

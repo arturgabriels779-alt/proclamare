@@ -340,7 +340,7 @@ class TestVarredura(BaseMusicas):
         dados = mp3_com_tags("Canção Ñandú", "Banda Ç", "Álbum Ü", capa=am.PNG_1X1)
         self.criar("Rock/arquivo qualquer.mp3", dados)
         (m,) = self.varrer()
-        self.assertEqual((m.titulo, m.artista, m.album), ("Canção Ñandú", "Banda Ç", "Álbum Ü"))
+        self.assertEqual((m.titulo, m.artista, m.album), ("arquivo qualquer", "Banda Ç", "Álbum Ü"))
         self.assertEqual(m.duracao_s, 1)
         self.assertTrue(m.tem_capa)
         self.assertEqual((m.pasta, m.formato), ("Rock", "mp3"))
@@ -348,6 +348,34 @@ class TestVarredura(BaseMusicas):
         self.assertEqual(set(publico), {"id", "titulo", "artista", "album", "duracao_s", "pasta",
                                         "formato", "tem_capa", "adicionada_em"})
         self.assertNotIn("caminho", json.dumps(publico))
+
+    def test_titulo_e_sempre_o_nome_do_arquivo_e_nao_a_tag(self) -> None:
+        """v2.8.2: a tag de título (lixo de download) é ignorada em mp3, flac e ogg; a busca acha pelo nome."""
+        from mutagen.flac import FLAC
+
+        self.criar("Ave Maria - Coral.mp3", mp3_com_tags("Faixa 01", "Coral"))
+        caminho = self.criar("Magnificat.flac", am.flac_bytes())
+        f = FLAC(caminho)
+        f["title"] = "Faixa 01"
+        f.save()
+        try:
+            import numpy
+            import soundfile
+            self.pasta.mkdir(parents=True, exist_ok=True)
+            destino = self.pasta / "Salve Rainha.ogg"
+            soundfile.write(destino, numpy.zeros(8000), 8000, format="OGG", subtype="VORBIS")
+            from mutagen.oggvorbis import OggVorbis
+            o = OggVorbis(destino)
+            o["title"] = "Faixa 01"
+            o.save()
+            esperado = {"Ave Maria - Coral", "Magnificat", "Salve Rainha"}
+        except ImportError:
+            esperado = {"Ave Maria - Coral", "Magnificat"}
+        self.assertEqual({m.titulo for m in self.varrer()}, esperado)
+        busca = self.local("get", "/api/musicas", query_string={"q": "ave maria coral"}).get_json()
+        self.assertEqual([i["titulo"] for i in busca["itens"]], ["Ave Maria - Coral"])
+        busca = self.local("get", "/api/musicas", query_string={"q": "magnificat"}).get_json()
+        self.assertEqual(busca["itens"][0]["titulo"], "Magnificat")
 
     def test_sem_tags_usa_o_nome_do_arquivo(self) -> None:
         self.criar("Sem Tags - Banda.mp3")
@@ -368,7 +396,7 @@ class TestVarredura(BaseMusicas):
         f["title"], f["artist"], f["album"] = "Aquarela do Brasil", "Ary Barroso", "Clássicos"
         f.save()
         (m,) = self.varrer()
-        self.assertEqual((m.titulo, m.artista, m.album), ("Aquarela do Brasil", "Ary Barroso", "Clássicos"))
+        self.assertEqual((m.titulo, m.artista, m.album), ("aquarela", "Ary Barroso", "Clássicos"))
 
     def test_arquivos_corrompidos_nao_quebram_a_varredura(self) -> None:
         self.criar("lixo.mp3", b"MZ" + os.urandom(2000))
@@ -553,13 +581,13 @@ class TestRotasLeitura(BaseMusicas):
         def itens(**params: Any) -> list[str]:
             return [i["titulo"] for i in self.local("get", "/api/musicas", query_string=params).get_json()["itens"]]
 
-        self.assertEqual(itens(q="alo mundo"), ["Alô Mundo"])           # sem acento / sem caixa
-        self.assertEqual(itens(q="BELTRANO"), ["Sem Capa"])
-        self.assertEqual(itens(q="rock"), ["Alô Mundo"])                # também pelo nome da pasta
-        self.assertEqual(itens(pasta="Pop"), ["Sem Capa"])
-        self.assertEqual(itens(pasta="pop\\"), ["Sem Capa"])
+        self.assertEqual(itens(q="ALO"), ["alo"])                       # pelo nome do arquivo, sem caixa
+        self.assertEqual(itens(q="BELTRANO"), ["sem capa"])
+        self.assertEqual(itens(q="rock"), ["alo"])                # também pelo nome da pasta
+        self.assertEqual(itens(pasta="Pop"), ["sem capa"])
+        self.assertEqual(itens(pasta="pop\\"), ["sem capa"])
         self.assertEqual(itens(q="nada disso"), [])
-        self.assertEqual(itens(ordem="titulo"), ["Alô Mundo", "raiz", "Sem Capa"])
+        self.assertEqual(itens(ordem="titulo"), ["alo", "raiz", "sem capa"])
         self.assertEqual(itens(ordem="titulo", limit=1, offset=1), ["raiz"])
         self.assertEqual(self.local("get", "/api/musicas", query_string={"q": "rock"}).get_json()["total"], 1)
 
@@ -689,7 +717,7 @@ class TestEnvio(BaseMusicas):
         self.assertTrue(j["ok"])
         self.assertEqual(j["recusados"], [])
         (item,) = j["enviados"]
-        self.assertEqual((item["titulo"], item["artista"], item["pasta"]), ("Enviada", "Eu", "Enviadas"))
+        self.assertEqual((item["titulo"], item["artista"], item["pasta"]), ("Minha Música", "Eu", "Enviadas"))
         self.assertEqual((self.pasta / "Enviadas" / "Minha Música.mp3").read_bytes(), dados)
         self.assertEqual(self.enviadas(), ["Minha Música.mp3"])
         self.assertEqual(self.sobras_temporarias(), [])
@@ -1109,12 +1137,12 @@ class TestFilaComArquivos(BaseMusicas):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         item = r.get_json()["item"]
         self.assertEqual((item["kind"], item["music_id"], item["title"], item["artista"]),
-                         ("arquivo", self.um, "Um", "Fulano"))
+                         ("arquivo", self.um, "um", "Fulano"))
         self.assertTrue(item["tem_capa"])
         self.assertEqual((item["video_id"], item["list_id"], item["index"], item["start"]), (None, None, None, None))
         self.assertNotIn(str(self.pasta), json.dumps(item))
         fila = self.estado()["queue"]
-        self.assertEqual([(i["kind"], i["title"]) for i in fila], [("arquivo", "Um")])
+        self.assertEqual([(i["kind"], i["title"]) for i in fila], [("arquivo", "um")])
 
     def test_add_music_id_validacoes(self) -> None:
         self.assertEqual(self.fila(op="add", music_id="../x").status_code, 400)
@@ -1244,7 +1272,7 @@ class TestFilaComArquivos(BaseMusicas):
         e = self.estado()
         self.assertTrue(e["player_alive"])
         self.assertEqual((e["source"], e["music_id"]), ("arquivo", self.um))
-        self.assertEqual((e["musica"]["titulo"], e["musica"]["artista"], e["musica"]["tem_capa"]), ("Um", "Fulano", True))
+        self.assertEqual((e["musica"]["titulo"], e["musica"]["artista"], e["musica"]["tem_capa"]), ("um", "Fulano", True))
         self.assertEqual(e["video_id"], None)
         # voltou ao YouTube: o music_id velho não fica para trás
         self.local("post", "/api/youtube/state", json={"source": "youtube", "video_id": "dQw4w9WgXcQ"})
@@ -1698,8 +1726,8 @@ class TestRotasCorrecoes(BaseMusicas):
         self.assertEqual(self.titulos(q="garota ipanema"), ["Garota de Ipanema"])
         self.assertEqual(self.titulos(q="ipanema garota"), ["Garota de Ipanema"])
         self.assertEqual(self.titulos(q="  TOM   jobim  "), ["Garota de Ipanema"])      # artista, caixa e espaços
-        self.assertEqual(self.titulos(q="garota mundo"), [])                           # TODAS as palavras
-        self.assertEqual(self.titulos(q="mundo", pasta="Rock"), ["Alô Mundo"])
+        self.assertEqual(self.titulos(q="garota alo"), [])                           # TODAS as palavras
+        self.assertEqual(self.titulos(q="alo", pasta="Rock"), ["alo"])
         self.assertEqual(len(self.titulos(q="")), 2)
 
     def test_etag_do_audio_nao_depende_do_caminho_absoluto(self) -> None:
@@ -1792,7 +1820,7 @@ class TestFilaCorrecoes(BaseMusicas):
         j = r.get_json()
         self.assertEqual((j["adicionados"], j["ignorados"], j["cortados"]), (2, 0, 0))
         self.assertEqual((j["primeiro"]["kind"], j["primeiro"]["music_id"], j["primeiro"]["title"]),
-                         ("arquivo", self.um, "Um"))
+                         ("arquivo", self.um, "um"))
         self.assertEqual(self.musicas_na_fila(), [self.dois])         # o 1º já saiu da fila
 
     def test_substituir_sem_tirar_primeiro_mantem_todas_na_fila(self) -> None:

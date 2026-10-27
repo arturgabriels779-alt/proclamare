@@ -940,6 +940,11 @@ Windows do computador da loja (se o Windows guarda suas Músicas no OneDrive,
   uns 2 segundos para entrar na lista.
 - Você pode criar **subpastas** (até 3 níveis, por exemplo *Samba* ou
   *Rock\Anos 80*): elas viram botões de pasta acima da lista.
+- **O nome mostrado é o nome do arquivo**, sem a extensão (por exemplo,
+  *Ave Maria - Coral.mp3* aparece como *Ave Maria - Coral*). O título gravado
+  dentro do arquivo (tag) é ignorado, porque músicas baixadas costumam trazer
+  um título errado. Para mudar o nome, renomeie o arquivo na pasta; o painel
+  atualiza sozinho. Artista, álbum, duração e capa continuam vindo das tags.
 - A pasta fica **fora da pasta do programa**: baixar uma versão nova do
   Proclamare não apaga suas músicas. Para guardá-la em outro lugar, defina
   `PROCLAMARE_MUSICAS_DIR` (seção 2).
