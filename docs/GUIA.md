@@ -179,12 +179,13 @@ PowerShell).
 O arquivo **Atualizar Proclamare.bat** troca só o programa. **Seus dados ficam como estão:** contas e senhas,
 listas, horários, mensagens prontas, histórico de anúncios, PIN, Spotify e configuração (`config.json`,
 `contas.json`, `listas.json`, `programacao*.json`, `anuncios.jsonl`), além de `logs\`, `audios_temp\` e o `.venv`.
-A pasta de músicas também não é tocada. Não precisa de administrador.
+A pasta de músicas também não é tocada. **Não precisa de administrador** (e ele se recusa a rodar com
+"Executar como administrador": dê dois cliques normalmente).
 
 **Com o pen drive (não precisa de internet):**
 
 1. No pen drive você precisa de dois arquivos: o **Atualizar Proclamare.bat** e o **ZIP do Proclamare** (o nome
-   começa com `Proclamare` ou `proclamare-`, por exemplo `proclamare-main.zip`). **Não descompacte o ZIP.**
+   começa com `Proclamare` ou `proclamare`, por exemplo `proclamare-2.8.0.zip`). **Não descompacte o ZIP.**
 2. No computador da loja, abra a **pasta do Proclamare**: a que tem os arquivos `Proclamare.pyw` e
    `Instalar Proclamare.bat`. Dica: botão direito no ícone *Proclamare* da Área de Trabalho → *Propriedades*: a
    pasta aparece no campo *Iniciar em*.
@@ -194,14 +195,18 @@ A pasta de músicas também não é tocada. Não precisa de administrador.
    *Mais informações* → *Executar assim mesmo*.
 5. Espere a mensagem verde **"Proclamare atualizado para a versão …"** e aperte uma tecla para fechar. O
    Proclamare liga de novo sozinho e o painel abre. Durante a atualização (em geral menos de 1 minuto) a música e
-   os anúncios param. Recarregue (F5) as abas do painel que estavam abertas, inclusive a do **Tocador da loja**:
-   elas ainda mostram a versão antiga.
+   os anúncios param. **Se o painel já estava aberto (inclusive a aba "Tocador da loja" e nos celulares), aperte
+   F5 nele**: ele ainda mostra a versão antiga.
 
-**Pela internet:** sem nenhum ZIP na pasta, o atualizador baixa a versão nova direto do GitHub do projeto. É só
-dar dois cliques no `.bat`. Sem internet, ele avisa e **nada muda**: use o pen drive.
+**Pela internet:** sem nenhum ZIP na pasta, o atualizador procura a **última versão publicada** (a "release") no
+GitHub do projeto e baixa só ela, nunca o trabalho em andamento. É só dar dois cliques no `.bat`. Se você já
+estiver na versão publicada, ele diz **"O Proclamare já está na versão X. Nada foi alterado."** Sem internet (ou se
+ainda não houver versão publicada), ele avisa e **nada muda**: use o pen drive.
 
-**Mais de um ZIP na pasta:** ele usa o mais novo (pela data do arquivo) e diz qual. Depois de atualizar, pode
-apagar o ZIP. Um ZIP de versão **mais antiga** que a instalada é recusado (ex.: um ZIP velho esquecido na pasta).
+**ZIPs na pasta:** com mais de um ZIP do Proclamare, ele usa o mais novo (pela data do arquivo) e diz qual. Depois
+de atualizar, pode apagar o ZIP. Um ZIP de versão **mais antiga** que a instalada é recusado (ex.: um ZIP velho
+esquecido na pasta). Se houver um ZIP com **outro nome** (que não começa com `proclamare`), ele para e avisa: se
+for o Proclamare, renomeie para `proclamare-nova.zip` e rode de novo; se não for, tire-o da pasta.
 
 **Cópia de segurança:** antes de trocar qualquer coisa, o programa atual é copiado para
 `backups\AAAA-MM-DD_HHMMSS\` dentro da pasta do Proclamare. Só o programa vai para lá, não os dados. Ficam as 3
@@ -210,27 +215,36 @@ cópias mais novas.
 **Se der errado:**
 
 - *"Nada foi alterado"*: o problema apareceu antes de qualquer mudança (ZIP errado ou estragado, sem internet,
-  Proclamare ligado de outro jeito). Leia a mensagem, corrija e rode de novo.
+  Proclamare ligado de outro jeito, outra janela do atualizador aberta). Leia a mensagem, corrija e rode de novo.
 - *"voltou para a versão anterior"*: a versão nova falhou na instalação, na conferência ou ao ligar. O atualizador
-  pôs de volta a versão anterior e a religou sozinho. Seus dados foram mantidos. Avise o suporte e mande o arquivo
-  `logs\atualizar.log`.
-- *"não consegui voltar todos os arquivos"* (raro): a cópia do programa antigo está em `backups\…`. Seus dados não
-  foram mexidos. Chame o suporte.
-- A janela fechou no meio (falta de luz, por exemplo)? Rode o atualizador de novo: ele refaz a cópia e a instalação.
+  pôs de volta a versão anterior (se um arquivo estiver preso, ele tenta de novo depois de 5 segundos) e a religou
+  sozinho. Seus dados foram mantidos. Avise o suporte e mande o arquivo `logs\atualizar.log`.
+- *"não consegui voltar todos os arquivos"* (raro, em vermelho): a cópia do programa antigo está em `backups\…`.
+  Seus dados não foram mexidos. Não ligue o Proclamare e chame o suporte.
+- A janela fechou no meio (falta de luz, por exemplo)? Rode o atualizador de novo. Ele avisa **"A última
+  atualização foi interrompida; pondo de volta a versão anterior..."**, desfaz o que ficou pela metade a partir da
+  cópia e só depois atualiza.
 - Tudo o que ele faz fica em `logs\atualizar.log` (sem senhas nem o conteúdo do `config.json`).
 
-**Sobre a segurança:** o projeto **não tem assinatura digital**, então o atualizador **não confere assinatura**. A
-confiança vem do endereço fixo do GitHub, baixado por HTTPS (TLS 1.2 ou mais novo, sem desvio para outro
-endereço, até 50 MB e 60 s), ou do ZIP que você mesmo trouxe. Antes de mexer em qualquer coisa ele confere o
-pacote: recusa nomes perigosos (`..`, caminho absoluto, letra de disco, links), pacotes grandes demais (300 MB ou
-5000 arquivos) e qualquer ZIP sem `server.py`, `Proclamare.pyw`, `static\app.js` e `requirements.lock` numa pasta
-só. Use apenas ZIPs de fonte confiável. Se a versão nova trouxer componentes novos (`requirements.lock` mudou), ele
-os instala com verificação de hashes, como o instalador, e aí precisa de internet.
+**Sobre a segurança:** o pacote do Proclamare **ainda não tem assinatura digital**, então o atualizador **não
+confere assinatura** (fica para uma versão futura). A confiança vem de duas coisas: a **versão publicada pelo dono
+do projeto** no GitHub (procurada em `api.github.com` e baixada de `codeload.github.com`, endereços fixos, por HTTPS
+com TLS 1.2 ou mais novo, sem desvio para outro endereço, até 50 MB e 60 s), ou o ZIP que você mesmo trouxe; e a
+conferência do pacote antes de mexer em qualquer coisa: ele recusa nomes perigosos (`..`, caminho absoluto, letra
+de disco, links, nomes curtos do Windows como `CONFIG~1.JSO`, caracteres invisíveis), qualquer pacote que traga um
+arquivo de dados (`config.json`, `contas.json` etc.), pacotes grandes demais (300 MB ou 5000 arquivos), um
+`requirements.lock` com opções do pip (ele só pode listar pacotes e `--hash`) e qualquer ZIP sem `server.py`,
+`Proclamare.pyw`, `static\app.js` e `requirements.lock` numa pasta só. Use apenas ZIPs de fonte confiável.
+
+**Componentes novos:** se a versão nova mudar o `requirements.lock`, ele instala os componentes como o instalador
+faz (`pip --require-hashes`) e aí precisa de internet. Os hashes protegem o **download desses componentes** (cada
+arquivo baixado tem de ter a impressão digital listada no `requirements.lock`); eles **não** conferem o pacote do
+Proclamare em si. Com `-SemRede` e componentes novos, ele recusa antes de mexer em qualquer coisa.
 
 **Opções (suporte e testes)**, no Prompt de Comando, dentro da pasta do Proclamare:
-`"Atualizar Proclamare.bat" -Zip "D:\proclamare-main.zip"` (usa esse ZIP), `-SemRede` (nunca baixa), `-SemReiniciar`
-(não religa no fim), `-EsperaInicio 60` (segundos esperando o Proclamare responder) e `-PastaInstalacao "<pasta>"`.
-A porta conferida no fim é a mesma do lançador (`PROCLAMARE_PORT`, ou 8502).
+`"Atualizar Proclamare.bat" -Zip "D:\proclamare-2.8.0.zip"` (usa esse ZIP), `-SemRede` (nunca usa a internet),
+`-SemReiniciar` (não religa no fim), `-EsperaInicio 60` (segundos esperando o Proclamare responder) e
+`-PastaInstalacao "<pasta>"`. A porta conferida no fim é a mesma do lançador (`PROCLAMARE_PORT`, ou 8502).
 
 ### Voz offline (sem internet) — só no Linux precisa instalar algo
 

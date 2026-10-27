@@ -4,16 +4,18 @@ rem  Atualizador do Proclamare - de um duplo clique neste arquivo.
 rem
 rem  Este arquivo fica na pasta do Proclamare (a que tem o Proclamare.pyw).
 rem  Se houver um ZIP do Proclamare ao lado dele (ex.: trazido no pen drive),
-rem  usa o ZIP; senao, baixa a versao nova do GitHub. Antes de trocar
-rem  qualquer coisa ele confere o pacote, desliga o Proclamare e guarda
-rem  uma copia do codigo atual em backups\. Se algo falhar, volta sozinho
-rem  para a versao anterior. Os seus dados (config.json, contas, listas,
-rem  horarios, historico, logs) NUNCA sao tocados.
+rem  usa o ZIP; senao, baixa a ultima versao PUBLICADA (release) do GitHub.
+rem  Antes de trocar qualquer coisa ele confere o pacote, desliga o
+rem  Proclamare e guarda uma copia do codigo atual em backups\. Se algo
+rem  falhar, volta sozinho para a versao anterior. Os seus dados
+rem  (config.json, contas, listas, horarios, historico, logs) NUNCA sao
+rem  tocados.
 rem
 rem  Funciona sozinho: o programa (PowerShell) esta DENTRO deste arquivo,
 rem  depois da linha marcadora la embaixo. O "Bypass" vale somente para
 rem  este processo do PowerShell (nao altera o computador). Nao precisa
-rem  de administrador. O registro fica em logs\atualizar.log.
+rem  (nem deve) rodar como administrador. O registro fica em
+rem  logs\atualizar.log.
 rem
 rem  Opcoes (testes/suporte): -PastaInstalacao "<pasta>" -Zip "<arquivo>"
 rem  -SemReiniciar -SemRede -EsperaInicio <segundos>
@@ -34,7 +36,7 @@ echo.
 pushd "%~dp0"
 setlocal EnableDelayedExpansion
 (
-    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; try { $t=[IO.File]::ReadAllText($env:PROCLAMARE_ATUALIZAR_BAT,[Text.Encoding]::UTF8) } catch { Write-Host 'ERRO: nao consegui ler o arquivo do atualizador.'; exit 2 }; $m=[string][char]10+[char]35+'PROCLAMARE-POWERSHELL'; $i=$t.IndexOf($m); if ($i -lt 0) { Write-Host 'ERRO: o arquivo do atualizador esta incompleto. Copie-o de novo.'; exit 2 }; & ([ScriptBlock]::Create($t.Substring($i+1))); exit 4"
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; try { $t=[IO.File]::ReadAllText($env:PROCLAMARE_ATUALIZAR_BAT,[Text.Encoding]::UTF8) } catch { Write-Host 'ERRO: nao consegui ler o arquivo do atualizador.'; exit 2 }; $m=[string][char]10+[char]35+'PROCLAMARE-POWERSHELL'; $i=$t.IndexOf($m,[StringComparison]::Ordinal); if ($i -lt 0) { Write-Host 'ERRO: o arquivo do atualizador esta incompleto. Copie-o de novo.'; exit 2 }; & ([ScriptBlock]::Create($t.Substring($i+1))); exit 4"
     set "CODIGO=!ERRORLEVEL!"
     echo.
     pause
@@ -50,41 +52,53 @@ setlocal EnableDelayedExpansion
 # nenhum script de atualizacao: basta copiar este .bat para a pasta do Proclamare.
 #
 # Etapas (nada na instalacao e alterado antes da etapa 6):
+#   0. Recusa rodar ELEVADO (com o UAC ligado). Se a ultima atualizacao foi interrompida no meio
+#      (logs\atualizar.pendente), primeiro poe de volta a versao anterior a partir da copia dela.
 #   1. Acha a pasta do Proclamare (a deste .bat, ou -PastaInstalacao) e confere .venv e Proclamare.pyw.
-#   2. Fonte: -Zip, ou o ZIP "proclamare*.zip" mais novo ao lado do .bat, ou o GitHub (host fixo, HTTPS
-#      TLS 1.2+, sem redirecionamento, 60 s, 50 MB). -SemRede proibe o download.
+#   2. Fonte: -Zip, ou o ZIP "proclamare*.zip" mais novo ao lado do .bat, ou a ULTIMA RELEASE publicada no
+#      GitHub (api.github.com -> tag vX.Y[.Z] -> codeload.github.com; hosts fixos, HTTPS TLS 1.2+, sem
+#      redirecionamento, tetos de tamanho e tempo). Nunca a branch main. -SemRede proibe a internet.
 #   3. Confere e extrai o pacote numa pasta temporaria NOVA em %TEMP%: recusa "..", caminho absoluto, letra
-#      de disco, link/ponto de nova analise, nomes reservados, duplicados; teto de tamanho e de quantidade;
-#      exige UMA raiz com server.py, Proclamare.pyw, static\app.js e requirements.lock.
-#      NAO ha assinatura digital: a confianca vem do host fixo do GitHub por HTTPS (ou do ZIP que o Artur
-#      trouxe) mais esta conferencia da estrutura.
-#   4. Mostra versao atual e nova (docstring do server.py; senao a data do arquivo mais novo). Recusa
-#      um pacote de versao MAIS ANTIGA que a instalada (um ZIP velho esquecido na pasta).
+#      de disco, link, nome curto do Windows (8.3, "~1"), nome de arquivo de dados, caracteres invisiveis,
+#      nomes reservados, duplicados; teto de tamanho e de quantidade; exige UMA raiz (fora de pastas
+#      protegidas) com server.py, Proclamare.pyw, static\app.js e requirements.lock; confere o
+#      requirements.lock (so pacotes e --hash, nenhuma outra opcao do pip).
+#      AINDA NAO HA ASSINATURA DIGITAL: a confianca vem da release publicada pelo dono no GitHub (baixada
+#      por HTTPS de hosts fixos) ou do ZIP que o Artur trouxe, mais estas conferencias.
+#   4. Mostra versao atual e nova (docstring do server.py; senao a data do arquivo mais novo). Recusa versao
+#      MAIS ANTIGA, versao nova ilegivel quando a atual e legivel, e (internet) avisa "ja esta na versao X".
 #   5. Desliga o Proclamare pelo proprio lancador (Proclamare.pyw --parar: so o PID validado) e espera a
 #      porta fechar (15 s).
-#   6. Copia o codigo atual para backups\AAAA-MM-DD_HHMMSS\ (fica so com as 3 mais novas).
+#   6. Copia o codigo atual para backups\AAAA-MM-DD_HHMMSS\ (fica so com as 3 mais novas) e grava o plano em
+#      logs\atualizar.pendente (apagado no fim; se sobrar, a proxima execucao volta a versao anterior).
 #   7. Instala: arquivos da raiz sobrescritos; pastas de codigo ESPELHADAS (o que saiu da versao nova sai).
-#      Dados, .venv, logs, backups, audios_temp e __pycache__ nunca sao tocados (listas abaixo).
-#   8. requirements.lock mudou? pip --require-hashes com o python do .venv (como o tools\instalar.ps1).
+#      Dados, .venv, logs, backups, audios_temp e __pycache__ nunca sao tocados (listas abaixo); antes de
+#      gravar/apagar, o nome REAL do alvo e conferido (nome curto 8.3 nunca chega num arquivo de dados).
+#   8. requirements.lock mudou (sem contar CRLF/LF)? pip --isolated --require-hashes com o python do .venv.
 #   9. Compila todos os .py/.pyw com o python do .venv.
 #  10. Religa pelo lancador e espera GET /api/status = 200 (40 s). Porta = mesma regra do lancador.
-#  Falhou da etapa 6 em diante: volta o codigo da copia, religa a versao anterior e explica.
+#  Falhou da etapa 7 em diante: volta o codigo da copia (1 nova tentativa em 5 s), religa a anterior e explica.
 #
-# Codigos de saida: 0 = atualizado; 1 = falhou e voltou para a versao anterior; 2 = recusado antes de
-# mudar qualquer coisa; 3 = falhou E a volta tambem falhou (a copia fica em backups\).
+# Codigos de saida: 0 = atualizado (ou ja estava na versao publicada); 1 = falhou e voltou para a versao
+# anterior; 2 = recusado antes de mudar qualquer coisa; 3 = falhou E a volta tambem falhou (copia em backups\).
 # Nunca le nem mostra o config.json (segredos) e nunca encerra processos que nao sejam o PID validado.
 # Nunca grava uma copia identica deste .bat (o antivirus congela o processo: ver Eh-Copia-Do-Bat). Por isso
 # este .bat nao entra na copia de seguranca e, se a volta automatica acontecer, o .bat novo continua no lugar.
+# Adiado (documentado): assinatura do pacote; mesma conferencia de dono/ACL da pasta que o instalador faz.
 # ======================================================================================================
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 # ---- Constantes ---------------------------------------------------------------------------------------
-$UrlPacote = 'https://codeload.github.com/arturgabriels779-alt/proclamare/zip/refs/heads/main'
+$RepoGitHub = 'arturgabriels779-alt/proclamare'
+$HostApi = 'api.github.com'
 $HostPacote = 'codeload.github.com'
+$UserAgent = 'Proclamare-atualizador'
+$ReleaseMaxBytes = [long]256KB        # resposta JSON da release
 $DownloadMaxBytes = [long]50MB
 $DownloadMaxSeg = 60
+$PadraoTag = '^v[0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?$'
 $ZipMaxEntradasTotal = 20000          # entradas no ZIP inteiro (diretorio central)
 $ZipMaxEntradas = 5000                # arquivos extraidos (so os da raiz do Proclamare, sem dados)
 $ZipMaxBytes = [long]300MB            # soma descompactada do que e extraido
@@ -98,14 +112,17 @@ $PortaPadrao = 8502
 $EspacoMinimoMB = 300
 $CaminhoMax = 259                     # MAX_PATH do Windows (o PowerShell 5.1 nao usa caminhos longos)
 $FolgaBackup = 29                     # '\backups\AAAA-MM-DD_HHMMSS_9' a mais no caminho da copia
+$Ord = [System.StringComparison]::Ordinal
+$OrdIC = [System.StringComparison]::OrdinalIgnoreCase
 
 # Pastas de primeiro nivel que NUNCA sao copiadas, espelhadas, apagadas nem guardadas na copia.
 # (Musicas: o padrao fica fora da pasta do programa, mas uma pasta de musicas aqui dentro tambem e protegida.)
 $PastasProtegidas = @('.venv', 'venv', 'env', 'logs', 'audios_temp', 'backups', '__pycache__', '.git', '.claude',
     'node_modules', 'Músicas', 'Musicas', 'Músicas do Proclamare', 'Musicas do Proclamare')
 
-# ARQUIVOS DE DADOS (em qualquer nivel): nunca copiados do pacote, nunca sobrescritos nem apagados.
-# Quem criar um arquivo de dados novo no Proclamare TEM de acrescenta-lo aqui (regra no CLAUDE.md).
+# ARQUIVOS DE DADOS (em qualquer nivel): nunca copiados do pacote, nunca sobrescritos nem apagados; um pacote
+# que traga qualquer caminho com um desses nomes e RECUSADO. Quem criar um arquivo de dados novo no Proclamare
+# TEM de acrescenta-lo aqui (regra no CLAUDE.md).
 #   config.json* (PIN, Client Secret e tokens do Spotify, mensagens, voz da loja, copias .corrompido-*),
 #   listas.json*, contas.json* (hash das senhas), anuncios.jsonl* (historico de anuncios),
 #   programacao*.json* (inclui programacao.visto.json) e os temporarios da gravacao atomica (.<nome>.*.tmp).
@@ -117,6 +134,8 @@ $PadroesIgnorados = $PadroesDeDados + @('*.zip', '*.log', '*.log.*', '*.pyc', '*
 $PastasDeCodigo = @('static', 'som', 'tools', 'docs', 'tests', 'assets', '.github')
 # Arquivos da raiz que entram na copia mesmo que o pacote novo nao os traga.
 $PadroesCodigoRaiz = @('*.py', '*.pyw', '*.bat', '*.cmd', '*.ps1', '*.md', '*.txt', '*.lock', 'LICENSE', '.gitignore', '.gitattributes')
+$PadraoNomeBackup = '^\d{4}-\d{2}-\d{2}_\d{6}(_\d+)?$'
+$NomesReservados = '^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$'
 
 # ---- Estado (usado pela volta automatica) ----------------------------------------------------------------
 $script:Raiz = $null
@@ -124,8 +143,9 @@ $script:ArqLog = $null
 $script:LogPendente = New-Object System.Collections.Generic.List[string]
 $script:Temp = $null
 $script:Trava = $null
-$script:Fase = 'preparando'           # 'preparando' -> 'alterando' (a instalacao ja foi mexida) -> 'pronto'
-$script:Backup = $null
+$script:Fase = 'preparando'           # 'preparando' -> 'alterando' -> 'pronto'; 'voltando' durante a volta
+$script:Backup = $null                # copia criada (ou usada na recuperacao) por ESTA execucao
+$script:BackupsProtegidos = @()       # copias que a poda nunca apaga (ex.: a de uma atualizacao interrompida)
 $script:PastasTocadas = @()           # @{ Nome; Existia }
 $script:ArquivosTocados = @()         # @{ Nome; Existia }
 $script:PipRodou = $false
@@ -133,7 +153,7 @@ $script:VenvPy = $null
 $script:VenvPyw = $null
 $script:Porta = $PortaPadrao
 $script:Opc = $null
-$script:Desligou = $false           # o atualizador desligou um Proclamare que estava ligado
+$script:Desligou = $false             # o atualizador desligou um Proclamare que estava ligado
 $script:BatTamanho = -1               # tamanho e SHA-256 do .bat que o cmd esta executando (ver Eh-Copia-Do-Bat)
 $script:BatHash = $null
 
@@ -161,14 +181,25 @@ function Recusar([string]$Texto) {
     throw $e
 }
 
+# O unico texto de "traga o ZIP" (usado sem internet, sem release e com -SemRede).
+function Texto-ColoqueZip {
+    return ("    Coloque o arquivo ZIP do Proclamare (o do pen drive) nesta pasta, ao lado do`n" +
+        "    'Atualizar Proclamare.bat', e dê dois cliques nele de novo.`n" +
+        '    Nada foi alterado: o Proclamare continua como estava.')
+}
+
 function Iniciar-Log {
     $pastaLogs = Join-Path $script:Raiz 'logs'
     try {
-        if (-not (Test-Path -LiteralPath $pastaLogs)) { [void][System.IO.Directory]::CreateDirectory($pastaLogs) }
-        if (Eh-Link (Get-Item -LiteralPath $pastaLogs -Force)) { return }   # nunca grava atraves de um link
+        if (-not [System.IO.Directory]::Exists($pastaLogs) -and -not [System.IO.File]::Exists($pastaLogs)) {
+            [void][System.IO.Directory]::CreateDirectory($pastaLogs)
+        }
+        if (-not [System.IO.Directory]::Exists($pastaLogs)) { return }
+        if (Eh-Link (New-Object System.IO.DirectoryInfo($pastaLogs))) { return }   # nunca grava atraves de um link
         $arq = Join-Path $pastaLogs 'atualizar.log'
-        if ((Test-Path -LiteralPath $arq) -and ((Get-Item -LiteralPath $arq -Force).Length -gt 1MB)) {
-            Move-Item -LiteralPath $arq -Destination ($arq + '.1') -Force
+        if ([System.IO.File]::Exists($arq) -and ((New-Object System.IO.FileInfo($arq)).Length -gt 1MB)) {
+            [System.IO.File]::Copy($arq, $arq + '.1', $true)
+            [System.IO.File]::Delete($arq)
         }
         $script:ArqLog = $arq
         foreach ($l in $script:LogPendente) {
@@ -179,21 +210,51 @@ function Iniciar-Log {
 }
 
 # ---- Utilidades de arquivo -----------------------------------------------------------------------------
-function Eh-Link($Info) { return (([int]$Info.Attributes -band [int][System.IO.FileAttributes]::ReparsePoint) -ne 0) }
+# Link = SO link simbolico ou juncao (ponto de montagem). Outros pontos de nova analise (ex.: os arquivos
+# "so na nuvem" do OneDrive) sao arquivos/pastas comuns. Sem como saber o tipo: trata como link (seguro).
+function Eh-Link($Info) {
+    if ((([int]$Info.Attributes) -band [int][System.IO.FileAttributes]::ReparsePoint) -eq 0) { return $false }
+    if ($null -eq $Info.PSObject.Properties['LinkType']) { return $true }
+    $tipo = [string]$Info.LinkType
+    return ($tipo -eq 'SymbolicLink' -or $tipo -eq 'Junction')
+}
 
 function Casa-Algum([string]$Nome, [string[]]$Padroes) {
     foreach ($p in $Padroes) { if ($Nome -like $p) { return $true } }
     return $false
 }
 function Eh-Ignorado([string]$Nome) { return (Casa-Algum $Nome $PadroesIgnorados) }
+function Eh-Dado([string]$Nome) { return (Casa-Algum $Nome $PadroesDeDados) }
 function Eh-Protegida([string]$Nome) {
-    foreach ($p in $PastasProtegidas) { if ($Nome -ieq $p) { return $true } }
+    foreach ($p in $PastasProtegidas) { if ([string]::Equals($Nome, $p, $OrdIC)) { return $true } }
     return $false
 }
+function Nova-Tabela { return (New-Object System.Collections.Hashtable ([System.StringComparer]::OrdinalIgnoreCase)) }
 
 function Filhos([string]$Pasta) {
     if (-not [System.IO.Directory]::Exists($Pasta)) { return @() }
     return @((New-Object System.IO.DirectoryInfo($Pasta)).GetFileSystemInfos())
+}
+
+# Nome REAL de um caminho que existe ($null se nao existe). Um nome curto do Windows (8.3, ex.: CONFIG~1.JSO)
+# abre o arquivo de nome longo (config.json): por isso o nome real e conferido antes de gravar ou apagar.
+function Nome-Real([string]$Caminho) {
+    $pai = [System.IO.Path]::GetDirectoryName($Caminho)
+    $nome = [System.IO.Path]::GetFileName($Caminho)
+    if (-not $pai -or -not $nome -or -not [System.IO.Directory]::Exists($pai)) { return $null }
+    if ($nome.IndexOfAny([char[]]'*?') -ge 0) { throw "nome inválido: $nome" }
+    $achados = @((New-Object System.IO.DirectoryInfo($pai)).GetFileSystemInfos($nome))
+    if ($achados.Count -eq 0) { return $null }
+    return $achados[0].Name
+}
+function Conferir-Alvo([string]$Caminho) {
+    $real = Nome-Real $Caminho
+    if ($null -eq $real) { return }
+    $nome = [System.IO.Path]::GetFileName($Caminho)
+    if (-not [string]::Equals($real, $nome, $OrdIC)) {
+        throw "o nome $nome abre outro arquivo ($real, nome curto do Windows); por segurança nada foi feito nele"
+    }
+    if (Eh-Dado $real) { throw "$real é um arquivo de dados; por segurança ele não foi mexido" }
 }
 
 # Tamanho do maior caminho relativo (a partir de $Base, com a barra) dentro de $Pasta, sem entrar em links.
@@ -224,6 +285,10 @@ function Achar-Link([string]$Pasta) {
     }
     return $null
 }
+function Descrever-Link([string]$Caminho) {
+    if ([System.IO.Directory]::Exists($Caminho)) { return "A pasta $Caminho é um link (atalho de pasta)" }
+    return "O arquivo $Caminho é um link (atalho)"
+}
 
 # ANTIVIRUS (medido com o Kaspersky Endpoint Security): um processo filho de um .bat que grava uma copia
 # IDENTICA (byte a byte) desse .bat e CONGELADO pelo antivirus (parece um script se replicando) e a janela fica
@@ -247,6 +312,7 @@ function Copiar-Arquivo([string]$De, [string]$Para) {
         Registrar "não copiado (igual ao atualizador que está rodando): $De"
         return
     }
+    Conferir-Alvo $Para
     for ($i = 1; $i -le 6; $i++) {
         try {
             if ([System.IO.File]::Exists($Para)) {
@@ -264,6 +330,8 @@ function Copiar-Arquivo([string]$De, [string]$Para) {
     }
 }
 function Apagar-Arquivo([string]$Caminho) {
+    if (-not [System.IO.File]::Exists($Caminho)) { return }
+    Conferir-Alvo $Caminho        # nunca apaga um arquivo de dados (nem por um nome curto 8.3)
     for ($i = 1; $i -le 6; $i++) {
         try {
             if (-not [System.IO.File]::Exists($Caminho)) { return }
@@ -278,24 +346,25 @@ function Apagar-Arquivo([string]$Caminho) {
 }
 
 # Espelha $Origem em $Destino: copia tudo o que esta na origem e APAGA do destino o que nao esta nela.
-# Nunca toca arquivos de dados (PadroesIgnorados) nem __pycache__ e nunca entra num link. $Origem vazia/$null
-# = apagar o conteudo de codigo de $Destino (e a pasta, se ficar vazia).
+# Nunca toca arquivos de dados nem __pycache__ e nunca entra num link. $Origem vazia/$null = apagar o
+# conteudo de codigo de $Destino (e a pasta, se ficar vazia).
 function Espelhar([string]$Origem, [string]$Destino) {
     $temOrigem = $Origem -and [System.IO.Directory]::Exists($Origem)
+    if ([System.IO.Directory]::Exists($Destino) -or [System.IO.File]::Exists($Destino)) { Conferir-Alvo $Destino }
     if ($temOrigem -and -not [System.IO.Directory]::Exists($Destino)) {
         if ([System.IO.File]::Exists($Destino)) { Apagar-Arquivo $Destino }   # era arquivo, virou pasta
         [void][System.IO.Directory]::CreateDirectory($Destino)
     }
     if ([System.IO.Directory]::Exists($Destino) -and (Eh-Link (New-Object System.IO.DirectoryInfo($Destino)))) {
-        throw "a pasta $Destino é um link (atalho de pasta); por segurança nada foi feito nela"
+        throw ((Descrever-Link $Destino) + '; por segurança nada foi feito nela')
     }
-    $vistos = @{}   # nomes da origem (a hashtable do PowerShell ignora maiusculas/minusculas, como o Windows)
+    $vistos = Nova-Tabela   # nomes da origem (sem diferenca de maiusculas/minusculas, como o Windows)
     if ($temOrigem) {
         foreach ($f in (Filhos $Origem)) {
             if (Eh-Link $f) { throw "o pacote tem um link inesperado: $($f.FullName)" }
             $alvo = Join-Path $Destino $f.Name
             if ($f -is [System.IO.DirectoryInfo]) {
-                if ($f.Name -ieq '__pycache__') { continue }
+                if ([string]::Equals($f.Name, '__pycache__', $OrdIC)) { continue }
                 $vistos[$f.Name] = $true
                 Espelhar $f.FullName $alvo
             } else {
@@ -310,18 +379,43 @@ function Espelhar([string]$Origem, [string]$Destino) {
         if ($vistos.ContainsKey($f.Name)) { continue }
         if (Eh-Link $f) { continue }                      # nunca segue nem apaga links
         if ($f -is [System.IO.DirectoryInfo]) {
-            if ($temOrigem -and $f.Name -ieq '__pycache__') { continue }
+            if ($temOrigem -and [string]::Equals($f.Name, '__pycache__', $OrdIC)) { continue }
             Espelhar $null $f.FullName
         } else {
             # Espelhando: nao mexe em nada ignorado. Apagando uma pasta que saiu: so os DADOS ficam.
             if ($temOrigem) { if (Eh-Ignorado $f.Name) { continue } }
-            elseif (Casa-Algum $f.Name $PadroesDeDados) { continue }
+            elseif (Eh-Dado $f.Name) { continue }
             Apagar-Arquivo $f.FullName
         }
     }
     if (-not $temOrigem -and [System.IO.Directory]::Exists($Destino) -and (Filhos $Destino).Count -eq 0) {
         try { [System.IO.Directory]::Delete($Destino, $false) } catch { }
     }
+}
+
+# Hash do texto do arquivo com CRLF/LF iguais ($null se nao existe): o lock "mudou" so se o conteudo mudou.
+function Hash-Texto([string]$Caminho) {
+    if (-not [System.IO.File]::Exists($Caminho)) { return $null }
+    $t = [System.IO.File]::ReadAllText($Caminho, [System.Text.Encoding]::UTF8).Replace("`r`n", "`n").TrimEnd()
+    return (Hash-De-Bytes ([System.Text.Encoding]::UTF8.GetBytes($t)))
+}
+
+# O requirements.lock so pode ter pacotes, marcadores e --hash=sha256:<64 hex>: nenhuma opcao do pip
+# (--index-url, -e, -r, -f, --global-option...) nem endereco direto. $null se ok, ou a linha recusada.
+function Conferir-Lock([string]$Caminho) {
+    foreach ($bruta in [System.IO.File]::ReadAllLines($Caminho, [System.Text.Encoding]::UTF8)) {
+        $linha = $bruta
+        $h = $linha.IndexOf('#', $Ord)
+        if ($h -ge 0) { $linha = $linha.Substring(0, $h) }
+        $linha = $linha.Trim()
+        if (-not $linha) { continue }
+        if ($linha.IndexOf('://', $Ord) -ge 0) { return $bruta }
+        foreach ($tok in ($linha -split '\s+')) {
+            if ($tok -eq '\' -or -not $tok.StartsWith('-', $Ord)) { continue }
+            if ($tok -cnotmatch '^--hash=sha256:[0-9a-fA-F]{64}$') { return $bruta }
+        }
+    }
+    return $null
 }
 
 # ---- Processos ------------------------------------------------------------------------------------------
@@ -379,6 +473,22 @@ function Ultimas-Linhas([string]$Texto, [int]$N = 15) {
     return ($linhas[($linhas.Count - $N)..($linhas.Count - 1)] -join "`n")
 }
 
+# Rodando ELEVADO (Executar como administrador) com o UAC ligado: recusa. Com o UAC desligado, todo programa
+# de um administrador ja roda elevado e recusar deixaria a loja sem atualizar: segue.
+function Deve-Recusar-Elevado([bool]$Elevado, [bool]$UacLigado) { return ($Elevado -and $UacLigado) }
+function Esta-Elevado {
+    try {
+        $p = New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
+        return $p.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
+function Uac-Ligado {
+    try {
+        $v = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA -ErrorAction Stop
+        return ([int]$v.EnableLUA -ne 0)
+    } catch { return $true }
+}
+
 # ---- Porta e servidor -----------------------------------------------------------------------------------
 # Mesma regra do Proclamare.pyw (ler_porta): PROCLAMARE_PORT, senao ANUNCIADOR_PORT, senao 8502 (1..65535).
 function Ler-Porta {
@@ -410,6 +520,18 @@ function Servidor-Responde([int]$TimeoutMs = 3000) {
     }
 }
 
+# True se ALGUM programa escuta na porta (mesmo sem responder 200: um servidor travado segura a porta). Le a
+# tabela de portas do Windows (sem conectar: no Windows, conectar numa porta fechada do loopback demora ~2 s).
+function Porta-Ocupada {
+    try {
+        $ouvintes = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()
+        foreach ($o in $ouvintes) { if ($o.Port -eq $script:Porta) { return $true } }
+        return $false
+    } catch {
+        return (Servidor-Responde 1500)
+    }
+}
+
 function Esperar-Status([int]$Segundos) {
     $fim = (Get-Date).AddSeconds($Segundos)
     while ((Get-Date) -lt $fim) {
@@ -419,11 +541,11 @@ function Esperar-Status([int]$Segundos) {
     return (Servidor-Responde)
 }
 
-# Desliga pelo proprio lancador (--parar so encerra o PID validado por caminho + hora de criacao).
-# Devolve $true se o Proclamare ficou desligado.
+# Desliga pelo proprio lancador da pasta (--parar so encerra o PID validado por caminho + hora de criacao) e
+# espera a porta fechar. Devolve $true se o Proclamare ficou desligado.
 function Parar-Proclamare {
-    $pid_ = Join-Path $script:Raiz 'logs\proclamare.pid'
-    if (-not (Test-Path -LiteralPath $pid_) -and -not (Servidor-Responde)) {
+    $arqPid = Join-Path $script:Raiz 'logs\proclamare.pid'
+    if (-not [System.IO.File]::Exists($arqPid) -and -not (Porta-Ocupada)) {
         Ok 'o Proclamare já estava desligado.'
         return $true
     }
@@ -433,8 +555,8 @@ function Parar-Proclamare {
     $r = Rodar-Processo $script:VenvPy @('-I', $pyw, '--parar') 40 @{ PROCLAMARE_NO_BROWSER = '1' }
     Registrar ("lancador --parar: codigo $($r.Codigo); " + (Ultimas-Linhas ($r.Saida + "`n" + $r.Erro) 5))
     $fim = (Get-Date).AddSeconds($EsperaParadaSeg)
-    while ((Get-Date) -lt $fim -and (Servidor-Responde 1500)) { Start-Sleep -Milliseconds 500 }
-    if (Servidor-Responde 1500) { return $false }
+    while ((Get-Date) -lt $fim -and (Porta-Ocupada)) { Start-Sleep -Milliseconds 500 }
+    if (Porta-Ocupada) { return $false }
     $script:Desligou = $true
     Ok 'Proclamare desligado.'
     return $true
@@ -442,23 +564,26 @@ function Parar-Proclamare {
 
 # Liga como o atalho da Area de Trabalho (pythonw -I Proclamare.pyw), mas com PROCLAMARE_NO_BROWSER=1 para
 # o lancador nunca abrir uma caixa de mensagem que prenda a trava dele; o painel e aberto aqui no fim.
+# Process.Start (sem Start-Process): "[" e "]" no caminho da pasta nao viram curinga. Nao espera o lancador.
 function Ligar-Proclamare([int]$Segundos) {
     $pyw = Join-Path $script:Raiz 'Proclamare.pyw'
-    $anterior = $env:PROCLAMARE_NO_BROWSER
     $proc = $null
     try {
-        $env:PROCLAMARE_NO_BROWSER = '1'
-        $proc = Start-Process -FilePath $script:VenvPyw -ArgumentList ('-I "' + $pyw + '"') -WorkingDirectory $script:Raiz -PassThru
-        $null = $proc.Handle
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $script:VenvPyw
+        $psi.Arguments = '-I ' + (Citar-Argumento $pyw)
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.WorkingDirectory = $script:Raiz
+        $psi.EnvironmentVariables['PROCLAMARE_NO_BROWSER'] = '1'
+        $proc = [System.Diagnostics.Process]::Start($psi)
     } catch {
         Registrar ('falha ao chamar o lancador: ' + $_.Exception.Message)
-    } finally {
-        if ($null -eq $anterior) { Remove-Item Env:\PROCLAMARE_NO_BROWSER -ErrorAction SilentlyContinue }
-        else { $env:PROCLAMARE_NO_BROWSER = $anterior }
     }
     $okStatus = Esperar-Status $Segundos
     # O lancador termina sozinho (ate ~35 s); espera-o para a trava dele nao atrapalhar uma volta de versao.
     if ($proc -and -not $okStatus) { try { [void]$proc.WaitForExit(40000) } catch { } }
+    if ($proc) { try { $proc.Dispose() } catch { } }
     return $okStatus
 }
 
@@ -515,8 +640,8 @@ function Ler-Versao([string]$ServerPy) {
             $n = $fs.Read($buf, 0, $buf.Length)
         } finally { $fs.Dispose() }
         $texto = [System.Text.Encoding]::UTF8.GetString($buf, 0, $n)
-        if ($texto -match 'servidor local \(v(\d+(?:\.\d+){1,2})') { return $Matches[1] }
-        if ($texto -match '\bv(\d+\.\d+(?:\.\d+)?)\b') { return $Matches[1] }
+        if ($texto -match 'servidor local \(v([0-9]+(?:\.[0-9]+){1,2})') { return $Matches[1] }
+        if ($texto -match '\bv([0-9]+\.[0-9]+(?:\.[0-9]+)?)\b') { return $Matches[1] }
     } catch { }
     return $null
 }
@@ -546,134 +671,204 @@ function Descrever-Versao([string]$Versao, $Data) {
     return $txt
 }
 
-# ---- Fonte: ZIP ao lado do .bat ou GitHub ----------------------------------------------------------------
-function Mensagem-SemPacote {
-    return ("Não achei a versão nova.`n" +
-        "    Coloque o arquivo ZIP do Proclamare (o do pen drive) nesta pasta, ao lado do`n" +
-        "    'Atualizar Proclamare.bat', e dê dois cliques nele de novo.`n" +
-        "    Nada foi alterado: o Proclamare continua como estava.")
+# ---- Fonte: ZIP ao lado do .bat ou a ultima release do GitHub ------------------------------------------------
+# Testes automaticos: PROCLAMARE_ATUALIZAR_TESTE_GITHUB=http://127.0.0.1:<porta> troca OS DOIS hosts por um
+# servidor falso local (so loopback; qualquer outro valor e recusado). Sem a variavel: HTTPS nos hosts fixos.
+function Url-De-Teste {
+    $u = [string]$env:PROCLAMARE_ATUALIZAR_TESTE_GITHUB
+    if (-not $u) { return $null }
+    if ($u -cmatch '^http://127\.0\.0\.1:[0-9]{1,5}$') { return $u }
+    Recusar 'A variável PROCLAMARE_ATUALIZAR_TESTE_GITHUB só aceita http://127.0.0.1:<porta>. Nada foi alterado.'
 }
 
-function Baixar-Pacote([string]$Destino) {
-    # TLS 1.2 ou 1.3 (nunca SSL3/TLS 1.0/1.1)
-    try {
+function Texto-SemInternet([string]$Detalhe) {
+    Registrar ('internet: ' + $Detalhe)
+    return ("Não consegui falar com o GitHub (sem internet, ou a rede bloqueia o endereço).`n" + (Texto-ColoqueZip))
+}
+
+# Abre uma requisicao GET num host FIXO, sem seguir redirecionamento. Devolve a resposta (qualquer status).
+function Abrir-Url([string]$Url, [string]$HostFixo, [string]$Aceitar) {
+    $teste = Url-De-Teste
+    $esquema = if ($teste) { 'http' } else { 'https' }
+    $hostEsperado = if ($teste) { '127.0.0.1' } else { $HostFixo }
+    $uri = [System.Uri]$Url
+    if ($uri.Scheme -ne $esquema -or -not [string]::Equals($uri.Host, $hostEsperado, $OrdIC)) {
+        Recusar 'Endereço de download inválido. Nada foi alterado.'
+    }
+    try {   # TLS 1.2 ou 1.3 (nunca SSL3/TLS 1.0/1.1)
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor ([System.Net.SecurityProtocolType]12288)
     } catch {
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
     }
-    $uri = [System.Uri]$UrlPacote
-    if ($uri.Scheme -ne 'https' -or $uri.Host -ne $HostPacote) { Recusar 'Endereço de download inválido.' }
-    $resp = $null
+    $req = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($uri)
+    $req.UserAgent = $UserAgent
+    $req.Accept = $Aceitar
+    $req.Timeout = 30000
+    $req.ReadWriteTimeout = 30000
+    $req.AllowAutoRedirect = $false     # host fixo: nenhum desvio para outro endereco
+    $req.KeepAlive = $false
+    if ($teste) { $req.Proxy = $null } else {
+        $req.Proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+        $req.Proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+    }
+    try {
+        $resp = [System.Net.HttpWebResponse]$req.GetResponse()
+    } catch {
+        $ex = $_.Exception
+        while ($ex -and -not ($ex -is [System.Net.WebException])) { $ex = $ex.InnerException }
+        if ($ex -and $ex.Response) { $resp = [System.Net.HttpWebResponse]$ex.Response }
+        else { Recusar (Texto-SemInternet $_.Exception.Message) }
+    }
+    $final = $resp.ResponseUri
+    if ($final.Scheme -ne $esquema -or -not [string]::Equals($final.Host, $hostEsperado, $OrdIC)) {
+        $resp.Close()
+        Recusar 'O download foi desviado para outro endereço; por segurança ele foi cancelado. Nada foi alterado.'
+    }
+    $st = [int]$resp.StatusCode
+    if ($st -ge 300 -and $st -lt 400) {
+        $resp.Close()
+        Recusar 'O GitHub mandou ir para outro endereço; por segurança o download foi cancelado. Nada foi alterado.'
+    }
+    return $resp
+}
+
+# Le o corpo da resposta com teto de bytes e de tempo (para um arquivo novo, ou em memoria se $Destino vazio).
+function Ler-Corpo($Resp, [long]$Max, [string]$Destino) {
+    if ($Resp.ContentLength -gt $Max) { Recusar 'A resposta do GitHub é grande demais; por segurança o download foi cancelado. Nada foi alterado.' }
     $entrada = $null
     $saida = $null
     try {
-        try {
-            $req = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($uri)
-            $req.UserAgent = 'Proclamare-atualizador'
-            $req.Timeout = 30000
-            $req.ReadWriteTimeout = 30000
-            $req.AllowAutoRedirect = $false     # host fixo: nenhum desvio para outro endereco
-            $req.KeepAlive = $false
-            $req.Proxy = [System.Net.WebRequest]::GetSystemWebProxy()
-            $req.Proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
-            $resp = [System.Net.HttpWebResponse]$req.GetResponse()
-        } catch {
-            $ex = $_.Exception
-            while ($ex.InnerException -and -not ($ex -is [System.Net.WebException])) { $ex = $ex.InnerException }
-            Registrar ('download falhou: ' + $ex.Message)
-            Recusar ("Não consegui baixar a versão nova pela internet (sem internet ou a rede bloqueia o GitHub).`n" +
-                "    Coloque o arquivo ZIP do Proclamare (o do pen drive) nesta pasta, ao lado do`n" +
-                "    'Atualizar Proclamare.bat', e dê dois cliques nele de novo.`n" +
-                "    Nada foi alterado: o Proclamare continua como estava.")
-        }
-        if ([int]$resp.StatusCode -ne 200) { Recusar "O GitHub respondeu com o código $([int]$resp.StatusCode); por segurança o download foi cancelado. Nada foi alterado." }
-        $final = $resp.ResponseUri
-        if ($final.Scheme -ne 'https' -or $final.Host -ne $HostPacote) { Recusar 'O download foi desviado para outro endereço; por segurança ele foi cancelado. Nada foi alterado.' }
-        if ($resp.ContentLength -gt $DownloadMaxBytes) { Recusar 'O arquivo no GitHub é grande demais; por segurança o download foi cancelado. Nada foi alterado.' }
-        $entrada = $resp.GetResponseStream()
-        $saida = [System.IO.File]::Open($Destino, 'CreateNew', 'Write', 'None')
+        $entrada = $Resp.GetResponseStream()
+        $saida = if ($Destino) { [System.IO.File]::Open($Destino, 'CreateNew', 'Write', 'None') } else { New-Object System.IO.MemoryStream }
         $buf = New-Object byte[] 65536
         $total = [long]0
         $relogio = [System.Diagnostics.Stopwatch]::StartNew()
         while ($true) {
             try { $n = $entrada.Read($buf, 0, $buf.Length) } catch {
-                Registrar ('download interrompido: ' + $_.Exception.Message)
-                Recusar ("O download parou no meio (internet instável).`n" + (Mensagem-SemPacote))
+                Recusar ("O download parou no meio (internet instável).`n" + (Texto-ColoqueZip))
             }
             if ($n -le 0) { break }
             $total += $n
-            if ($total -gt $DownloadMaxBytes) { Recusar 'O arquivo recebido é maior que o esperado; por segurança o download foi cancelado. Nada foi alterado.' }
+            if ($total -gt $Max) { Recusar 'O arquivo recebido é maior que o esperado; por segurança o download foi cancelado. Nada foi alterado.' }
             $saida.Write($buf, 0, $n)
             if ($relogio.Elapsed.TotalSeconds -gt $DownloadMaxSeg) {
-                Recusar ("O download está demorando demais e foi cancelado.`n" + (Mensagem-SemPacote))
+                Recusar ("O download está demorando demais e foi cancelado.`n" + (Texto-ColoqueZip))
             }
         }
-        Ok ('baixado: {0:N1} MB' -f ($total / 1MB))
+        if (-not $Destino) { return , $saida.ToArray() }
+        return $total
     } finally {
         if ($saida) { $saida.Dispose() }
         if ($entrada) { $entrada.Dispose() }
-        if ($resp) { $resp.Close() }
+        $Resp.Close()
     }
 }
 
-# ---- Conferir e extrair o pacote -----------------------------------------------------------------------
-$NomesReservados = '^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$'
+# Ultima release publicada: devolve a tag (vX.Y[.Z]) ja validada.
+function Ler-Release {
+    $teste = Url-De-Teste
+    $base = if ($teste) { $teste } else { "https://$HostApi" }
+    $resp = Abrir-Url "$base/repos/$RepoGitHub/releases/latest" $HostApi 'application/vnd.github+json'
+    $st = [int]$resp.StatusCode
+    if ($st -eq 404) {
+        $resp.Close()
+        Recusar ("Ainda não há nenhuma versão publicada do Proclamare no GitHub.`n" + (Texto-ColoqueZip))
+    }
+    if ($st -ne 200) {
+        $resp.Close()
+        Recusar ("O GitHub respondeu com o código $st.`n" + (Texto-ColoqueZip))
+    }
+    $bytes = Ler-Corpo $resp $ReleaseMaxBytes ''
+    try {
+        $info = [System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
+        $tag = [string]$info.tag_name
+    } catch { $tag = '' }
+    if ($tag -cnotmatch $PadraoTag) {
+        Registrar ('tag recusada: ' + ($tag -replace '[^\x20-\x7e]', '?'))
+        Recusar 'A versão publicada no GitHub tem um nome inesperado; por segurança nada foi baixado. Nada foi alterado.'
+    }
+    return $tag
+}
 
+function Baixar-Tag([string]$Tag, [string]$Destino) {
+    $teste = Url-De-Teste
+    $base = if ($teste) { $teste } else { "https://$HostPacote" }
+    $resp = Abrir-Url "$base/$RepoGitHub/zip/refs/tags/$Tag" $HostPacote 'application/zip'
+    $st = [int]$resp.StatusCode
+    if ($st -ne 200) {
+        $resp.Close()
+        Recusar ("O GitHub respondeu com o código $st ao baixar a versão $Tag.`n" + (Texto-ColoqueZip))
+    }
+    $total = Ler-Corpo $resp $DownloadMaxBytes $Destino
+    Ok ('baixado: {0:N1} MB' -f ($total / 1MB))
+}
+
+# ---- Conferir e extrair o pacote -----------------------------------------------------------------------
 # Nome de entrada do ZIP normalizado ('/' como separador) ou $null se for suspeito.
 function Nome-Seguro([string]$Bruto) {
     $n = $Bruto.Replace('\', '/')
     if (-not $n) { return $null }
-    if ($n.StartsWith('/') -or $n.Contains(':')) { return $null }        # absoluto, letra de disco ou fluxo alternativo
+    if ($n.StartsWith('/', $Ord) -or $n.Contains(':')) { return $null }    # absoluto, letra de disco ou fluxo alternativo
+    if ($n -match '[\p{Cf}\p{Co}]') { return $null }                        # invisiveis (bidi, largura zero) e uso privado
     $corpo = $n.TrimEnd('/')
     if (-not $corpo) { return $null }
     foreach ($seg in $corpo.Split('/')) {
         if ($seg -eq '' -or $seg -eq '.' -or $seg -eq '..') { return $null }
         if ($seg -match '[<>"|?*\x00-\x1f]') { return $null }
-        if ($seg.EndsWith('.') -or $seg.EndsWith(' ')) { return $null }
+        if ($seg.EndsWith('.', $Ord) -or $seg.EndsWith(' ', $Ord)) { return $null }
         if ($seg -match $NomesReservados) { return $null }
     }
     return $n
 }
+# Nome curto do Windows (8.3), ex.: CONFIG~1.JSO: abriria outro arquivo, de nome longo.
+function Parece-Nome-Curto([string]$Seg) { return ($Seg -match '~[0-9]') }
 
 # Devolve @{ Raiz = pasta extraida; Data = data mais nova do pacote }.
 function Extrair-Pacote([string]$ArquivoZip, [string]$Destino) {
     Add-Type -AssemblyName System.IO.Compression
     $fs = $null
     $za = $null
+    $nomeZip = [System.IO.Path]::GetFileName($ArquivoZip)
     try {
         try { $fs = [System.IO.File]::Open($ArquivoZip, 'Open', 'Read', 'Read') } catch {
-            Recusar "Não consegui abrir o arquivo $([System.IO.Path]::GetFileName($ArquivoZip)) (ele está aberto em outro programa?). Nada foi alterado."
+            Recusar "Não consegui abrir o arquivo $nomeZip (ele está aberto em outro programa?). Nada foi alterado."
         }
         try {
             $za = New-Object System.IO.Compression.ZipArchive($fs, [System.IO.Compression.ZipArchiveMode]::Read, $true)
             $entradas = @($za.Entries)
         } catch {
-            Recusar ("O arquivo $([System.IO.Path]::GetFileName($ArquivoZip)) não é um ZIP válido (incompleto ou estragado).`n" +
+            Recusar ("O arquivo $nomeZip não é um ZIP válido (incompleto ou estragado).`n" +
                 '    Copie o ZIP de novo do pen drive (ou baixe de novo) e tente outra vez. Nada foi alterado.')
         }
         if ($entradas.Count -gt $ZipMaxEntradasTotal) { Recusar "O ZIP tem arquivos demais ($($entradas.Count)); não parece o Proclamare. Nada foi alterado." }
 
         # 1) Todos os nomes conferidos ANTES de extrair qualquer coisa.
-        $arquivos = @{}       # nome normalizado (minusculas) -> entrada
+        $arquivos = Nova-Tabela       # nome normalizado (minusculas) -> entrada
         foreach ($e in $entradas) {
             $n = Nome-Seguro $e.FullName
             if (-not $n) { Recusar "O ZIP traz um nome de arquivo perigoso ($($e.FullName)); por segurança ele foi recusado. Nada foi alterado." }
+            foreach ($seg in $n.TrimEnd('/').Split('/')) {
+                if (Parece-Nome-Curto $seg) { Recusar "O ZIP traz um nome perigoso ($($n): parece um nome curto do Windows); por segurança ele foi recusado. Nada foi alterado." }
+            }
             $ext = 0
             try { $ext = [int]$e.ExternalAttributes } catch { $ext = 0 }
             if (((($ext -shr 16) -band 0xF000) -eq 0xA000) -or (($ext -band 0x400) -ne 0)) {
                 Recusar "O ZIP traz um link ($($e.FullName)); por segurança ele foi recusado. Nada foi alterado."
             }
-            if ($n.EndsWith('/')) { continue }
+            if ($n.EndsWith('/', $Ord)) { continue }
             $chave = $n.ToLowerInvariant()
             if ($arquivos.ContainsKey($chave)) { Recusar "O ZIP traz o mesmo arquivo duas vezes ($n); por segurança ele foi recusado. Nada foi alterado." }
             $arquivos[$chave] = $e
         }
 
-        # 2) Uma unica raiz com os arquivos-chave do Proclamare.
+        # 2) Uma unica raiz com os arquivos-chave do Proclamare (fora de pastas protegidas, ex.: backups\...).
         $raizes = @()
         foreach ($k in @($arquivos.Keys)) {
-            if ($k -ne 'server.py' -and -not $k.EndsWith('/server.py')) { continue }
+            if ($k -ne 'server.py' -and -not $k.EndsWith('/server.py', $Ord)) { continue }
             $pre = $k.Substring(0, $k.Length - 'server.py'.Length)
+            $protegida = $false
+            foreach ($seg in $pre.TrimEnd('/').Split('/')) { if ($seg -and (Eh-Protegida $seg)) { $protegida = $true } }
+            if ($protegida) { continue }
             if ($arquivos.ContainsKey($pre + 'proclamare.pyw') -and $arquivos.ContainsKey($pre + 'static/app.js') -and
                 $arquivos.ContainsKey($pre + 'requirements.lock')) { $raizes += $pre }
         }
@@ -684,24 +879,28 @@ function Extrair-Pacote([string]$ArquivoZip, [string]$Destino) {
         if ($raizes.Count -gt 1) { Recusar 'Este ZIP tem mais de uma cópia do Proclamare dentro; use um ZIP com uma só. Nada foi alterado.' }
         $pre = [string]$raizes[0]
 
-        # 3) O que sera extraido: so a raiz do Proclamare, sem dados nem pastas protegidas.
+        # 3) O que sera extraido: so a raiz do Proclamare, sem pastas protegidas. Nome de DADO em qualquer
+        #    parte do caminho = pacote recusado (um ZIP nunca traz config.json, contas.json etc.).
         $escolhidas = @()
         $soma = [long]0
         $dataMaisNova = $null
         foreach ($k in @($arquivos.Keys)) {
-            if (-not $k.StartsWith($pre)) { continue }
+            if (-not $k.StartsWith($pre, $Ord)) { continue }
             $e = $arquivos[$k]
             $rel = (Nome-Seguro $e.FullName).Substring($pre.Length)
             $segs = $rel.Split('/')
             if (Eh-Protegida $segs[0]) { continue }
-            if (@($segs | Where-Object { $_ -ieq '__pycache__' }).Count -gt 0) { continue }
+            foreach ($seg in $segs) {
+                if (Eh-Dado $seg) { Recusar "O ZIP traz um arquivo de dados ($rel); por segurança ele foi recusado (um pacote nunca traz dados). Nada foi alterado." }
+            }
+            if (@($segs | Where-Object { [string]::Equals($_, '__pycache__', $OrdIC) }).Count -gt 0) { continue }
             if (Eh-Ignorado $segs[-1]) { continue }
             if ($e.Length -gt $ZipMaxArquivoBytes) { Recusar "O ZIP traz um arquivo grande demais ($rel). Nada foi alterado." }
             $soma += $e.Length
             $escolhidas += , @($e, $rel)
             try {
                 $d = $e.LastWriteTime.DateTime
-                if ($d.Year -ge 2000 -and ($segs.Count -eq 1 -or $segs[0] -ieq 'static') -and ($null -eq $dataMaisNova -or $d -gt $dataMaisNova)) { $dataMaisNova = $d }
+                if ($d.Year -ge 2000 -and ($segs.Count -eq 1 -or [string]::Equals($segs[0], 'static', $OrdIC)) -and ($null -eq $dataMaisNova -or $d -gt $dataMaisNova)) { $dataMaisNova = $d }
             } catch { }
         }
         if ($escolhidas.Count -gt $ZipMaxEntradas) { Recusar "O ZIP tem arquivos demais ($($escolhidas.Count)); não parece o Proclamare. Nada foi alterado." }
@@ -716,7 +915,7 @@ function Extrair-Pacote([string]$ArquivoZip, [string]$Destino) {
             $e = $par[0]
             $rel = $par[1]
             $alvo = [System.IO.Path]::GetFullPath($base + $rel.Replace('/', '\'))
-            if (-not $alvo.StartsWith($base, [System.StringComparison]::OrdinalIgnoreCase)) {
+            if (-not $alvo.StartsWith($base, $OrdIC)) {
                 Recusar "O ZIP tentou gravar fora da pasta temporária ($rel). Nada foi alterado."
             }
             if ($alvo.Length -gt $CaminhoMax) {
@@ -724,10 +923,18 @@ function Extrair-Pacote([string]$ArquivoZip, [string]$Destino) {
                     '    Nada foi alterado. Avise o suporte e mande o arquivo logs\atualizar.log.')
             }
             if ($e.Length -eq $script:BatTamanho) {
-                # Mesmo tamanho do .bat em uso: confere em memoria ANTES de gravar (ver Eh-Copia-Do-Bat).
+                # Mesmo tamanho do .bat em uso: confere em memoria ANTES de gravar (ver Eh-Copia-Do-Bat),
+                # lendo no maximo o tamanho declarado + 1 byte.
                 $ms = New-Object System.IO.MemoryStream
                 $in = $e.Open()
-                try { $in.CopyTo($ms) } catch [System.IO.InvalidDataException] {
+                try {
+                    $lidos = [long]0
+                    while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+                        $lidos += $n
+                        if ($lidos -gt $e.Length) { Recusar "O arquivo $rel é maior do que o declarado no ZIP. Nada foi alterado." }
+                        $ms.Write($buf, 0, $n)
+                    }
+                } catch [System.IO.InvalidDataException] {
                     Recusar "O ZIP está estragado ($rel). Copie-o de novo e tente outra vez. Nada foi alterado."
                 } finally { $in.Dispose() }
                 if ((Hash-De-Bytes $ms.ToArray()) -eq $script:BatHash) {
@@ -766,8 +973,6 @@ function Extrair-Pacote([string]$ArquivoZip, [string]$Destino) {
 }
 
 # ---- Copia de seguranca (backups\AAAA-MM-DD_HHMMSS) ----------------------------------------------------------
-$PadraoNomeBackup = '^\d{4}-\d{2}-\d{2}_\d{6}(_\d+)?$'
-
 function Fazer-Backup([string[]]$PastasDoPacote, [string[]]$ArquivosDoPacote) {
     $pastaBackups = Join-Path $script:Raiz 'backups'
     if ([System.IO.Directory]::Exists($pastaBackups) -and (Eh-Link (New-Object System.IO.DirectoryInfo($pastaBackups)))) {
@@ -777,7 +982,7 @@ function Fazer-Backup([string[]]$PastasDoPacote, [string[]]$ArquivosDoPacote) {
     $nome = (Get-Date).ToString('yyyy-MM-dd_HHmmss')
     $destino = Join-Path $pastaBackups $nome
     $i = 2
-    while (Test-Path -LiteralPath $destino) { $destino = Join-Path $pastaBackups ($nome + '_' + $i); $i++ }
+    while ([System.IO.Directory]::Exists($destino) -or [System.IO.File]::Exists($destino)) { $destino = Join-Path $pastaBackups ($nome + '_' + $i); $i++ }
     [void][System.IO.Directory]::CreateDirectory($destino)
     try {
         foreach ($f in (Filhos $script:Raiz)) {
@@ -793,45 +998,120 @@ function Fazer-Backup([string[]]$PastasDoPacote, [string[]]$ArquivosDoPacote) {
     } catch {
         try { [System.IO.Directory]::Delete($destino, $true) } catch { }
         Recusar ("Não consegui fazer a cópia de segurança do código atual: $($_.Exception.Message)`n" +
-            '    (disco cheio ou arquivo em uso?). Nada foi alterado; o Proclamare continua como estava.')
+            '    (disco cheio ou arquivo em uso?). Nada foi alterado.')
     }
     return $destino
 }
 
+# So poda depois de ESTA execucao ter criado uma copia; nunca apaga a desta execucao nem as protegidas.
 function Podar-Backups {
+    if (-not $script:Backup -or -not $script:Raiz) { return }
     $pastaBackups = Join-Path $script:Raiz 'backups'
-    if (-not [System.IO.Directory]::Exists($pastaBackups)) { return }
+    if (-not [System.IO.Directory]::Exists($pastaBackups) -or (Eh-Link (New-Object System.IO.DirectoryInfo($pastaBackups)))) { return }
     $nossas = @(Filhos $pastaBackups | Where-Object {
             $_ -is [System.IO.DirectoryInfo] -and -not (Eh-Link $_) -and $_.Name -match $PadraoNomeBackup } |
         Sort-Object Name -Descending)
     if ($nossas.Count -le $BackupsManter) { return }
     foreach ($velha in $nossas[$BackupsManter..($nossas.Count - 1)]) {
-        # Nunca apaga a copia desta execucao (ela pode ser preciosa se a volta falhou).
-        if ($script:Backup -and $velha.FullName -ieq $script:Backup) { continue }
+        if ([string]::Equals($velha.FullName, $script:Backup, $OrdIC)) { continue }
+        if (@($script:BackupsProtegidos | Where-Object { [string]::Equals($_, $velha.FullName, $OrdIC) }).Count -gt 0) { continue }
         if (Achar-Link $velha.FullName) { continue }   # nunca segue um link ao apagar
         try { [System.IO.Directory]::Delete($velha.FullName, $true); Registrar "cópia antiga apagada: $($velha.Name)" } catch { }
     }
 }
 
-# ---- Instalar e voltar ------------------------------------------------------------------------------------
-function Instalar-Codigo([string]$Novo) {
-    $script:Fase = 'alterando'
-    foreach ($f in (Filhos $Novo)) {
-        if (-not ($f -is [System.IO.DirectoryInfo]) -or (Eh-Protegida $f.Name)) { continue }
-        $alvo = Join-Path $script:Raiz $f.Name
-        $script:PastasTocadas += , @{ Nome = $f.Name; Existia = [System.IO.Directory]::Exists($alvo) }
-        Espelhar $f.FullName $alvo
+# ---- Plano da instalacao (logs\atualizar.pendente) -------------------------------------------------------
+function Arq-Pendente { return (Join-Path $script:Raiz 'logs\atualizar.pendente') }
+
+function Gravar-Pendente {
+    $obj = [ordered]@{
+        backup = [System.IO.Path]::GetFileName($script:Backup)
+        pip = [bool]$script:PipRodou
+        pastas = @($script:PastasTocadas | ForEach-Object { [ordered]@{ nome = $_.Nome; existia = [bool]$_.Existia } })
+        arquivos = @($script:ArquivosTocados | ForEach-Object { [ordered]@{ nome = $_.Nome; existia = [bool]$_.Existia } })
     }
+    $arq = Arq-Pendente
+    $tmp = $arq + '.novo'
+    [System.IO.File]::WriteAllText($tmp, ($obj | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::Copy($tmp, $arq, $true)
+    [System.IO.File]::Delete($tmp)
+}
+function Remover-Pendente {
+    try { $arq = Arq-Pendente; if ([System.IO.File]::Exists($arq)) { [System.IO.File]::Delete($arq) } } catch { Registrar ('pendente: ' + $_.Exception.Message) }
+}
+# Nome de pasta/arquivo de primeiro nivel vindo do plano: so um nome simples, de codigo.
+function Nome-De-Plano-Ok($Nome) {
+    $n = [string]$Nome
+    if (-not $n -or $n -eq '.' -or $n -eq '..' -or $n.IndexOfAny([char[]]'\/:*?"<>|') -ge 0) { return $false }
+    if ((Eh-Protegida $n) -or (Eh-Ignorado $n) -or (Parece-Nome-Curto $n)) { return $false }
+    return $true
+}
+
+# A ultima atualizacao parou no meio (falta de luz, janela fechada): poe de volta a versao anterior.
+function Recuperar-Pendente {
+    $arq = Arq-Pendente
+    if (-not [System.IO.File]::Exists($arq)) { return }
+    Passo 'A última atualização foi interrompida; pondo de volta a versão anterior...'
+    $plano = $null
+    try { $plano = [System.IO.File]::ReadAllText($arq, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch { }
+    $copia = $null
+    if ($plano -and ([string]$plano.backup) -match $PadraoNomeBackup) {
+        $c = Join-Path $script:Raiz ('backups\' + [string]$plano.backup)
+        if ([System.IO.Directory]::Exists($c) -and -not (Achar-Link (Join-Path $script:Raiz 'backups'))) { $copia = $c }
+    }
+    if (-not $copia) {
+        Aviso 'não achei a cópia daquela atualização; sigo com o que está na pasta.'
+        Remover-Pendente
+        return
+    }
+    if (-not (Parar-Proclamare)) {
+        Recusar ("O Proclamare não desligou (talvez ele tenha sido ligado por outro jeito, por exemplo numa janela preta).`n" +
+            "    Feche essa janela ou use 'Desligar Proclamare' no Menu Iniciar e tente de novo.")
+    }
+    $script:Backup = $copia
+    $script:PastasTocadas = @(@($plano.pastas) | Where-Object { $_ -and (Nome-De-Plano-Ok $_.nome) } | ForEach-Object { @{ Nome = [string]$_.nome; Existia = [bool]$_.existia } })
+    $script:ArquivosTocados = @(@($plano.arquivos) | Where-Object { $_ -and (Nome-De-Plano-Ok $_.nome) } | ForEach-Object { @{ Nome = [string]$_.nome; Existia = [bool]$_.existia } })
+    $script:PipRodou = [bool]$plano.pip
+    $script:Fase = 'voltando'
+    if (-not (Voltar-Codigo-Com-Nova-Tentativa)) {
+        $e = New-Object System.Exception 'a volta da atualização interrompida falhou'
+        $e.Data['proclamare'] = 'volta'
+        throw $e
+    }
+    Remover-Pendente
+    $script:BackupsProtegidos += $copia
+    $script:Backup = $null
+    $script:PastasTocadas = @()
+    $script:ArquivosTocados = @()
+    $script:PipRodou = $false
+    $script:Fase = 'preparando'
+    Ok 'a versão anterior está de volta; agora sigo com a atualização.'
+}
+
+# ---- Instalar e voltar ------------------------------------------------------------------------------------
+# O plano (o que sera tocado e se ja existia) e montado ANTES de mexer, para a volta saber o que desfazer.
+function Planejar-Instalacao([string]$Novo) {
+    $script:PastasTocadas = @()
+    $script:ArquivosTocados = @()
     foreach ($f in (Filhos $Novo)) {
-        if ($f -is [System.IO.DirectoryInfo] -or (Eh-Ignorado $f.Name) -or (Eh-Protegida $f.Name)) { continue }
-        $alvo = Join-Path $script:Raiz $f.Name
-        $script:ArquivosTocados += , @{ Nome = $f.Name; Existia = [System.IO.File]::Exists($alvo) }
-        Copiar-Arquivo $f.FullName $alvo
+        if ($f -is [System.IO.DirectoryInfo]) {
+            if (Eh-Protegida $f.Name) { continue }
+            $script:PastasTocadas += , @{ Nome = $f.Name; Existia = [System.IO.Directory]::Exists((Join-Path $script:Raiz $f.Name)) }
+        } else {
+            if ((Eh-Ignorado $f.Name) -or (Eh-Protegida $f.Name)) { continue }
+            $script:ArquivosTocados += , @{ Nome = $f.Name; Existia = [System.IO.File]::Exists((Join-Path $script:Raiz $f.Name)) }
+        }
     }
 }
 
+function Instalar-Codigo([string]$Novo) {
+    $script:Fase = 'alterando'
+    foreach ($p in $script:PastasTocadas) { Espelhar (Join-Path $Novo $p.Nome) (Join-Path $script:Raiz $p.Nome) }
+    foreach ($a in $script:ArquivosTocados) { Copiar-Arquivo (Join-Path $Novo $a.Nome) (Join-Path $script:Raiz $a.Nome) }
+}
+
 function Rodar-Pip([string]$Lock) {
-    $r = Rodar-Processo $script:VenvPy @('-I', '-m', 'pip', 'install', '--require-hashes', '--only-binary', ':all:',
+    $r = Rodar-Processo $script:VenvPy @('-I', '-m', 'pip', 'install', '--isolated', '--require-hashes', '--only-binary', ':all:',
         '--no-deps', '--disable-pip-version-check', '-r', $Lock) $PipMaxSeg
     Registrar ("pip: codigo $($r.Codigo)`n" + (Ultimas-Linhas ($r.Saida + "`n" + $r.Erro) 20))
     return (-not $r.Estourou -and $r.Codigo -eq 0)
@@ -852,7 +1132,8 @@ function Voltar-Codigo {
             $alvo = Join-Path $script:Raiz $a.Nome
             $copia = Join-Path $b $a.Nome
             if ($a.Existia -and [System.IO.File]::Exists($copia)) { Copiar-Arquivo $copia $alvo }
-            elseif (-not $a.Existia) { Apagar-Arquivo $alvo }
+            elseif ($a.Existia) { Registrar "volta: $($a.Nome) não tem cópia (fica o arquivo novo; ex.: o próprio atualizador em uso)" }
+            else { Apagar-Arquivo $alvo }
         } catch { $falhas++; Registrar "volta: falhou o arquivo $($a.Nome): $($_.Exception.Message)" }
     }
     if ($script:PipRodou) {
@@ -865,20 +1146,40 @@ function Voltar-Codigo {
     return ($falhas -eq 0)
 }
 
+# Uma nova tentativa depois de 5 s (antivirus ou indexador segurando um arquivo). Nunca engole a excecao: registra.
+function Voltar-Codigo-Com-Nova-Tentativa {
+    $ok = $false
+    try { $ok = [bool](@(Voltar-Codigo)[-1]) } catch { Registrar ('volta: ' + $_.ToString()) }
+    if ($ok) { return $true }
+    Aviso 'alguns arquivos não voltaram; tentando de novo em 5 segundos...'
+    Start-Sleep -Seconds 5
+    try { $ok = [bool](@(Voltar-Codigo)[-1]) } catch { Registrar ('volta (2ª tentativa): ' + $_.ToString()) }
+    return $ok
+}
+
+function Dizer-VoltaFalhou {
+    Dizer ("`nATENÇÃO: não consegui voltar todos os arquivos da versão anterior.`n" +
+        "    A cópia do programa antigo está em: $($script:Backup)`n" +
+        "    Seus dados NÃO foram mexidos. Não ligue o Proclamare: peça ajuda ao suporte e mande o arquivo`n" +
+        '    logs\atualizar.log. Ao rodar o atualizador de novo, ele tenta pôr a versão anterior de volta primeiro.') 'Red'
+}
+
 # Volta a versao anterior e (sem -SemReiniciar) liga de novo. Devolve o codigo de saida (1 ou 3).
 function Voltar-Versao([string]$Motivo, $Opc) {
+    $script:Fase = 'voltando'
     Dizer "`nERRO: $Motivo" 'Red'
     Passo 'Voltando para a versão anterior (cópia de segurança)...'
     # Sempre pede ao lancador: uma versao nova lenta pode estar viva sem responder ainda (segurando a porta).
-    [void](Parar-Proclamare)
-    $ok = Voltar-Codigo
-    if (-not $ok) {
-        Dizer ("`nATENÇÃO: não consegui voltar todos os arquivos da versão anterior.`n" +
-            "    A cópia do código antigo está em: $($script:Backup)`n" +
-            "    Seus dados NÃO foram mexidos. Peça ajuda ao suporte e mostre o arquivo logs\atualizar.log.") 'Red'
+    try { [void](Parar-Proclamare) } catch { Registrar ('parar (volta): ' + $_.ToString()) }
+    if (-not (Voltar-Codigo-Com-Nova-Tentativa)) {
+        Dizer-VoltaFalhou
         return 3
     }
+    Remover-Pendente
     Ok 'arquivos da versão anterior de volta.'
+    # Se o lancador NOVO nao conseguiu soltar a porta, o lancador da copia (agora de volta na pasta) tenta.
+    if (Porta-Ocupada) { try { [void](Parar-Proclamare) } catch { Registrar ('parar (copia): ' + $_.ToString()) } }
+    $script:Fase = 'pronto'
     if ($Opc.SemReiniciar) {
         Dizer "`nA atualização NÃO foi feita: o Proclamare voltou para a versão anterior. Seus dados foram mantidos." 'Yellow'
         return 1
@@ -948,7 +1249,7 @@ function Conferir-Codigo([string[]]$Pastas) {
 function Espaco-Livre-MB([string]$Pasta) {
     try {
         $raizDisco = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($Pasta))
-        if (-not $raizDisco -or $raizDisco.StartsWith('\\')) { return $null }
+        if (-not $raizDisco -or $raizDisco.StartsWith('\\', $Ord)) { return $null }
         return [long]((New-Object System.IO.DriveInfo($raizDisco)).AvailableFreeSpace / 1MB)
     } catch { return $null }
 }
@@ -966,7 +1267,24 @@ function Limpar-Temporarios-Antigos {
     } catch { }
 }
 
-# ---- Fluxo principal -------------------------------------------------------------------------------------
+# Trava "uma atualizacao por vez" em logs\atualizar.lock (some sozinha se a janela fechar).
+function Abrir-Trava {
+    $arq = Join-Path $script:Raiz 'logs\atualizar.lock'
+    try {
+        $script:Trava = [System.IO.File]::Open($arq, 'OpenOrCreate', 'ReadWrite', 'None')
+    } catch {
+        $ex = $_.Exception
+        while ($ex.InnerException) { $ex = $ex.InnerException }
+        # 0x80070020 = arquivo em uso por outro processo (outra janela do atualizador)
+        if ($ex -is [System.IO.IOException] -and ($ex.HResult -band 0xFFFF) -eq 0x20) {
+            Recusar 'Já tem uma atualização do Proclamare rodando (outra janela). Espere ela terminar. Nada foi alterado.'
+        }
+        Recusar ("Não consegui gravar na pasta logs do Proclamare ($($ex.Message)).`n" +
+            '    Confira se a pasta logs existe e se você pode gravar nela. Nada foi alterado.')
+    }
+}
+
+# ==== FLUXO PRINCIPAL (os testes de funcao usam so o que vem ACIMA desta linha) ====
 function Atualizar {
     $bat = [string]$env:PROCLAMARE_ATUALIZAR_BAT
     $argsTexto = [string]$env:PROCLAMARE_ATUALIZAR_ARGS
@@ -978,29 +1296,28 @@ function Atualizar {
         $script:BatTamanho = $bytesBat.Length
         $script:BatHash = Hash-De-Bytes $bytesBat
     } catch { Recusar 'Não consegui ler o arquivo do atualizador.' }
-    $pastaBat = Split-Path -Parent $bat
+    $pastaBat = [System.IO.Path]::GetDirectoryName($bat)
     $opc = Ler-Opcoes $argsTexto
     $script:Opc = $opc
 
     $raiz = if ($opc.PastaInstalacao) { $opc.PastaInstalacao } else { $pastaBat }
     $raiz = [System.IO.Path]::GetFullPath($raiz).TrimEnd('\')
-    $script:Raiz = $raiz
     Dizer '=== Atualizar o Proclamare ===' 'White'
     Dizer "Pasta do Proclamare: $raiz"
+    if (Deve-Recusar-Elevado (Esta-Elevado) (Uac-Ligado)) {
+        Recusar ("O atualizador NÃO precisa de administrador (e não deve rodar assim).`n" +
+            "    Feche esta janela e dê dois cliques no 'Atualizar Proclamare.bat' normalmente,`n" +
+            "    sem 'Executar como administrador'. Nada foi alterado.")
+    }
     if (-not [System.IO.File]::Exists((Join-Path $raiz 'Proclamare.pyw')) -or -not [System.IO.File]::Exists((Join-Path $raiz 'server.py'))) {
         Recusar ("Esta pasta não é a do Proclamare (não achei o Proclamare.pyw e o server.py aqui).`n" +
             "    Copie o 'Atualizar Proclamare.bat' (e o ZIP, se tiver) para a pasta do Proclamare no computador`n" +
             '    da loja, a que tem o arquivo Proclamare.pyw, e dê dois cliques nele lá. Nada foi alterado.')
     }
+    $script:Raiz = $raiz
     Iniciar-Log
     Registrar "opcoes: SemReiniciar=$($opc.SemReiniciar) SemRede=$($opc.SemRede) Zip=$([bool]$opc.Zip) EsperaInicio=$($opc.EsperaInicio)"
-
-    # Uma atualizacao por vez (a trava some sozinha se esta janela for fechada).
-    try {
-        $script:Trava = [System.IO.File]::Open((Join-Path $raiz 'logs\atualizar.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
-    } catch {
-        Recusar 'Já tem uma atualização do Proclamare rodando (outra janela). Espere ela terminar. Nada foi alterado.'
-    }
+    Abrir-Trava
 
     $script:VenvPy = Join-Path $raiz '.venv\Scripts\python.exe'
     $script:VenvPyw = Join-Path $raiz '.venv\Scripts\pythonw.exe'
@@ -1019,17 +1336,22 @@ function Atualizar {
     $livre = Espaco-Livre-MB $raiz
     if ($null -ne $livre -and $livre -lt $EspacoMinimoMB) { Recusar "Pouco espaço livre no disco ($livre MB). Libere uns $EspacoMinimoMB MB e tente de novo. Nada foi alterado." }
 
+    # ---- 0. Atualizacao interrompida antes? Primeiro a versao anterior volta.
+    Recuperar-Pendente
+    $vAtual = Ler-Versao (Join-Path $raiz 'server.py')
+
     # ---- 2. Fonte da versao nova
     Passo 'Procurando a versão nova...'
     $zip = $null
     $zipDaPasta = $null
+    $daInternet = $false
     if ($opc.Zip) {
         $zip = [System.IO.Path]::GetFullPath($opc.Zip)
         if (-not [System.IO.File]::Exists($zip)) { Recusar "Não achei o arquivo $zip. Nada foi alterado." }
         Ok "usando o ZIP informado: $([System.IO.Path]::GetFileName($zip))"
     } else {
-        $zips = @(Filhos $pastaBat | Where-Object { -not ($_ -is [System.IO.DirectoryInfo]) -and -not (Eh-Link $_) -and $_.Name -like 'proclamare*.zip' } |
-            Sort-Object LastWriteTime -Descending)
+        $todos = @(Filhos $pastaBat | Where-Object { -not ($_ -is [System.IO.DirectoryInfo]) -and -not (Eh-Link $_) -and $_.Name -like '*.zip' })
+        $zips = @($todos | Where-Object { $_.Name -like 'proclamare*.zip' } | Sort-Object LastWriteTime -Descending)
         if ($zips.Count -gt 0) {
             $zip = $zips[0].FullName
             $zipDaPasta = $zip
@@ -1039,12 +1361,27 @@ function Atualizar {
             } else {
                 Ok "usando o ZIP desta pasta: $($zips[0].Name)"
             }
+        } elseif ($todos.Count -gt 0) {
+            Recusar ("Achei o arquivo $($todos[0].Name) nesta pasta, mas o nome não começa com 'proclamare'.`n" +
+                "    Se ele for a versão nova do Proclamare, renomeie para 'proclamare-nova.zip' e dê dois cliques`n" +
+                '    de novo. Se não for, tire-o desta pasta. Nada foi alterado.')
         } elseif ($opc.SemRede) {
-            Recusar (Mensagem-SemPacote)
+            Recusar ("Não achei a versão nova (e -SemRede proíbe a internet).`n" + (Texto-ColoqueZip))
         } else {
-            Dizer '    Nenhum ZIP nesta pasta: baixando a versão nova do GitHub (precisa de internet)...'
+            Dizer '    Nenhum ZIP nesta pasta: procurando a última versão publicada no GitHub (precisa de internet)...'
+            $tag = Ler-Release
+            $vTag = $tag.Substring(1)
+            Ok "versão publicada: $vTag"
+            if ($vAtual) {
+                $cmp = (Versao-Comparavel $vTag).CompareTo((Versao-Comparavel $vAtual))
+                if ($cmp -eq 0) { Dizer "`nO Proclamare já está na versão $vAtual. Nada foi alterado." 'Green'; return 0 }
+                if ($cmp -lt 0) {
+                    Recusar "A versão publicada no GitHub ($vTag) é mais antiga que a instalada ($vAtual). Nada foi alterado."
+                }
+            }
             $zip = Join-Path $script:Temp 'proclamare-github.zip'
-            Baixar-Pacote $zip
+            Baixar-Tag $tag $zip
+            $daInternet = $true
         }
     }
 
@@ -1054,17 +1391,37 @@ function Atualizar {
     $novo = $pacote.Raiz
 
     # ---- 4. Versoes
-    $vAtual = Ler-Versao (Join-Path $raiz 'server.py')
     $vNova = Ler-Versao (Join-Path $novo 'server.py')
     $dNova = $pacote.Data
     if (-not $dNova) { $dNova = Data-Mais-Nova $novo }
-    $descAtual = Descrever-Versao $vAtual (Data-Mais-Nova $raiz)
     $descNova = Descrever-Versao $vNova $dNova
-    Dizer "    Instalada agora: $descAtual"
+    Dizer "    Instalada agora: $(Descrever-Versao $vAtual (Data-Mais-Nova $raiz))"
     Dizer "    Versão nova:     $descNova"
-    if ($vAtual -and $vNova -and ((Versao-Comparavel $vNova) -lt (Versao-Comparavel $vAtual))) {
-        Recusar ("O pacote é de uma versão MAIS ANTIGA ($vNova) do que a instalada ($vAtual).`n" +
-            '    Se for um ZIP velho esquecido nesta pasta, apague-o e tente de novo. Nada foi alterado.')
+    if ($vAtual -and -not $vNova) {
+        Recusar ("Não consegui ler o número da versão no pacote novo (a instalada é a $vAtual).`n" +
+            '    Por segurança ele foi recusado. Confira se o ZIP é mesmo do Proclamare. Nada foi alterado.')
+    }
+    if ($vAtual -and $vNova) {
+        $cmp = (Versao-Comparavel $vNova).CompareTo((Versao-Comparavel $vAtual))
+        if ($cmp -lt 0) {
+            Recusar ("O pacote é de uma versão MAIS ANTIGA ($vNova) do que a instalada ($vAtual).`n" +
+                '    Se for um ZIP velho esquecido nesta pasta, apague-o e tente de novo. Nada foi alterado.')
+        }
+        if ($cmp -eq 0 -and $daInternet) { Dizer "`nO Proclamare já está na versão $vAtual. Nada foi alterado." 'Green'; return 0 }
+    }
+
+    # requirements.lock: so pacotes e --hash; mudou (sem contar CRLF/LF) = precisa de internet para o pip.
+    $lockNovoPacote = Join-Path $novo 'requirements.lock'
+    $linhaRuim = Conferir-Lock $lockNovoPacote
+    if ($null -ne $linhaRuim) {
+        Registrar ('lock recusado: ' + ($linhaRuim -replace '[^\x20-\x7e]', '?'))
+        Recusar ("O requirements.lock do pacote tem uma opção que não é permitida (só pacotes e --hash).`n" +
+            '    Por segurança ele foi recusado. Nada foi alterado.')
+    }
+    $precisaPip = (Hash-Texto $lockNovoPacote) -ne (Hash-Texto (Join-Path $raiz 'requirements.lock'))
+    if ($precisaPip -and $opc.SemRede) {
+        Recusar ("A versão nova precisa de componentes novos, e isso precisa de internet (-SemRede proíbe).`n" +
+            '    Nada foi alterado.')
     }
 
     # O que o pacote traz (pastas espelhadas e arquivos da raiz).
@@ -1085,7 +1442,13 @@ function Atualizar {
     # Nenhuma pasta de codigo da instalacao pode ser link (o espelho apagaria/gravaria do outro lado).
     foreach ($p in (@($pastasNovas) + $PastasDeCodigo | Select-Object -Unique)) {
         $link = Achar-Link (Join-Path $raiz $p)
-        if ($link) { Recusar "A pasta $link é um link (atalho de pasta); por segurança não vou atualizar. Nada foi alterado." }
+        if ($link) { Recusar ((Descrever-Link $link) + '; por segurança não vou atualizar. Nada foi alterado.') }
+    }
+    foreach ($a in $arquivosNovos) {
+        $c = Join-Path $raiz $a
+        if ([System.IO.File]::Exists($c) -and (Eh-Link (New-Object System.IO.FileInfo($c)))) {
+            Recusar ((Descrever-Link $c) + '; por segurança não vou atualizar. Nada foi alterado.')
+        }
     }
 
     # ---- 5. Desligar
@@ -1095,13 +1458,12 @@ function Atualizar {
             "    Feche essa janela ou use 'Desligar Proclamare' no Menu Iniciar e tente de novo. Nada foi alterado.")
     }
 
-    # ---- 6. Copia de seguranca
+    # ---- 6. Copia de seguranca + plano gravado (se a janela fechar no meio, a proxima execucao desfaz)
     Passo 'Guardando uma cópia do código atual...'
     $script:Backup = Fazer-Backup $pastasNovas $arquivosNovos
-    Ok "cópia em backups\$(Split-Path -Leaf $script:Backup)"
-    $hashAntigo = $null
-    $lockCopia = Join-Path $script:Backup 'requirements.lock'
-    if ([System.IO.File]::Exists($lockCopia)) { $hashAntigo = (Get-FileHash -LiteralPath $lockCopia -Algorithm SHA256).Hash }
+    Ok "cópia em backups\$([System.IO.Path]::GetFileName($script:Backup))"
+    Planejar-Instalacao $novo
+    try { Gravar-Pendente } catch { Recusar "Não consegui gravar o registro da atualização em logs ($($_.Exception.Message)). Nada foi alterado." }
 
     # ---- 7. Instalar
     Passo 'Instalando a versão nova (seus dados não são tocados)...'
@@ -1109,13 +1471,11 @@ function Atualizar {
     Ok 'arquivos copiados.'
 
     # ---- 8. Dependencias
-    $lockNovo = Join-Path $raiz 'requirements.lock'
-    $hashNovo = (Get-FileHash -LiteralPath $lockNovo -Algorithm SHA256).Hash
-    if ($hashNovo -ne $hashAntigo) {
+    if ($precisaPip) {
         Passo 'A versão nova precisa de componentes novos: instalando (precisa de internet, pode levar alguns minutos)...'
-        if ($opc.SemRede) { return (Voltar-Versao 'os componentes novos precisam de internet (-SemRede).' $opc) }
         $script:PipRodou = $true
-        if (-not (Rodar-Pip $lockNovo)) {
+        try { Gravar-Pendente } catch { Registrar ('pendente: ' + $_.Exception.Message) }
+        if (-not (Rodar-Pip (Join-Path $raiz 'requirements.lock'))) {
             return (Voltar-Versao ("não consegui instalar os componentes novos (sem internet?).`n" +
                     '    Conecte o computador da loja à internet e rode a atualização de novo.') $opc)
         }
@@ -1138,16 +1498,18 @@ function Atualizar {
         if (-not (Ligar-Proclamare $opc.EsperaInicio)) {
             return (Voltar-Versao 'a versão nova não respondeu ao ligar.' $opc)
         }
-        Ok "Proclamare ligado e respondendo (porta $($script:Porta))."
+        Ok 'Proclamare ligado e respondendo.'
         if ($env:PROCLAMARE_NO_BROWSER -ne '1') {
             try { Start-Process ("http://127.0.0.1:$($script:Porta)/") } catch { }
         }
     }
+    Remover-Pendente
     $script:Fase = 'pronto'
     $rotulo = if ($vNova) { "a versão $vNova" } else { $descNova }
     Dizer ("`nProclamare atualizado para $rotulo. Seus dados (contas, listas, horários, mensagens," +
         ' configuração) foram mantidos.') 'Green'
-    Dizer "    Cópia da versão anterior: backups\$(Split-Path -Leaf $script:Backup)" 'Gray'
+    Dizer "    Se o painel já estava aberto (inclusive a aba 'Tocador da loja' e nos celulares), aperte F5 nele." 'Green'
+    Dizer "    Cópia da versão anterior: backups\$([System.IO.Path]::GetFileName($script:Backup))" 'Gray'
     if ($zipDaPasta) {
         Dizer ("    O arquivo $([System.IO.Path]::GetFileName($zipDaPasta)) já pode ser apagado desta pasta" +
             ' (na próxima vez, sem ZIP aqui, a versão nova vem da internet).') 'Gray'
@@ -1165,7 +1527,16 @@ try {
     if ($script:Fase -eq 'alterando') {
         $msg = if ($esperado) { $ex.Message } else { "falha inesperada: $($ex.Message)" }
         # Falhou no meio da instalacao: volta a copia e (sem -SemReiniciar) religa a versao anterior.
-        try { $codigo = [int](@(Voltar-Versao $msg $script:Opc)[-1]) } catch { Registrar ('volta falhou: ' + $_.ToString()); $codigo = 3 }
+        try { $codigo = [int](@(Voltar-Versao $msg $script:Opc)[-1]) } catch {
+            Registrar ('volta falhou: ' + $_.ToString())
+            Dizer-VoltaFalhou
+            $codigo = 3
+        }
+    } elseif ($script:Fase -eq 'voltando') {
+        # A excecao aconteceu DURANTE uma volta (nunca tenta voltar duas vezes).
+        Registrar ('volta interrompida: ' + $_.ToString())
+        Dizer-VoltaFalhou
+        $codigo = 3
     } else {
         if ($esperado) { Dizer "`nERRO: $($ex.Message)" 'Red' }
         else { Dizer "`nERRO inesperado: $($ex.Message)`n    Nada foi alterado. Mande o arquivo logs\atualizar.log ao suporte." 'Red' }
@@ -1180,7 +1551,7 @@ try {
         }
     }
 } finally {
-    if ($script:Raiz) { try { Podar-Backups } catch { Registrar ('poda falhou: ' + $_.ToString()) } }
+    try { Podar-Backups } catch { Registrar ('poda falhou: ' + $_.ToString()) }
     if ($script:Temp -and [System.IO.Directory]::Exists($script:Temp)) {
         try { [System.IO.Directory]::Delete($script:Temp, $true) } catch { Registrar "não consegui apagar a pasta temporária $($script:Temp)" }
     }
