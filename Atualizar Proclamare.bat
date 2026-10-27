@@ -674,10 +674,25 @@ function Descrever-Versao([string]$Versao, $Data) {
 # ---- Fonte: ZIP ao lado do .bat ou a ultima release do GitHub ------------------------------------------------
 # Testes automaticos: PROCLAMARE_ATUALIZAR_TESTE_GITHUB=http://127.0.0.1:<porta> troca OS DOIS hosts por um
 # servidor falso local (so loopback; qualquer outro valor e recusado). Sem a variavel: HTTPS nos hosts fixos.
+# N1 (Red Team): a variavel so VALE se existir o arquivo comum (nao link) logs\teste-github.token DENTRO da pasta
+# de instalacao: quem o cria ja controla o codigo. Sem o arquivo a variavel e IGNORADA (e o caminho real, HTTPS nos
+# hosts fixos, segue; o fluxo registra o aviso no log). Escolha: ignorar e nao recusar, para que uma variavel
+# esquecida no ambiente nunca impeca a atualizacao de quem nao sabe de nada disso.
+function Teste-Github-Liberado {
+    if (-not $script:Raiz) { return $false }
+    $pastaLogs = Join-Path $script:Raiz 'logs'
+    $token = Join-Path $pastaLogs 'teste-github.token'
+    try {
+        if (-not [System.IO.Directory]::Exists($pastaLogs) -or (Eh-Link (New-Object System.IO.DirectoryInfo($pastaLogs)))) { return $false }
+        if (-not [System.IO.File]::Exists($token)) { return $false }
+        return (-not (Eh-Link (New-Object System.IO.FileInfo($token))))
+    } catch { return $false }
+}
 function Url-De-Teste {
     $u = [string]$env:PROCLAMARE_ATUALIZAR_TESTE_GITHUB
     if (-not $u) { return $null }
-    if ($u -cmatch '^http://127\.0\.0\.1:[0-9]{1,5}$') { return $u }
+    if (-not (Teste-Github-Liberado)) { return $null }
+    if ($u -cmatch '\Ahttp://127\.0\.0\.1:[0-9]{1,5}\z') { return $u }
     Recusar 'A variável PROCLAMARE_ATUALIZAR_TESTE_GITHUB só aceita http://127.0.0.1:<porta>. Nada foi alterado.'
 }
 
@@ -1318,6 +1333,15 @@ function Atualizar {
     Iniciar-Log
     Registrar "opcoes: SemReiniciar=$($opc.SemReiniciar) SemRede=$($opc.SemRede) Zip=$([bool]$opc.Zip) EsperaInicio=$($opc.EsperaInicio)"
     Abrir-Trava
+    # N1: gancho de teste so com o arquivo-sinal; sem ele a variavel e ignorada (e o log diz).
+    if ([string]$env:PROCLAMARE_ATUALIZAR_TESTE_GITHUB) {
+        if (Teste-Github-Liberado) {
+            $urlTeste = Url-De-Teste
+            Dizer "MODO DE TESTE: GitHub falso em $urlTeste" 'Yellow'
+        } else {
+            Registrar 'variável PROCLAMARE_ATUALIZAR_TESTE_GITHUB ignorada (falta logs\teste-github.token na pasta de instalação)'
+        }
+    }
 
     $script:VenvPy = Join-Path $raiz '.venv\Scripts\python.exe'
     $script:VenvPyw = Join-Path $raiz '.venv\Scripts\pythonw.exe'

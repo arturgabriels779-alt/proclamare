@@ -336,9 +336,12 @@ class TesteAtualizador(unittest.TestCase):
         self.instalacoes.append(pasta)
         return pasta
 
-    def rodar(self, pasta: Path, *args: str, bat: Path | None = None, extra_env: dict | None = None
-              ) -> subprocess.CompletedProcess:
+    def rodar(self, pasta: Path, *args: str, bat: Path | None = None, extra_env: dict | None = None,
+              token: bool = True) -> subprocess.CompletedProcess:
         bat = bat or (pasta / BAT.name)
+        if self.github and token and (pasta / "logs").is_dir():
+            # N1: o GitHub falso só vale com o arquivo-sinal dentro da pasta de instalação.
+            (pasta / "logs" / "teste-github.token").write_bytes(b"teste")
         ambiente = {k: v for k, v in os.environ.items() if not k.upper().startswith(("PROCLAMARE_", "ANUNCIADOR_"))}
         ambiente.update({"PROCLAMARE_PORT": str(self.porta), "PROCLAMARE_NO_BROWSER": "1",
                          "TEMP": str(self.temp_sistema), "TMP": str(self.temp_sistema)})
@@ -972,12 +975,15 @@ class TesteAtualizador(unittest.TestCase):
         loopback, RT-L6 (Cf/Co recusados)."""
         ruins = self.tmp / "ruim.lock"
         ruins.write_text("-r outro.txt\n", encoding="utf-8")
+        (self.tmp / "inst_token" / "logs").mkdir(parents=True)
+        (self.tmp / "inst_token" / "logs" / "teste-github.token").write_bytes(b"teste")
         saida = self.funcoes(
             f"'lock_real=[' + (Conferir-Lock '{RAIZ / 'requirements.lock'}') + ']'\n"
             f"'lock_ruim=[' + (Conferir-Lock '{ruins}') + ']'\n"
             "'elev_uac=' + (Deve-Recusar-Elevado $true $true)\n"
             "'elev_sem_uac=' + (Deve-Recusar-Elevado $true $false)\n"
             "'normal=' + (Deve-Recusar-Elevado $false $true)\n"
+            f"$script:Raiz = '{self.tmp / 'inst_token'}'\n"
             "$env:PROCLAMARE_ATUALIZAR_TESTE_GITHUB = 'http://127.0.0.1:9'; 'url_ok=' + (Url-De-Teste)\n"
             "$env:PROCLAMARE_ATUALIZAR_TESTE_GITHUB = 'http://10.0.0.1:9'; try { Url-De-Teste; 'url_aceita' } catch { 'url_recusada' }\n"
             "$env:PROCLAMARE_ATUALIZAR_TESTE_GITHUB = 'https://evil.example:443'; try { Url-De-Teste; 'url_aceita' } catch { 'url_recusada2' }\n"
@@ -998,6 +1004,51 @@ class TesteAtualizador(unittest.TestCase):
         self.assertIn("co=[]", saida)
         self.assertIn("ok=[a/static/app.js]", saida)
         self.assertIn("curto=True", saida)
+
+    # ---- v2.8.3: reforços do Red Team (N1 a N6) ---------------------------------------------------------
+    def test_n1_gancho_de_teste_sem_token_e_ignorado(self) -> None:
+        """N1: a variável PROCLAMARE_ATUALIZAR_TESTE_GITHUB só vale com logs\\teste-github.token na instalação."""
+        pasta = self.instalacao("2.7.1")
+        self.github = GitHubFalso()
+        self.github.publicar("v2.8.0", codigo("2.8"))
+        antes = foto(pasta)
+        r = self.rodar(pasta, "-SemReiniciar", "-SemRede", token=False)
+        self.assertEqual(r.returncode, 2, r.texto)
+        self.assertEqual(self.github.pedidos, [], "não podia falar com o GitHub falso")
+        self.assertNotIn("MODO DE TESTE", r.texto)
+        log = (pasta / "logs" / "atualizar.log").read_text(encoding="utf-8")
+        self.assertIn("PROCLAMARE_ATUALIZAR_TESTE_GITHUB ignorada", log)
+        self.assert_nada_mudou(pasta, antes)
+
+    def test_n1_gancho_com_token_avisa_modo_de_teste(self) -> None:
+        pasta = self.instalacao("2.7.1")
+        self.github = GitHubFalso()
+        self.github.publicar("v2.8.0", codigo("2.8"))
+        r = self.rodar(pasta, "-SemReiniciar")
+        self.assertEqual(r.returncode, 0, r.texto)
+        self.assertIn(f"MODO DE TESTE: GitHub falso em {self.github.url}", r.texto)
+        self.assertTrue(self.github.baixou_zip())
+
+    def test_n1_funcao_url_de_teste_exige_arquivo_comum_dentro_de_logs(self) -> None:
+        inst = self.tmp / "inst"
+        (inst / "logs").mkdir(parents=True)
+        real = self.tmp / "token-real.txt"
+        real.write_bytes(b"x")
+        link = self.tmp / "inst2"
+        link.mkdir()
+        (link / "logs").mkdir()
+        (link / "logs" / "teste-github.token").mkdir()   # pasta com o nome do token: não é arquivo comum
+        saida = self.funcoes(
+            "$env:PROCLAMARE_ATUALIZAR_TESTE_GITHUB = 'http://127.0.0.1:9'\n"
+            f"$script:Raiz = '{inst}'; 'sem_token=[' + (Url-De-Teste) + ']'\n"
+            f"[IO.File]::WriteAllText('{inst / 'logs' / 'teste-github.token'}', 'x')\n"
+            "'com_token=[' + (Url-De-Teste) + ']'\n"
+            f"$script:Raiz = '{link}'; 'token_pasta=[' + (Url-De-Teste) + ']'\n"
+            "$script:Raiz = $null; 'sem_raiz=[' + (Url-De-Teste) + ']'\n")
+        self.assertIn("sem_token=[]", saida)
+        self.assertIn("com_token=[http://127.0.0.1:9]", saida)
+        self.assertIn("token_pasta=[]", saida)
+        self.assertIn("sem_raiz=[]", saida)
 
     # ---- ajudantes do servidor falso ------------------------------------------------------------------
     def ligar_antiga(self, pasta: Path) -> None:
