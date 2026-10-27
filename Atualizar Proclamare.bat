@@ -141,7 +141,8 @@ $PadroesCodigoRaiz = @('*.py', '*.pyw', '*.bat', '*.cmd', '*.ps1', '*.md', '*.tx
 # Ancoras \A...\z e [0-9] (nunca $ nem \d): "$" casa antes de uma quebra de linha final e \d casa digitos nao ASCII.
 # Sempre usado com -cmatch.
 $PadraoNomeBackup = '\A[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}(_[0-9]{1,3})?\z'
-$NomesReservados = '\A(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?\z'
+# Inclui COM/LPT com digitos sobrescritos (¹ ² ³, escapes do regex: nunca literais aqui) e CONIN$/CONOUT$.
+$NomesReservados = '\A(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$)(\..*)?\z'
 
 # ---- Estado (usado pela volta automatica) ----------------------------------------------------------------
 $script:Raiz = $null
@@ -162,6 +163,7 @@ $script:Opc = $null
 $script:Desligou = $false             # o atualizador desligou um Proclamare que estava ligado
 $script:BatTamanho = -1               # tamanho e SHA-256 do .bat que o cmd esta executando (ver Eh-Copia-Do-Bat)
 $script:BatHash = $null
+$script:OutrosZips = @()             # .zip de outro nome na pasta (avisados e ignorados)
 $script:ZipsIgnorados = @()           # nomes dos ZIPs da pasta ignorados por serem velhos (nunca apagados)
 
 # ---- Mensagens e registro (logs\atualizar.log) -----------------------------------------------------------
@@ -190,7 +192,12 @@ function Recusar([string]$Texto) {
 
 # O unico texto de "traga o ZIP" (usado sem internet, sem release e com -SemRede).
 function Texto-ColoqueZip {
-    return ("    Coloque o arquivo ZIP do Proclamare (o do pen drive) nesta pasta, ao lado do`n" +
+    $dica = ''
+    if ($script:OutrosZips.Count -gt 0) {
+        $dica = ("    Se o arquivo " + $script:OutrosZips[0] + " for a versão nova do Proclamare, renomeie para`n" +
+            "    'proclamare-nova.zip' e dê dois cliques de novo.`n")
+    }
+    return ($dica + "    Coloque o arquivo ZIP do Proclamare (o do pen drive) nesta pasta, ao lado do`n" +
         "    'Atualizar Proclamare.bat', e dê dois cliques nele de novo.`n" +
         '    Nada foi alterado: o Proclamare continua como estava.')
 }
@@ -347,7 +354,12 @@ function Apagar-Arquivo([string]$Caminho) {
     for ($i = 1; $i -le 6; $i++) {
         try {
             if (-not [System.IO.File]::Exists($Caminho)) { return }
-            [System.IO.File]::SetAttributes($Caminho, [System.IO.FileAttributes]::Normal)
+            # So tira o somente-leitura se ele estiver ligado (como Copiar-Arquivo): um arquivo que nao deu para
+            # apagar nao pode ficar com os outros atributos (oculto, sistema) trocados.
+            $at = [System.IO.File]::GetAttributes($Caminho)
+            if (($at -band [System.IO.FileAttributes]::ReadOnly) -ne 0) {
+                [System.IO.File]::SetAttributes($Caminho, ($at -band (-bnot [System.IO.FileAttributes]::ReadOnly)))
+            }
             [System.IO.File]::Delete($Caminho)
             return
         } catch {
@@ -424,9 +436,15 @@ function Conferir-Lock([string]$Caminho) {
     $acum = ''
     $linhasLogicas = New-Object System.Collections.Generic.List[string]
     foreach ($bruta in [System.IO.File]::ReadAllLines($Caminho, [System.Text.Encoding]::UTF8)) {
+        # Como o pip: so ASCII visivel e espaco (TAB, NBSP etc. recusados ANTES de normalizar) e "#" so e
+        # comentario no comeco da linha ou depois de um espaco; qualquer outro "#" recusa o arquivo.
+        if ($bruta -cmatch '[^\x20-\x7e]') { return $bruta }
         $linha = $bruta
         $h = $linha.IndexOf('#', $Ord)
-        if ($h -ge 0) { $linha = $linha.Substring(0, $h) }
+        if ($h -ge 0) {
+            if ($h -gt 0 -and $linha[$h - 1] -ne ' ') { return $bruta }
+            $linha = $linha.Substring(0, $h)
+        }
         $linha = $linha.Trim()
         if ($linha.EndsWith('\', $Ord)) {
             $acum += ' ' + $linha.Substring(0, $linha.Length - 1)
@@ -870,8 +888,12 @@ function Extrair-Pacote([string]$ArquivoZip, [string]$Destino) {
     $fs = $null
     $za = $null
     $nomeZip = [System.IO.Path]::GetFileName($ArquivoZip)
+    # A pasta de destino tem de ser NOVA (nunca se mistura um pacote com sobras de outro).
+    if ([System.IO.Directory]::Exists($Destino) -or [System.IO.File]::Exists($Destino)) {
+        Recusar 'A pasta temporária do pacote já existia; por segurança não vou misturar. Tente de novo. Nada foi alterado.'
+    }
     try {
-        try { $fs = [System.IO.File]::Open($ArquivoZip, 'Open', 'Read', 'Read') } catch {
+        try { $fs =[System.IO.File]::Open($ArquivoZip, 'Open', 'Read', 'Read') } catch {
             Recusar "Não consegui abrir o arquivo $nomeZip (ele está aberto em outro programa?). Nada foi alterado."
         }
         try {
@@ -1088,6 +1110,7 @@ function Gravar-Pendente {
 }
 # 3 tentativas com pausa (antivirus/indexador seguram arquivo recem-gravado), como Apagar-Arquivo.
 function Remover-Pendente {
+    if (Logs-Eh-Link) { Registrar 'pendente: a pasta logs é um link; não mexi no registro'; return }   # a causa nao passa com nova tentativa
     for ($i = 1; $i -le 3; $i++) {
         try {
             $arq = Arq-Pendente
@@ -1140,8 +1163,11 @@ function Recuperar-Pendente {
             "    Feche essa janela ou use 'Desligar Proclamare' no Menu Iniciar e tente de novo.")
     }
     $script:Backup = $copia
-    $script:PastasTocadas = @(@($plano.pastas) | Where-Object { $_ -and (Nome-De-Plano-Ok $_.nome) -and (Nome-De-Pasta-Do-Plano-Ok $_.nome $copia) } | ForEach-Object { @{ Nome = [string]$_.nome; Existia = [bool]$_.existia } })
-    $script:ArquivosTocados = @(@($plano.arquivos) | Where-Object { $_ -and (Nome-De-Plano-Ok $_.nome) -and (Nome-De-Arquivo-Do-Plano-Ok $_.nome $copia) } | ForEach-Object { @{ Nome = [string]$_.nome; Existia = [bool]$_.existia } })
+    # Incoerente = "nao existia" mas o nome ESTA na copia de seguranca (a copia so tem o que existia): ignorado.
+    $script:PastasTocadas = @(@($plano.pastas) | Where-Object { $_ -and (Nome-De-Plano-Ok $_.nome) -and (Nome-De-Pasta-Do-Plano-Ok $_.nome $copia) -and
+            ([bool]$_.existia -or -not [System.IO.Directory]::Exists((Join-Path $copia ([string]$_.nome)))) } | ForEach-Object { @{ Nome = [string]$_.nome; Existia = [bool]$_.existia } })
+    $script:ArquivosTocados = @(@($plano.arquivos) | Where-Object { $_ -and (Nome-De-Plano-Ok $_.nome) -and (Nome-De-Arquivo-Do-Plano-Ok $_.nome $copia) -and
+            ([bool]$_.existia -or -not [System.IO.File]::Exists((Join-Path $copia ([string]$_.nome)))) } | ForEach-Object { @{ Nome = [string]$_.nome; Existia = [bool]$_.existia } })
     $script:PipRodou = [bool]$plano.pip
     $script:Fase = 'voltando'
     if (-not (Voltar-Codigo-Com-Nova-Tentativa)) {
@@ -1260,7 +1286,9 @@ function Voltar-Versao([string]$Motivo, $Opc) {
     Passo 'Ligando a versão anterior...'
     # A fase so vira 'pronto' DEPOIS de religar: uma excecao aqui cai no ramo 'voltando' (aviso de volta), nunca
     # no "Nada foi alterado" do ramo 'preparando'.
-    $ligou = Ligar-Proclamare $Opc.EsperaInicio
+    # Os arquivos JA voltaram: uma excecao ao ligar vale como "nao respondeu ao ligar", nunca como "nao voltou".
+    $ligou = $false
+    try { $ligou = [bool](@(Ligar-Proclamare $Opc.EsperaInicio)[-1]) } catch { Registrar ('ligar (volta): ' + $_.ToString()) }
     $script:Fase = 'pronto'
     if ($ligou) {
         Ok 'a versão anterior está funcionando.'
@@ -1418,6 +1446,11 @@ function Atualizar {
             '    da loja, a que tem o arquivo Proclamare.pyw, e dê dois cliques nele lá. Nada foi alterado.')
     }
     $script:Raiz = $raiz
+    # logs como link: recusa ANTES de qualquer log/trava/plano (nada e gravado atraves do link).
+    if (Logs-Eh-Link) {
+        Recusar ("A pasta logs do Proclamare é um link (atalho de pasta); por segurança não vou usá-la.`n" +
+            '    Troque-a por uma pasta comum. Nada foi alterado.')
+    }
     Iniciar-Log
     Registrar "opcoes: SemReiniciar=$($opc.SemReiniciar) SemRede=$($opc.SemRede) Zip=$([bool]$opc.Zip) EsperaInicio=$($opc.EsperaInicio)"
     Abrir-Trava
@@ -1468,19 +1501,12 @@ function Atualizar {
         $todos = @(Filhos $pastaBat | Where-Object { -not ($_ -is [System.IO.DirectoryInfo]) -and -not (Eh-Link $_) -and (Casa-Nome $_.Name '*.zip') })
         $zips = @($todos | Where-Object { Casa-Nome $_.Name 'proclamare*.zip' } | Sort-Object LastWriteTime -Descending)
         # Um .zip de outro nome nao e do Proclamare: avisa e ignora, mas NAO bloqueia mais a internet.
-        foreach ($o in @($todos | Where-Object { -not (Casa-Nome $_.Name 'proclamare*.zip') })) {
-            Aviso ("Ignorei o arquivo $($o.Name): o nome não começa com 'proclamare'. Se ele for a versão nova do`n" +
-                "    Proclamare, renomeie para 'proclamare-nova.zip' e dê dois cliques de novo.")
-        }
+        $script:OutrosZips = @($todos | Where-Object { -not (Casa-Nome $_.Name 'proclamare*.zip') } | ForEach-Object { $_.Name })
+        foreach ($o in $script:OutrosZips) { Aviso "Ignorei o arquivo ${o}: ele não é do Proclamare." }
         if ($zips.Count -gt 0) {
+            # "Usando o ZIP" so e dito DEPOIS da comparacao de versao, se ele for mesmo usado (ver etapa 3).
             $zip = $zips[0].FullName
             $zipDaPasta = $zip
-            if ($zips.Count -gt 1) {
-                Ok ("achei $($zips.Count) arquivos ZIP do Proclamare; vou usar o mais novo: $($zips[0].Name) (de " +
-                    $zips[0].LastWriteTime.ToString('dd/MM/yyyy HH:mm') + ')')
-            } else {
-                Ok "usando o ZIP desta pasta: $($zips[0].Name)"
-            }
         } else {
             $buscarNaInternet = $true
         }
@@ -1500,13 +1526,22 @@ function Atualizar {
                     '    Com -SemRede não procuro na internet: coloque o ZIP da versão nova ou rode sem -SemRede. Nada foi alterado.')
             }
             Aviso "O ZIP $nomeZip é da versão $vZip, que não é mais nova que a instalada ($vAtual). Vou ignorá-lo e procurar na internet."
-            if ($zips.Count -gt 1) { Aviso "Ignorei $($zips.Count) ZIPs desta pasta (o mais novo deles já não é mais novo que a instalada)." }
+            if ($zips.Count -gt 1) { Aviso "Ignorei $($zips.Count) ZIPs desta pasta: nenhum é mais novo que a instalada ($vAtual)." }
             $script:ZipsIgnorados = @($zips | ForEach-Object { $_.Name })
             $zip = $null
             $zipDaPasta = $null
             $pacote = $null
             try { [System.IO.Directory]::Delete((Join-Path $script:Temp 'n'), $true) } catch { }
             $buscarNaInternet = $true
+        } else {
+            # Vai ser usado: agora sim diz qual; os DEMAIS ZIPs da pasta so aparecem como "pode apagar".
+            if ($zips.Count -gt 1) {
+                Ok ("achei $($zips.Count) arquivos ZIP do Proclamare; vou usar o mais novo: $($zips[0].Name) (de " +
+                    $zips[0].LastWriteTime.ToString('dd/MM/yyyy HH:mm') + ')')
+            } else {
+                Ok "usando o ZIP desta pasta: $($zips[0].Name)"
+            }
+            $script:ZipsIgnorados = @($zips | Select-Object -Skip 1 | ForEach-Object { $_.Name })
         }
     }
     if ($buscarNaInternet) {
@@ -1536,7 +1571,7 @@ function Atualizar {
     }
     if (-not $pacote) {
         Passo 'Conferindo o pacote (antes de mexer em qualquer coisa)...'
-        $pacote = Extrair-Pacote $zip (Join-Path $script:Temp 'n')
+        $pacote = Extrair-Pacote $zip (Join-Path $script:Temp 'g')   # pasta NOVA (a 'n' foi do ZIP da pasta)
     }
     $novo = $pacote.Raiz
 
@@ -1669,8 +1704,9 @@ function Atualizar {
     Remover-Pendente
     $script:Fase = 'pronto'
     $rotulo = if ($vNova) { "a versão $vNova" } else { $descNova }
-    $quem = if ($vAtual -and $vNova) { "da versão $vAtual para a versão $vNova" } else { "para $rotulo" }
-    Dizer ("`nProclamare atualizado $quem. Seus dados (contas, listas, horários, mensagens," +
+    $quem = if ($vAtual -and $vNova -and $vAtual -eq $vNova) { "reinstalado na versão $vNova" }
+        elseif ($vAtual -and $vNova) { "atualizado da versão $vAtual para a versão $vNova" } else { "atualizado para $rotulo" }
+    Dizer ("`nProclamare $quem. Seus dados (contas, listas, horários, mensagens," +
         ' configuração) foram mantidos.') 'Green'
     Dizer "    Se o painel já estava aberto (inclusive a aba 'Tocador da loja' e nos celulares), aperte F5 nele." 'Green'
     Dizer "    Cópia da versão anterior: backups\$([System.IO.Path]::GetFileName($script:Backup))" 'Gray'

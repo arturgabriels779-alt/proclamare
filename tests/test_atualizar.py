@@ -637,8 +637,7 @@ class TesteAtualizador(unittest.TestCase):
         outro = fazer_zip(pasta / "versao nova.zip", codigo("2.8", **{"static/app.js": b"// DO ZIP\n"}))
         r = self.rodar(pasta, "-SemReiniciar")
         self.assertEqual(r.returncode, 0, r.texto)
-        self.assertIn("versao nova.zip", r.texto)
-        self.assertIn("não começa com 'proclamare'", r.texto)
+        self.assertIn("Ignorei o arquivo versao nova.zip: ele não é do Proclamare.", r.texto)
         self.assertIn("AVISO", r.texto)
         self.assertEqual((pasta / "static" / "app.js").read_bytes(), b"// DA INTERNET\n")
         self.assertTrue(self.github.baixou_zip())
@@ -650,7 +649,9 @@ class TesteAtualizador(unittest.TestCase):
         antes = foto(pasta)
         r = self.rodar(pasta, "-SemReiniciar", "-SemRede")
         self.assertEqual(r.returncode, 2, r.texto)
-        self.assertIn("não começa com 'proclamare'", r.texto)
+        self.assertIn("Ignorei o arquivo versao nova.zip", r.texto)
+        self.assertIn("renomeie para", r.texto)
+        self.assertIn("'proclamare-nova.zip'", r.texto)
         self.assert_nada_mudou(pasta, antes)
 
     # ---- v2.8.3: ZIP velho é ignorado, ZIP instalado é apagado, versão clara na tela -------------------------
@@ -1407,6 +1408,190 @@ class TesteAtualizador(unittest.TestCase):
         self.assertNotIn("DefaultCredentials", texto)
         self.assertNotIn("DefaultNetworkCredentials", texto)
         self.assertIn("GetSystemWebProxy", texto)
+
+    # ---- v2.8.3, rodada de correções 1 ----------------------------------------------------------------------
+    def test_r1_item1_zip_ignorado_nunca_diz_usando(self) -> None:
+        pasta = self.instalacao("2.8.0")
+        self.github = GitHubFalso()
+        self.github.publicar("v2.8.3", codigo("2.8.3"))
+        fazer_zip(pasta / "proclamare-v2.8.0.zip", codigo("2.8.0"))
+        r = self.rodar(pasta, "-SemReiniciar")
+        self.assertEqual(r.returncode, 0, r.texto)
+        self.assertNotIn("usando o ZIP desta pasta", r.texto)
+        self.assertNotIn("vou usar o mais novo", r.texto)
+
+    def test_r1_item2_extrair_pacote_recusa_pasta_que_ja_existe(self) -> None:
+        zp = fazer_zip(self.tmp / "p.zip", codigo("2.8"))
+        existente = self.tmp / "ja_existe"
+        existente.mkdir()
+        saida = self.funcoes(
+            f"try {{ [void](Extrair-Pacote '{zp}' '{existente}'); 'extraiu' }} catch {{ 'recusou: ' + $_.Exception.Message }}\n")
+        self.assertIn("recusou", saida)
+        self.assertNotIn("extraiu", saida)
+        self.assertEqual(list(existente.iterdir()), [])
+
+    def test_r1_item3_e_4_outros_zips_e_textos(self) -> None:
+        pasta = self.instalacao("2.7.1")
+        velho = fazer_zip(pasta / "proclamare-velho.zip", codigo("2.8"))
+        novo = fazer_zip(pasta / "proclamare-novo.zip", codigo("2.8"))
+        outro = fazer_zip(pasta / "fotos.zip", codigo("2.8"))
+        agora = time.time()
+        os.utime(velho, (agora - 7200, agora - 7200))
+        os.utime(novo, (agora - 60, agora - 60))
+        self.github = GitHubFalso()   # só para o texto: o ZIP novo da pasta é usado
+        r = self.rodar(pasta, "-SemReiniciar")
+        self.assertEqual(r.returncode, 0, r.texto)
+        self.assertFalse(novo.exists())
+        self.assertTrue(velho.is_file() and outro.is_file())
+        self.assertIn("Pode apagar os ZIPs antigos desta pasta: proclamare-velho.zip", r.texto)
+        self.assertIn("Ignorei o arquivo fotos.zip: ele não é do Proclamare.", r.texto)
+        self.assertNotIn("renomeie", r.texto)   # com internet disponível não manda renomear
+
+    def test_r1_item4_texto_de_varios_zips_ignorados(self) -> None:
+        pasta = self.instalacao("2.8.0")
+        self.github = GitHubFalso()
+        self.github.publicar("v2.8.3", codigo("2.8.3"))
+        fazer_zip(pasta / "proclamare-a.zip", codigo("2.8.0"))
+        fazer_zip(pasta / "proclamare-b.zip", codigo("2.7.1"))
+        r = self.rodar(pasta, "-SemReiniciar")
+        self.assertEqual(r.returncode, 0, r.texto)
+        self.assertIn("Ignorei 2 ZIPs desta pasta: nenhum é mais novo que a instalada (2.8.0).", r.texto)
+
+    def test_r1_item5_reparo_com_mesma_versao_diz_reinstalado(self) -> None:
+        pasta = self.instalacao("2.8")
+        zp = fazer_zip(pasta / "proclamare-main.zip", codigo("2.8"))
+        r = self.rodar(pasta, "-SemReiniciar", "-Zip", str(zp))
+        self.assertEqual(r.returncode, 0, r.texto)
+        self.assertIn("Proclamare reinstalado na versão 2.8.", r.texto)
+        self.assertNotIn("da versão 2.8 para a versão 2.8", r.texto)
+
+    def test_r1_item6_ligar_que_lanca_excecao_na_volta_nao_diz_que_nao_voltou(self) -> None:
+        saida = self.funcoes(
+            "function Parar-Proclamare { return $true }\n"
+            "function Voltar-Codigo-Com-Nova-Tentativa { return $true }\n"
+            "function Remover-Pendente { }\n"
+            "function Porta-Ocupada { return $false }\n"
+            "function Ligar-Proclamare([int]$s) { throw 'boom' }\n"
+            "$script:Fase = 'alterando'\n"
+            "$c = @(Voltar-Versao 'motivo' @{ SemReiniciar = $false; EsperaInicio = 3 })[-1]\n"
+            "'codigo=' + $c\n'fase=' + $script:Fase\n")
+        self.assertIn("não respondeu ao ligar", saida)
+        self.assertNotIn("não consegui voltar", saida)
+        self.assertIn("codigo=1", saida)
+        self.assertIn("fase=pronto", saida)
+
+    def test_r1_item7_logs_link_e_checado_antes_do_log(self) -> None:
+        pasta = self.instalacao("2.7.1")
+        alvo = self.tmp / "logs-de-outro-lugar"
+        shutil.move(str(pasta / "logs"), str(alvo))
+        r = subprocess.run(f'"{CMD}" /d /c mklink /J "{pasta / "logs"}" "{alvo}"', capture_output=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        try:
+            antes = {p.name for p in alvo.iterdir()}
+            res = self.rodar(pasta, "-SemReiniciar", "-SemRede")
+            self.assertEqual(res.returncode, 2, res.texto)
+            self.assertIn("link", res.texto)
+            self.assertEqual({p.name for p in alvo.iterdir()}, antes, "nada pode ser gravado através do link")
+            self.assertFalse((alvo / "atualizar.log").exists())
+        finally:
+            os.rmdir(pasta / "logs")
+            shutil.move(str(alvo), str(pasta / "logs"))
+
+    def test_r1_item8_recuperacao_ignora_existia_false_de_nome_que_esta_na_copia(self) -> None:
+        pasta = self.instalacao("2.7.1")
+        copia = pasta / "backups" / "2026-01-01_000000"
+        gravar_arvore(copia, {**codigo("2.7.1"), "notas.txt": b"da copia"})
+        (pasta / "notas.txt").write_bytes(b"atual")
+        (pasta / "static" / "extra.js").write_bytes(b"//extra\n")
+        plano = {"backup": copia.name, "pip": False, "pastas": [{"nome": "static", "existia": False}],
+                 "arquivos": [{"nome": "notas.txt", "existia": False}]}
+        (pasta / "logs" / "atualizar.pendente").write_text(json.dumps(plano), encoding="utf-8")
+        r = self.rodar(pasta, "-SemReiniciar", "-SemRede")
+        self.assertEqual(r.returncode, 2, r.texto)
+        self.assertEqual((pasta / "notas.txt").read_bytes(), b"atual")
+        self.assertTrue((pasta / "static" / "extra.js").is_file())
+        self.assertTrue((pasta / "static" / "index.html").is_file())
+
+    def test_r1_item9_lock_como_o_pip_cerquilha_e_caracteres_fora_do_ascii(self) -> None:
+        h = "--hash=sha256:" + "a" * 64
+        ruins = [f"flask==3.0.0#x {h}", f"flask==3.0.0\t{h}", f"flask==3.0.0 {h}", f"flask==3.0.0 {h}#colado",
+                 f"flask==3.0.0 {h} # comentário"]
+        boas = [f"flask==3.0.0 {h} # comentario\n", f"# so comentario\nflask==3.0.0 \\\n    {h}\n"]
+        linhas = []
+        for i, t in enumerate(ruins):
+            arq = self.tmp / f"r{i}.lock"
+            arq.write_bytes((t + "\n").encode("utf-8"))
+            linhas.append(f"'ruim{i}=[' + (Conferir-Lock '{arq}') + ']'")
+        for i, t in enumerate(boas):
+            arq = self.tmp / f"b{i}.lock"
+            arq.write_bytes(t.encode("utf-8"))
+            linhas.append(f"'boa{i}=[' + (Conferir-Lock '{arq}') + ']'")
+        linhas.append(f"'real=[' + (Conferir-Lock '{RAIZ / 'requirements.lock'}') + ']'")
+        saida = self.funcoes("\n".join(linhas) + "\n")
+        for i in range(len(ruins)):
+            self.assertNotIn(f"ruim{i}=[]", saida, ruins[i])
+        for i in range(len(boas)):
+            self.assertIn(f"boa{i}=[]", saida)
+        self.assertIn("real=[]", saida)
+
+    def test_r1_item10_apagar_arquivo_que_falha_nao_mexe_nos_atributos(self) -> None:
+        arq = self.tmp / "preso.txt"
+        arq.write_bytes(b"x")
+        subprocess.run(["attrib", "+h", str(arq)], check=True, capture_output=True)
+        trava = TravaExclusiva(arq)
+        try:
+            saida = self.funcoes(
+                f"try {{ Apagar-Arquivo '{arq}'; 'apagou' }} catch {{ 'falhou' }}\n"
+                f"'attr=' + [IO.File]::GetAttributes('{arq}')\n")
+        finally:
+            trava.soltar()
+        self.assertIn("falhou", saida)
+        self.assertIn("Hidden", saida)
+
+    def test_r1_item11_nomes_reservados_extras(self) -> None:
+        saida = self.funcoes(
+            "foreach ($n in ('a/com' + [char]0xB9), ('a/LPT' + [char]0xB2 + '.txt'), 'a/conin$', 'a/CONOUT$.log', 'a/com3', 'a/ok.py', 'a/console.py') {\n"
+            "  $n + ' => [' + (Nome-Seguro $n) + ']' }\n")
+        for nome in ("a/com¹", "a/LPT².txt", "a/conin$", "a/CONOUT$.log", "a/com3"):
+            self.assertIn(f"{nome} => []", saida)
+        self.assertIn("a/ok.py => [a/ok.py]", saida)
+        self.assertIn("a/console.py => [a/console.py]", saida)
+
+    def test_r1_item13a_remover_pendente_tenta_3_vezes(self) -> None:
+        raiz = self.tmp / "inst13"
+        (raiz / "logs").mkdir(parents=True)
+        pend = raiz / "logs" / "atualizar.pendente"
+        pend.write_bytes(b"{}")
+        marcador = self.tmp / "pronto13.txt"
+        trava = TravaExclusiva(pend)
+
+        def soltar_depois() -> None:
+            for _ in range(200):
+                if marcador.exists():
+                    break
+                time.sleep(0.05)
+            time.sleep(0.45)
+            trava.soltar()
+
+        t = threading.Thread(target=soltar_depois)
+        t.start()
+        try:
+            saida = self.funcoes(
+                f"$script:Raiz = '{raiz}'\n[IO.File]::WriteAllText('{marcador}', 'x')\nRemover-Pendente\n"
+                f"'existe=' + [IO.File]::Exists('{pend}')\n'avisos=' + $script:LogPendente.Count\n")
+        finally:
+            t.join()
+            trava.soltar()
+        self.assertIn("existe=False", saida)
+        self.assertIn("avisos=0", saida)
+
+    def test_r1_item13c_zip_em_maiusculas_e_usado_e_apagado(self) -> None:
+        pasta = self.instalacao("2.7.1")
+        zp = fazer_zip(pasta / "PROCLAMARE-X.ZIP", codigo("2.8"))
+        r = self.rodar(pasta, "-SemReiniciar")
+        self.assertEqual(r.returncode, 0, r.texto)
+        self.assertFalse(zp.exists())
+        self.assertIn("PROCLAMARE-X.ZIP foi apagado", r.texto)
 
     # ---- ajudantes do servidor falso ------------------------------------------------------------------
     def ligar_antiga(self, pasta: Path) -> None:
