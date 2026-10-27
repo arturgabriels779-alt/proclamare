@@ -1515,8 +1515,10 @@ class TesteAtualizador(unittest.TestCase):
     def test_r1_item9_lock_como_o_pip_cerquilha_e_caracteres_fora_do_ascii(self) -> None:
         h = "--hash=sha256:" + "a" * 64
         ruins = [f"flask==3.0.0#x {h}", f"flask==3.0.0\t{h}", f"flask==3.0.0 {h}", f"flask==3.0.0 {h}#colado",
-                 f"flask==3.0.0 {h} # comentário"]
-        boas = [f"flask==3.0.0 {h} # comentario\n", f"# so comentario\nflask==3.0.0 \\\n    {h}\n"]
+                 f"flask==3.0.0 {h} # comentário", f"flask==3.0.0 ; python_version -e x {h}"]
+        boas = [f"flask==3.0.0 {h} # comentario\n", f"# so comentario\nflask==3.0.0 \\\n    {h}\n",
+                f"flask==3.0.0 ; python_version < \"3.11\" and sys_platform == \"win32\" {h}\n",
+                f"flask==3.0.0 ; python-version >= \"3.10\" {h}\n"]
         linhas = []
         for i, t in enumerate(ruins):
             arq = self.tmp / f"r{i}.lock"

@@ -141,8 +141,8 @@ $PadroesCodigoRaiz = @('*.py', '*.pyw', '*.bat', '*.cmd', '*.ps1', '*.md', '*.tx
 # Ancoras \A...\z e [0-9] (nunca $ nem \d): "$" casa antes de uma quebra de linha final e \d casa digitos nao ASCII.
 # Sempre usado com -cmatch.
 $PadraoNomeBackup = '\A[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}(_[0-9]{1,3})?\z'
-# Inclui COM/LPT com digitos sobrescritos (¹ ² ³, escapes do regex: nunca literais aqui) e CONIN$/CONOUT$.
-$NomesReservados = '\A(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$)(\..*)?\z'
+# Inclui COM/LPT com digitos sobrescritos (U+00B9/B2/B3, escapes do regex: nunca literais aqui) e CONIN$/CONOUT$.
+$NomesReservados = '\A(con|prn|aux|nul|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3]|conin\$|conout\$)(\..*)?\z'
 
 # ---- Estado (usado pela volta automatica) ----------------------------------------------------------------
 $script:Raiz = $null
@@ -428,8 +428,9 @@ function Hash-Texto([string]$Caminho) {
 # as linhas; comentarios "#" e linhas vazias sao ignorados). Cada linha logica tem de ser exatamente
 #   nome[extras]==versao[ ; marcador] --hash=sha256:<64 hex> [--hash=sha256:<64 hex> ...]
 # Nada de caminho, "@ url", opcao do pip (--index-url, -e, -r, -f, --global-option...) nem versao solta.
-# O marcador so tem letras, numeros, espacos e . _ ' " < > = ! ~ , ( ) * - (sem "--" seguido, sem : / \ @).
-$LockMarcador = '(?:[A-Za-z0-9 ._''"<>=!~,()*]|-(?!-))+'
+# O marcador so tem letras, numeros, espacos e . _ ' " < > = ! ~ , ( ) * - (sem "--" seguido, sem : / \ @,
+# e nenhuma palavra comeca com "-": o pip leria " -e x" como opcao).
+$LockMarcador = '(?:[A-Za-z0-9 ._''"<>=!~,()*]|(?<! )-(?!-))+'
 $PadraoLinhaLock = '\A[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,-]+\])?==[0-9][A-Za-z0-9._!+-]*( ?; ?' + $LockMarcador + ')?( --hash=sha256:[0-9a-fA-F]{64})+\z'
 # $null se ok, ou a linha logica recusada.
 function Conferir-Lock([string]$Caminho) {
@@ -893,7 +894,7 @@ function Extrair-Pacote([string]$ArquivoZip, [string]$Destino) {
         Recusar 'A pasta temporária do pacote já existia; por segurança não vou misturar. Tente de novo. Nada foi alterado.'
     }
     try {
-        try { $fs =[System.IO.File]::Open($ArquivoZip, 'Open', 'Read', 'Read') } catch {
+        try { $fs = [System.IO.File]::Open($ArquivoZip, 'Open', 'Read', 'Read') } catch {
             Recusar "Não consegui abrir o arquivo $nomeZip (ele está aberto em outro programa?). Nada foi alterado."
         }
         try {
@@ -1704,7 +1705,7 @@ function Atualizar {
     Remover-Pendente
     $script:Fase = 'pronto'
     $rotulo = if ($vNova) { "a versão $vNova" } else { $descNova }
-    $quem = if ($vAtual -and $vNova -and $vAtual -eq $vNova) { "reinstalado na versão $vNova" }
+    $quem = if ($vAtual -and $vNova -and (Versao-Comparavel $vAtual).CompareTo((Versao-Comparavel $vNova)) -eq 0) { "reinstalado na versão $vNova" }
         elseif ($vAtual -and $vNova) { "atualizado da versão $vAtual para a versão $vNova" } else { "atualizado para $rotulo" }
     Dizer ("`nProclamare $quem. Seus dados (contas, listas, horários, mensagens," +
         ' configuração) foram mantidos.') 'Green'
