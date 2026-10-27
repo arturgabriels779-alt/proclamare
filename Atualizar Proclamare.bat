@@ -98,7 +98,7 @@ $UserAgent = 'Proclamare-atualizador'
 $ReleaseMaxBytes = [long]256KB        # resposta JSON da release
 $DownloadMaxBytes = [long]50MB
 $DownloadMaxSeg = 60
-$PadraoTag = '^v[0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?$'
+$PadraoTag = '\Av[0-9]{1,4}\.[0-9]{1,4}(\.[0-9]{1,4})?\z'
 $ZipMaxEntradasTotal = 20000          # entradas no ZIP inteiro (diretorio central)
 $ZipMaxEntradas = 5000                # arquivos extraidos (so os da raiz do Proclamare, sem dados)
 $ZipMaxBytes = [long]300MB            # soma descompactada do que e extraido
@@ -221,8 +221,13 @@ function Eh-Link($Info) {
     return ($tipo -eq 'SymbolicLink' -or $tipo -eq 'Junction')
 }
 
+# N3: comparacao de nomes INVARIANTE de cultura (e sem diferenca de maiusculas): o -like do PowerShell segue a
+# cultura do PC (em tr-TR 'CONFIG.JSON' nao casava com 'config.json*'). Tudo que decide seguranca passa por aqui.
+function Casa-Nome([string]$Nome, [string]$Padrao) {
+    return ($Nome.ToLowerInvariant() -clike $Padrao.ToLowerInvariant())
+}
 function Casa-Algum([string]$Nome, [string[]]$Padroes) {
-    foreach ($p in $Padroes) { if ($Nome -like $p) { return $true } }
+    foreach ($p in $Padroes) { if (Casa-Nome $Nome $p) { return $true } }
     return $false
 }
 function Eh-Ignorado([string]$Nome) { return (Casa-Algum $Nome $PadroesIgnorados) }
@@ -402,20 +407,35 @@ function Hash-Texto([string]$Caminho) {
     return (Hash-De-Bytes ([System.Text.Encoding]::UTF8.GetBytes($t)))
 }
 
-# O requirements.lock so pode ter pacotes, marcadores e --hash=sha256:<64 hex>: nenhuma opcao do pip
-# (--index-url, -e, -r, -f, --global-option...) nem endereco direto. $null se ok, ou a linha recusada.
+# N4: o requirements.lock e conferido por LISTA BRANCA, linha logica por linha logica (as continuacoes "\" juntam
+# as linhas; comentarios "#" e linhas vazias sao ignorados). Cada linha logica tem de ser exatamente
+#   nome[extras]==versao[ ; marcador] --hash=sha256:<64 hex> [--hash=sha256:<64 hex> ...]
+# Nada de caminho, "@ url", opcao do pip (--index-url, -e, -r, -f, --global-option...) nem versao solta.
+# O marcador so tem letras, numeros, espacos e . _ ' " < > = ! ~ , ( ) * - (sem "--" seguido, sem : / \ @).
+$LockMarcador = '(?:[A-Za-z0-9 ._''"<>=!~,()*]|-(?!-))+'
+$PadraoLinhaLock = '\A[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,-]+\])?==[0-9][A-Za-z0-9._!+-]*( ?; ?' + $LockMarcador + ')?( --hash=sha256:[0-9a-fA-F]{64})+\z'
+# $null se ok, ou a linha logica recusada.
 function Conferir-Lock([string]$Caminho) {
+    $acum = ''
+    $linhasLogicas = New-Object System.Collections.Generic.List[string]
     foreach ($bruta in [System.IO.File]::ReadAllLines($Caminho, [System.Text.Encoding]::UTF8)) {
         $linha = $bruta
         $h = $linha.IndexOf('#', $Ord)
         if ($h -ge 0) { $linha = $linha.Substring(0, $h) }
         $linha = $linha.Trim()
-        if (-not $linha) { continue }
-        if ($linha.IndexOf('://', $Ord) -ge 0) { return $bruta }
-        foreach ($tok in ($linha -split '\s+')) {
-            if ($tok -eq '\' -or -not $tok.StartsWith('-', $Ord)) { continue }
-            if ($tok -cnotmatch '^--hash=sha256:[0-9a-fA-F]{64}$') { return $bruta }
+        if ($linha.EndsWith('\', $Ord)) {
+            $acum += ' ' + $linha.Substring(0, $linha.Length - 1)
+            continue
         }
+        $acum += ' ' + $linha
+        $acum = ($acum -replace '\s+', ' ').Trim()
+        if ($acum) { $linhasLogicas.Add($acum) }
+        $acum = ''
+    }
+    $acum = ($acum -replace '\s+', ' ').Trim()
+    if ($acum) { $linhasLogicas.Add($acum) }   # arquivo terminado em "\"
+    foreach ($l in $linhasLogicas) {
+        if ($l -cnotmatch $PadraoLinhaLock) { return $l }
     }
     return $null
 }
@@ -724,10 +744,9 @@ function Abrir-Url([string]$Url, [string]$HostFixo, [string]$Aceitar) {
     $req.ReadWriteTimeout = 30000
     $req.AllowAutoRedirect = $false     # host fixo: nenhum desvio para outro endereco
     $req.KeepAlive = $false
-    if ($teste) { $req.Proxy = $null } else {
-        $req.Proxy = [System.Net.WebRequest]::GetSystemWebProxy()
-        $req.Proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
-    }
+    # N6: usa o proxy do sistema, mas SEM mandar as credenciais do Windows do usuario (NTLM) a quem pedir:
+    # um proxy falso na rede (WPAD) as capturaria. Proxy que exige senha = a conexao falha e cai no "sem internet".
+    if ($teste) { $req.Proxy = $null } else { $req.Proxy = [System.Net.WebRequest]::GetSystemWebProxy() }
     try {
         $resp = [System.Net.HttpWebResponse]$req.GetResponse()
     } catch {
@@ -1228,13 +1247,17 @@ function Voltar-Versao([string]$Motivo, $Opc) {
     Ok 'arquivos da versão anterior de volta.'
     # Se o lancador NOVO nao conseguiu soltar a porta, o lancador da copia (agora de volta na pasta) tenta.
     if (Porta-Ocupada) { try { [void](Parar-Proclamare) } catch { Registrar ('parar (copia): ' + $_.ToString()) } }
-    $script:Fase = 'pronto'
     if ($Opc.SemReiniciar) {
+        $script:Fase = 'pronto'
         Dizer "`nA atualização NÃO foi feita: o Proclamare voltou para a versão anterior. Seus dados foram mantidos." 'Yellow'
         return 1
     }
     Passo 'Ligando a versão anterior...'
-    if (Ligar-Proclamare $Opc.EsperaInicio) {
+    # A fase so vira 'pronto' DEPOIS de religar: uma excecao aqui cai no ramo 'voltando' (aviso de volta), nunca
+    # no "Nada foi alterado" do ramo 'preparando'.
+    $ligou = Ligar-Proclamare $Opc.EsperaInicio
+    $script:Fase = 'pronto'
+    if ($ligou) {
         Ok 'a versão anterior está funcionando.'
         Dizer ("`nA atualização NÃO foi feita: o Proclamare voltou para a versão anterior e está ligado.`n" +
             '    Seus dados foram mantidos. Avise o suporte e mande o arquivo logs\atualizar.log.') 'Yellow'
@@ -1308,7 +1331,7 @@ function Limpar-Temporarios-Antigos {
     try {
         $limite = (Get-Date).AddDays(-1)
         foreach ($d in (Filhos ([System.IO.Path]::GetTempPath()))) {
-            if ($d -is [System.IO.DirectoryInfo] -and $d.Name -like 'proclamare-atualizar-*' -and $d.LastWriteTime -lt $limite -and
+            if ($d -is [System.IO.DirectoryInfo] -and (Casa-Nome $d.Name 'proclamare-atualizar-*') -and $d.LastWriteTime -lt $limite -and
                 -not (Eh-Link $d) -and -not (Achar-Link $d.FullName)) {
                 try { [System.IO.Directory]::Delete($d.FullName, $true) } catch { }
             }

@@ -1130,6 +1130,96 @@ class TesteAtualizador(unittest.TestCase):
             os.rmdir(pasta / "logs")   # remove só a junção
             shutil.move(str(alvo), str(pasta / "logs"))
 
+    def test_n3_nomes_de_dados_em_maiusculas_valem_ate_com_cultura_turca(self) -> None:
+        """N3: -like dependia da cultura do PC (em tr-TR, 'CONFIG.JSON' não casava com 'config.json*')."""
+        saida = self.funcoes(
+            "[Threading.Thread]::CurrentThread.CurrentCulture = [Globalization.CultureInfo]'tr-TR'\n"
+            "'cultura=' + [Threading.Thread]::CurrentThread.CurrentCulture.Name\n"
+            "foreach ($n in 'CONFIG.JSON', 'LISTAS.JSON', 'ANUNCIOS.JSONL', 'Contas.Json', 'PROGRAMACAO.VISTO.JSON', '.ENV') {\n"
+            "  $n + '=' + (Eh-Dado $n) }\n"
+            "'zip=' + (Eh-Ignorado 'FOTO.ZIP')\n"
+            "'codigo=' + (Eh-Dado 'server.py')\n"
+            "'prot=' + (Casa-Algum 'SERVER.PY' $PadroesCodigoRaiz)\n")
+        self.assertIn("cultura=tr-TR", saida)
+        for n in ("CONFIG.JSON", "LISTAS.JSON", "ANUNCIOS.JSONL", "Contas.Json", "PROGRAMACAO.VISTO.JSON", ".ENV"):
+            self.assertIn(f"{n}=True", saida)
+        self.assertIn("zip=True", saida)
+        self.assertIn("codigo=False", saida)
+        self.assertIn("prot=True", saida)
+
+    def test_n4_lock_so_aceita_nome_versao_marcador_e_hash(self) -> None:
+        """N4: lista branca por linha lógica; o lock real do projeto passa."""
+        h = "--hash=sha256:" + "a" * 64
+        ruins = [
+            f"C:\\Users\\Public\\evil.whl {h}",
+            f"..\\evil.whl {h}",
+            f"evil @ file:C:/x.whl {h}",
+            f"flask==3.0.0 ; python_version < \"3.11\" --global-option=x {h}",
+            "flask==3.0.0 --hash=sha256:" + "a" * 63,
+            "flask==3.0.0",
+            f"flask>=3.0.0 {h}",
+            f"flask==3.0.0 {h} --index-url=x",
+            f"flask==3.0.0 {h} extra",
+            h,
+        ]
+        boas = [
+            f"flask==3.0.0 \\\n    {h}\n",
+            f"Flask[async,dotenv]==3.0.0.post1 ; platform_system == \"Windows\" \\\n    {h} \\\n    {h}\n    # via x\n",
+            f"# so comentario\n\nasync-timeout==5.0.1 ; python_version < \"3.11\" \\\n    {h}\n    # via aiohttp\n",
+        ]
+        linhas = []
+        for i, ruim in enumerate(ruins):
+            arq = self.tmp / f"ruim{i}.lock"
+            arq.write_bytes((ruim + "\n").encode())
+            linhas.append(f"'ruim{i}=[' + (Conferir-Lock '{arq}') + ']'")
+        for i, boa in enumerate(boas):
+            arq = self.tmp / f"boa{i}.lock"
+            arq.write_bytes(boa.replace("\n", "\r\n").encode())
+            linhas.append(f"'boa{i}=[' + (Conferir-Lock '{arq}') + ']'")
+        linhas.append(f"'real=[' + (Conferir-Lock '{RAIZ / 'requirements.lock'}') + ']'")
+        saida = self.funcoes("\n".join(linhas) + "\n")
+        for i, ruim in enumerate(ruins):
+            self.assertNotIn(f"ruim{i}=[]", saida, ruim)
+        for i in range(len(boas)):
+            self.assertIn(f"boa{i}=[]", saida)
+        self.assertIn("real=[]", saida)
+
+    def test_n5_ancoras_rigidas_e_digitos_ascii(self) -> None:
+        """N5: \\z em vez de $ (uma quebra de linha final não casa) e [0-9] em vez de \\d (dígito árabe não casa)."""
+        inst = self.tmp / "inst"
+        (inst / "logs").mkdir(parents=True)
+        (inst / "logs" / "teste-github.token").write_bytes(b"x")
+        saida = self.funcoes(
+            "$nl = [string][char]10; $ar = [string][char]0x0662\n"
+            "'tag_nl=' + ((\"v2.8\" + $nl) -cmatch $PadraoTag)\n"
+            "'tag_ar=' + ((\"v2.\" + $ar) -cmatch $PadraoTag)\n"
+            "'tag_ok=' + ('v2.8.3' -cmatch $PadraoTag)\n"
+            "'bak_nl=' + ((\"2026-01-01_000000\" + $nl) -cmatch $PadraoNomeBackup)\n"
+            "'bak_ar=' + ((\"2026-01-01_00000\" + $ar) -cmatch $PadraoNomeBackup)\n"
+            "'bak_ok=' + ('2026-01-01_000000_12' -cmatch $PadraoNomeBackup)\n"
+            "'bak_longo=' + ('2026-01-01_000000_1234' -cmatch $PadraoNomeBackup)\n"
+            "'res_nl=' + (((\"con\" + $nl) -match $NomesReservados))\n"
+            f"$script:Raiz = '{inst}'\n"
+            "$env:PROCLAMARE_ATUALIZAR_TESTE_GITHUB = 'http://127.0.0.1:9' + $nl\n"
+            "try { Url-De-Teste; 'url_aceita' } catch { 'url_nl_recusada' }\n")
+        self.assertIn("tag_nl=False", saida)
+        self.assertIn("tag_ar=False", saida)
+        self.assertIn("tag_ok=True", saida)
+        self.assertIn("bak_nl=False", saida)
+        self.assertIn("bak_ar=False", saida)
+        self.assertIn("bak_ok=True", saida)
+        self.assertIn("bak_longo=False", saida)
+        self.assertIn("res_nl=False", saida)
+        self.assertIn("url_nl_recusada", saida)
+        self.assertNotIn("url_aceita", saida)
+
+    def test_n6_proxy_sem_credenciais_do_windows(self) -> None:
+        """N6: o proxy do sistema continua, mas sem mandar as credenciais do usuário (NTLM) a quem pedir."""
+        texto = BAT.read_text(encoding="utf-8")
+        self.assertNotIn("DefaultCredentials", texto)
+        self.assertNotIn("DefaultNetworkCredentials", texto)
+        self.assertIn("GetSystemWebProxy", texto)
+
     # ---- ajudantes do servidor falso ------------------------------------------------------------------
     def ligar_antiga(self, pasta: Path) -> None:
         subprocess.run([str(pasta / ".venv" / "Scripts" / "python.exe"), "-I", str(pasta / "Proclamare.pyw")],
