@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.8.3 "Atualizador: ignora ZIP antigo"; v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:

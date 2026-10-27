@@ -193,7 +193,9 @@ A pasta de músicas também não é tocada. **Não precisa de administrador** (e
    `Atualizar Proclamare.bat`, responda **Sim**.
 4. Dê dois cliques em **Atualizar Proclamare.bat**. Se aparecer "O Windows protegeu o computador", clique em
    *Mais informações* → *Executar assim mesmo*.
-5. Espere a mensagem verde **"Proclamare atualizado para a versão …"** e aperte uma tecla para fechar. O
+5. Antes de desligar o Proclamare, o atualizador mostra num bloco bem visível a **"Versão instalada agora"** e a
+   **"Versão que será instalada"** (e de onde ela vem: o ZIP ou a internet). Espere a mensagem verde
+   **"Proclamare atualizado da versão X para a versão Y"** e aperte uma tecla para fechar. O
    Proclamare liga de novo sozinho e o painel abre. Durante a atualização (em geral menos de 1 minuto) a música e
    os anúncios param. **Se o painel já estava aberto (inclusive a aba "Tocador da loja" e nos celulares), aperte
    F5 nele**: ele ainda mostra a versão antiga.
@@ -203,10 +205,18 @@ GitHub do projeto e baixa só ela, nunca o trabalho em andamento. É só dar doi
 estiver na versão publicada, ele diz **"O Proclamare já está na versão X. Nada foi alterado."** Sem internet (ou se
 ainda não houver versão publicada), ele avisa e **nada muda**: use o pen drive.
 
-**ZIPs na pasta:** com mais de um ZIP do Proclamare, ele usa o mais novo (pela data do arquivo) e diz qual. Depois
-de atualizar, pode apagar o ZIP. Um ZIP de versão **mais antiga** que a instalada é recusado (ex.: um ZIP velho
-esquecido na pasta). Se houver um ZIP com **outro nome** (que não começa com `proclamare`), ele para e avisa: se
-for o Proclamare, renomeie para `proclamare-nova.zip` e rode de novo; se não for, tire-o da pasta.
+**ZIPs na pasta:** com mais de um ZIP do Proclamare, ele usa o mais novo (pela data do arquivo) e diz qual.
+**Um ZIP velho esquecido na pasta é ignorado:** se o ZIP achado na pasta for da **mesma versão** que a instalada
+(ou de uma mais antiga), ele **não é instalado**: o atualizador avisa em amarelo ("O ZIP … é da versão X, que não é
+mais nova que a instalada (Y). Vou ignorá-lo e procurar na internet.") e vai buscar a última versão publicada. Esses
+ZIPs ignorados **não são apagados** (no fim ele diz "Pode apagar os ZIPs antigos desta pasta"). Com `-SemRede` e só
+um ZIP velho na pasta ele para e diz que o ZIP é antigo (coloque o ZIP da versão nova ou rode sem `-SemRede`); nada
+é alterado. Um ZIP com **outro nome** (que não começa com `proclamare`) é só avisado e ignorado: se for o
+Proclamare, renomeie para `proclamare-nova.zip`; a busca pela internet segue normalmente.
+**O ZIP que foi instalado é apagado sozinho:** só depois da mensagem verde de sucesso, o atualizador apaga da pasta
+o ZIP do Proclamare que acabou de instalar (nunca um ZIP passado por `-Zip`, nem outro arquivo). Se não conseguir,
+só avisa ("pode apagar o ZIP à mão"); isso nunca desfaz a atualização. Se a atualização falhar e voltar para a
+versão anterior, nada é apagado. Um ZIP passado com `-Zip` de versão mais antiga continua sendo recusado.
 
 **Cópia de segurança:** antes de trocar qualquer coisa, o programa atual é copiado para
 `backups\AAAA-MM-DD_HHMMSS\` dentro da pasta do Proclamare. Só o programa vai para lá, não os dados. Ficam as 3
@@ -233,7 +243,8 @@ com TLS 1.2 ou mais novo, sem desvio para outro endereço, até 50 MB e 60 s), o
 conferência do pacote antes de mexer em qualquer coisa: ele recusa nomes perigosos (`..`, caminho absoluto, letra
 de disco, links, nomes curtos do Windows como `CONFIG~1.JSO`, caracteres invisíveis), qualquer pacote que traga um
 arquivo de dados (`config.json`, `contas.json` etc.), pacotes grandes demais (300 MB ou 5000 arquivos), um
-`requirements.lock` com opções do pip (ele só pode listar pacotes e `--hash`) e qualquer ZIP sem `server.py`,
+`requirements.lock` com qualquer coisa além de `pacote==versão` (com marcador opcional) e `--hash=sha256:…`
+(sem caminhos, endereços nem opções do pip) e qualquer ZIP sem `server.py`,
 `Proclamare.pyw`, `static\app.js` e `requirements.lock` numa pasta só. Use apenas ZIPs de fonte confiável.
 
 **Componentes novos:** se a versão nova mudar o `requirements.lock`, ele instala os componentes como o instalador
