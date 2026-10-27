@@ -26,6 +26,8 @@ programacao*.json*
 # Artefatos de execução
 audios_temp/
 logs/
+# cópias do código feitas pelo "Atualizar Proclamare.bat" antes de cada atualização
+backups/
 __pycache__/
 *.py[cod]
 

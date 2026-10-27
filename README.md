@@ -86,6 +86,8 @@ flowchart LR
 
 **Não precisa instalar o Python antes.** O instalador usa o Python 3.10 a 3.13 que já estiver no computador; se não houver, baixa sozinho uma cópia oficial do Python 3.12 só para o Proclamare (sem administrador, sem mexer no PATH nem no registro, com impressão digital e assinatura conferidas). Detalhes em "Python: o instalador resolve sozinho" no [guia](docs/GUIA.md).
 
+**Atualizar:** copie o **Atualizar Proclamare.bat** para a pasta do Proclamare (sem internet, copie junto o ZIP da versão nova, sem descompactar) e dê duplo clique. Ele confere o pacote antes de mexer em qualquer coisa, desliga o Proclamare, guarda uma cópia do programa atual em `backups\`, instala, confere o código e liga de novo. Se algo falhar, volta sozinho para a versão anterior. Contas, listas, horários, mensagens e configuração nunca são tocados. Sem ZIP na pasta, ele baixa a versão nova do GitHub. Não há assinatura digital: a confiança vem do endereço fixo do GitHub por HTTPS (ou do ZIP que você trouxe) e da conferência do pacote. Detalhes em "Atualizar o Proclamare" no [guia](docs/GUIA.md).
+
 **Pelo terminal (qualquer sistema):**
 
 ```bash
