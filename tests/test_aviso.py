@@ -57,21 +57,51 @@ class TestAviso(unittest.TestCase):
     def test_lista_final_e_padrao_microfone(self):
         # v2.8 (pedido da loja): só "nenhum" + 4 sinetas; as antigas (ding_dong, suave, sino, comissario,
         # aeroporto_inicio_fim) saíram. Quem tinha uma delas guardada cai no padrão (ver test_voz_loja).
-        self.assertEqual(aviso.AVISOS, ("nenhum", "microfone", "aeroporto", "supermercado", "ding_dong_duplo"))
+        self.assertEqual(aviso.AVISOS, ("nenhum", "microfone", "aviao", "aeroporto",
+                                        "supermercado", "ding_dong_duplo"))
         self.assertEqual(aviso.AVISO_PADRAO, "microfone")
         self.assertEqual(aviso.NOMES_AVISO, {
             "nenhum": "Nenhum",
             "microfone": "Microfone (início e fim)",
+            "aviao": "Avião (ding-dong)",
             "aeroporto": "Aeroporto",
             "supermercado": "Supermercado (início e fim)",
             "ding_dong_duplo": "Ding-dong (2 vezes)",
         })
-        self.assertEqual(aviso.AVISOS_COM_FIM, frozenset({"microfone", "supermercado"}))
+        self.assertEqual(aviso.AVISOS_COM_FIM, frozenset({"microfone", "supermercado", "aviao"}))
         self.assertEqual(aviso.AVISO_PIOR_CASO_S, 2 * aviso.AVISO_MAX_S)
         self.assertLessEqual(len(aviso.AVISOS), 20)                    # o painel mostra até 20 opções
         for removido in ("ding_dong", "suave", "sino", "comissario", "aeroporto_inicio_fim", "campainha_dupla"):
             with self.subTest(removido=removido), self.assertRaises(ValueError):
                 aviso.wav_do_aviso(removido)
+
+    def test_aviao_bing_bong_agudo_depois_grave(self):
+        self.assertEqual(aviso.NOMES_AVISO["aviao"], "Avião (ding-dong)")
+        self.assertIn("aviao", aviso.AVISOS_COM_FIM)
+        self.assertNotIn("microfone_inicio", aviso.AVISOS)
+        dados = aviso.wav_do_aviso("aviao")
+        self.assertLessEqual(aviso.duracao_do_aviso("aviao"), aviso.AVISO_MAX_S)
+        a = _amostras(dados)
+        self.assertLessEqual(max(abs(x) for x in a), 0.9 * 32767)
+        # primeira metade (só o 1º tom): lá5; depois do 1º tom ter sumido: fá5 (nada de lá5)
+        j1 = a[int(0.1 * TAXA):int(0.6 * TAXA)]
+        j2 = a[int(1.1 * TAXA):int(1.5 * TAXA)]
+        self.assertGreater(_potencia(j1, 880.0) / len(j1), 20 * _potencia(j1, 698.46) / len(j1))
+        self.assertGreater(_potencia(j2, 698.46), 20 * _potencia(j2, 880.0))
+        # fim: ordem inversa (bong-bing), fá5 e depois lá5; mesma duração, <= 3 s, pico <= 0,9
+        fim = aviso.wav_do_aviso_fim("aviao")
+        self.assertIsInstance(fim, bytes)
+        self.assertNotEqual(fim, dados)
+        self.assertLessEqual(aviso.duracao_do_aviso_fim("aviao"), aviso.AVISO_MAX_S)
+        b = _amostras(fim)
+        self.assertLessEqual(max(abs(x) for x in b), 0.9 * 32767)
+        k1 = b[int(0.1 * TAXA):int(0.6 * TAXA)]
+        k2 = b[int(1.1 * TAXA):int(1.5 * TAXA)]
+        self.assertGreater(_potencia(k1, 698.46), 20 * _potencia(k1, 880.0))
+        self.assertGreater(_potencia(k2, 880.0), 20 * _potencia(k2, 698.46))
+        # diferente do ding-dong duplo: mais curto, um único par e outro som
+        self.assertNotEqual(dados, aviso.wav_do_aviso("ding_dong_duplo"))
+        self.assertLess(aviso.duracao_do_aviso("aviao"), aviso.duracao_do_aviso("ding_dong_duplo"))
 
     def test_ids_seguros_para_nome_de_arquivo(self):
         # o id vira parte do nome em audios_temp/ (aviso_<id>.wav e aviso_<id>.fim.wav): sem ponto nem barra

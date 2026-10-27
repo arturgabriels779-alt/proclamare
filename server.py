@@ -374,7 +374,7 @@ Contrato v2.8 (Parte A: voz da loja)
 ------------------------------------
   A voz dos anúncios é da LOJA, não de cada aparelho: mora em config.json["voz_loja"] =
   {"motor": auto|online|offline, "voz": francisca|antonio, "velocidade": -50..50, "aviso": nenhum|microfone|
-  aeroporto|supermercado|ding_dong_duplo}. Padrão (VOZ_LOJA_PADRAO): auto / francisca / 0 / microfone. voz_loja() nunca levanta:
+  aviao|aeroporto|supermercado|ding_dong_duplo}. Padrão (VOZ_LOJA_PADRAO): auto / francisca / 0 / microfone. voz_loja() nunca levanta:
   chave ausente ou campo torto cai no padrão campo a campo; "definida" = a chave existe no config. Os avisos que saíram
   da lista na v2.8 (ding_dong, suave, sino, comissario, aeroporto_inicio_fim) são "campo torto": guardados no
   config.json, viram o padrão (microfone) na leitura; no POST /api/voz e no /api/voz/ouvir, 400 com "campo":"aviso".

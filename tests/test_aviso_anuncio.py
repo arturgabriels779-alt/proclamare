@@ -100,6 +100,21 @@ class TestAvisoNoAnuncio(BaseAviso):
         # o mp3 foi apagado; as sinetas ficam
         self.assertEqual(self.nomes_na_pasta(), ["aviso_microfone.fim.wav", "aviso_microfone.wav"])
 
+    def test_caminho_do_aviso_fim_do_aviao(self) -> None:
+        c = server.caminho_do_aviso("aviao", fim=True)
+        self.assertEqual(c.name, "aviso_aviao.fim.wav")
+        self.assertEqual(c.read_bytes(), aviso_mod.wav_do_aviso_fim("aviao"))
+
+    def test_aviao_toca_aviso_fala_e_fim(self) -> None:
+        self.voz(aviso="aviao")
+        with self.falar_legado():
+            r = self.anunciar()
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(self.cen.eventos, [
+            "duck_spotify", ("yt", "duck"), ("aviso", "aviso_aviao.wav"), "falar_legacy",
+            ("aviso", "aviso_aviao.fim.wav"), ("restore_spotify", 30), ("yt", "restore")])
+        self.assertEqual(self.nomes_na_pasta(), ["aviso_aviao.fim.wav", "aviso_aviao.wav"])
+
     def test_legado_offline_aviso_antes_da_fala(self) -> None:
         self.voz(aviso="aeroporto")
         with self.falar_legado():
@@ -725,6 +740,7 @@ class TestSinetaDoFim(BaseAviso):
     def test_opcoes_do_painel_trazem_os_novos(self) -> None:
         avisos = self.local("get", "/api/voz").get_json()["opcoes"]["avisos"]
         self.assertEqual([a["id"] for a in avisos], list(aviso_mod.AVISOS))
+        self.assertIn({"id": "aviao", "nome": "Avião (ding-dong)"}, avisos)
         self.assertIn({"id": "ding_dong_duplo", "nome": "Ding-dong (2 vezes)"}, avisos)
         self.assertIn({"id": FIM, "nome": "Microfone (início e fim)"}, avisos)
         r = self.local("post", "/api/voz", json={"aviso": FIM})
@@ -788,7 +804,8 @@ class TestSinetaDoFim(BaseAviso):
         # v2.8: aviso_*.wav de versões antigas somem; os nomes válidos (início e fim) e outros arquivos ficam
         validos = [self.audio / f"aviso_{a}.wav" for a in aviso_mod.AVISOS if a != "nenhum"]
         validos += [self.audio / f"aviso_{a}.fim.wav" for a in aviso_mod.AVISOS_COM_FIM]
-        velhos = [self.audio / "aviso_sino.wav", self.audio / "aviso_aeroporto_inicio_fim.fim.wav",
+        validos.append(self.audio / "aviso_aviao.fim.wav")             # já em AVISOS_COM_FIM; explícito de propósito
+        velhos = [self.audio / "aviso_microfone_inicio.wav", self.audio / "aviso_sino.wav", self.audio / "aviso_aeroporto_inicio_fim.fim.wav",
                   self.audio / "aviso_nenhum.wav", self.audio / "aviso_ding_dong_duplo.fim.wav"]
         outros = [self.audio / "outra_coisa.wav", self.audio / "aviso_sino.mp3"]
         for arq in validos + velhos + outros:

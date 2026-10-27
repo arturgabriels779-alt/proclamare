@@ -537,6 +537,8 @@ as **Mensagens prontas** e para os **anúncios da Programação**. **Não** toca
 - **Microfone (início e fim)** (o padrão): três notas que **sobem antes** da fala, no estilo do "ding-dong" de
   microfone do sistema de som, e as **mesmas notas ao contrário** (descendo) **depois** dela. "Ao contrário" quer dizer
   as notas na ordem inversa, e não o som tocado de trás para frente (que soaria "sugado").
+- **Avião (ding-dong)** (início e fim): o "bing-bong" suave da cabine de avião (nota aguda e depois a grave, a segunda
+  entrando antes de a primeira sumir) **antes** da fala e o inverso ("bong-bing", grave e depois aguda) **depois** dela.
 - **Aeroporto**: três notas subindo, como a sineta clássica de aeroporto (só antes da fala).
 - **Supermercado (início e fim)**: quatro notas um pouco mais lentas que sobem antes da fala e descem depois dela,
   como o microfone de supermercado.
@@ -571,7 +573,7 @@ conta 6 segundos de sineta (a reserva para o caso mais longo: a de início mais 
 com o aviso em **Nenhum**: assim trocar o aviso depois nunca faz os horários já marcados passarem do limite.
 
 Os sons do aviso são criados pelo próprio Proclamare: não usam música nem áudio de terceiros, então não há
-direitos autorais envolvidos. O **Microfone**, o **Supermercado** e o **Ding-dong (2 vezes)** são sons originais, apenas
+direitos autorais envolvidos. O **Microfone**, o **Avião (ding-dong)**, o **Supermercado** e o **Ding-dong (2 vezes)** são sons originais, apenas
 no mesmo estilo dos exemplos que a loja mandou (nada foi baixado nem copiado).
 
 ---

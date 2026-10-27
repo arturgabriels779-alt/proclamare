@@ -8,6 +8,8 @@ Os sons são ORIGINAIS, só no estilo das referências que a loja mandou (nada b
   * "microfone": a sineta de microfone do sistema de som, que sobe ANTES da fala (lá-dó#-mi) e volta DEPOIS dela
     com as mesmas notas na ordem inversa (mi-dó#-lá). "Ao contrário" = a ordem das notas, não o áudio de trás para
     frente (que soaria "sugado"). Timbre mais limpo/eletrônico que o do aeroporto;
+  * "aviao": o "bing-bong" da cabine de avião: UM par suave, agudo -> grave (lá5 -> fá5), timbre redondo (quase só a
+    fundamental), decaimento longo; o 2º tom entra antes de o 1º sumir. Depois da fala toca o inverso (fá5 -> lá5);
   * "aeroporto": a sineta clássica de aeroporto, três notas subindo (só antes da fala);
   * "supermercado": a sineta de microfone de supermercado, quatro notas um pouco mais lentas subindo antes
     (fá-lá-dó-fá) e descendo depois da fala;
@@ -26,11 +28,11 @@ import wave
 # "_" (nunca ponto, barra nem ".."). v2.8: as sinetas antigas (ding_dong, suave, sino, comissario,
 # aeroporto_inicio_fim) saíram a pedido da loja; um config.json que ainda tenha uma delas cai no AVISO_PADRAO (a
 # leitura da voz da loja confere o valor contra AVISOS, campo a campo) e o POST /api/voz com uma delas é 400.
-AVISOS: tuple[str, ...] = ("nenhum", "microfone", "aeroporto", "supermercado", "ding_dong_duplo")
+AVISOS: tuple[str, ...] = ("nenhum", "microfone", "aviao", "aeroporto", "supermercado", "ding_dong_duplo")
 AVISO_PADRAO = "microfone"
 AVISO_MAX_S = 3.0          # teto de CADA sineta (a de antes e a do fim)
 # Tocam também uma sineta DEPOIS da fala (as mesmas notas, na ordem inversa).
-AVISOS_COM_FIM: frozenset[str] = frozenset({"microfone", "supermercado"})
+AVISOS_COM_FIM: frozenset[str] = frozenset({"microfone", "supermercado", "aviao"})
 # Pior caso de sineta por anúncio, entre TODOS os avisos (a de antes + a do fim): é o que a Programação reserva no
 # teto de 60 min/dia, qualquer que seja o aviso atual (trocar o aviso depois nunca estoura horários já gravados).
 AVISO_PIOR_CASO_S = AVISO_MAX_S * (2 if AVISOS_COM_FIM else 1)
@@ -39,6 +41,7 @@ AVISO_PIOR_CASO_S = AVISO_MAX_S * (2 if AVISOS_COM_FIM else 1)
 NOMES_AVISO: dict[str, str] = {
     "nenhum": "Nenhum",
     "microfone": "Microfone (início e fim)",
+    "aviao": "Avião (ding-dong)",
     "aeroporto": "Aeroporto",
     "supermercado": "Supermercado (início e fim)",
     "ding_dong_duplo": "Ding-dong (2 vezes)",
@@ -67,6 +70,15 @@ _SEQUENCIAS: dict[str, tuple[tuple[float, ...], float, tuple, float]] = {
     "aeroporto": ((_G4, _B4, _D5), _NOTA_S, _HARMONICOS, _DECAIMENTO),   # mais grave que o C5-E5-G5 original
     "supermercado": ((_F4, _A4, _C5, _F5), _NOTA_SUPERMERCADO_S, _HARMONICOS, _DECAIMENTO),   # fá-lá-dó-fá
 }
+
+# "aviao": bing (lá5) -> bong (fá5), UMA vez; tons de 0,9 s com decaimento longo e suave, o 2º começa em 0,7 s
+# (sobrepõe o fim do 1º). Total 0,7 + 0,9 = 1,6 s. Timbre arredondado: fundamental + um pouco de 2º/3º harmônico.
+_A5, _F5_AVIAO = 880.00, 698.46
+_AVIAO_NOTAS = (_A5, _F5_AVIAO)
+_AVIAO_TOM_S = 0.9
+_AVIAO_ENTRADA_2_S = 0.7
+_AVIAO_HARMONICOS = ((1, 1.0), (2, 0.12), (3, 0.05))
+_AVIAO_DECAIMENTO = 3.0
 
 # "ding_dong_duplo": ding (mi5) -> dong (dó5) de vibrafone, 2 vezes, com uma pausa de silêncio entre os pares.
 # Cada parcial = (razão da frequência, peso, decaimento por s): o vibrafone tem um parcial forte 2 oitavas acima
@@ -112,6 +124,16 @@ def _sintetizar(nome: str, taxa: int, fim: bool = False) -> list[float]:
         for freq, dur in _DING_DONG_NOTAS:
             par += _ding(freq, dur, taxa, _VIBRAFONE_PARCIAIS)
         return par + [0.0] * int(taxa * _DING_DONG_PAUSA_S) + par
+    if nome == "aviao":
+        deslocamento = int(taxa * _AVIAO_ENTRADA_2_S)
+        saida_av: list[float] = []
+        for k, freq in enumerate(_AVIAO_NOTAS[::-1] if fim else _AVIAO_NOTAS):   # fim = ordem inversa (bong-bing)
+            tom = _nota(freq, _AVIAO_TOM_S, taxa, _AVIAO_DECAIMENTO, _AVIAO_HARMONICOS)
+            ini = k * deslocamento
+            saida_av += [0.0] * (ini + len(tom) - len(saida_av))   # estende o buffer até o fim deste tom
+            for i, x in enumerate(tom):
+                saida_av[ini + i] += x                              # mistura (o 2º tom soma sobre a cauda do 1º)
+        return saida_av
     notas, nota_s, harmonicos, decaimento = _SEQUENCIAS[nome]
     if fim:
         notas = notas[::-1]   # sineta do fim: as mesmas notas na ordem inversa (cada nota ainda ataca e decai)
@@ -140,7 +162,7 @@ def _wav(nome: str, taxa: int, fim: bool = False) -> bytes:
     WAV pronto, cacheado (v2.8 A3): o anúncio e a estimativa da Programação pedem o mesmo aviso muitas vezes.
     Guarda os BYTES (~50-120 KB cada), não as amostras em float (mais de 1 MB em objetos Python por aviso).
     `fim` = a sineta de DEPOIS da fala (só para AVISOS_COM_FIM). 16 entradas cobrem todos os avisos + os de fim
-    (hoje 4 + 2).
+    (hoje 5 + 3).
     """
     amostras = _finalizar(_sintetizar(nome, taxa, fim))
     quadros = struct.pack("<%dh" % len(amostras), *(int(round(32767 * x)) for x in amostras))

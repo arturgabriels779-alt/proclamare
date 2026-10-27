@@ -136,6 +136,7 @@ class TestVozLoja(Base):
         self.assertEqual(o["avisos"], [
             {"id": "nenhum", "nome": "Nenhum"},
             {"id": "microfone", "nome": "Microfone (início e fim)"},
+            {"id": "aviao", "nome": "Avião (ding-dong)"},
             {"id": "aeroporto", "nome": "Aeroporto"},
             {"id": "supermercado", "nome": "Supermercado (início e fim)"},
             {"id": "ding_dong_duplo", "nome": "Ding-dong (2 vezes)"},
