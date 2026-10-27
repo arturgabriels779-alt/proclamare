@@ -412,7 +412,7 @@ class TesteAtualizador(unittest.TestCase):
         fazer_zip(pasta / "proclamare-main.zip", {**novo, **protegidos, BAT.name: BAT.read_bytes()})
         r = self.rodar(pasta, "-SemReiniciar")
         self.assertEqual(r.returncode, 0, r.texto)
-        self.assertIn("Proclamare atualizado para a versão 2.8", r.texto)
+        self.assertIn("Proclamare atualizado da versão 2.7.1 para a versão 2.8", r.texto)
         self.assertIn("Seus dados (contas, listas, horários, mensagens, configuração) foram mantidos", r.texto)
         self.assertIn("Se o painel já estava aberto (inclusive a aba 'Tocador da loja' e nos celulares), aperte F5 nele.", r.texto)
         self.assertIn("versão 2.7.1", r.texto)
@@ -602,11 +602,12 @@ class TesteAtualizador(unittest.TestCase):
         self.assertIn("número da versão", r.texto)
         self.assert_nada_mudou(pasta, antes)
 
-    def test_zip_de_versao_mais_antiga_e_recusado(self) -> None:
+    def test_zip_explicito_de_versao_mais_antiga_e_recusado(self) -> None:
+        """-Zip explícito: o comportamento de sempre (mais antigo = recusa; o ZIP da pasta, não: ver v2.8.3)."""
         pasta = self.instalacao("2.8")
-        fazer_zip(pasta / "proclamare-main.zip", codigo("2.7.1"))
+        zp = fazer_zip(pasta / "proclamare-main.zip", codigo("2.7.1"))
         antes = foto(pasta)
-        r = self.rodar(pasta, "-SemReiniciar")
+        r = self.rodar(pasta, "-SemReiniciar", "-Zip", str(zp))
         self.assertEqual(r.returncode, 2, r.texto)
         self.assertIn("MAIS ANTIGA", r.texto)
         self.assert_nada_mudou(pasta, antes)
@@ -624,21 +625,208 @@ class TesteAtualizador(unittest.TestCase):
         self.assertEqual((pasta / "static" / "app.js").read_bytes(), b"// NOVO\n")
         self.assertIn("2 arquivos ZIP", r.texto)
         self.assertIn("mais novo: proclamare-novo.zip", r.texto)
-        self.assertTrue(velho.is_file() and novo.is_file(), "os ZIPs do Artur não podem ser apagados")
+        # v2.8.3: só o ZIP que foi INSTALADO é apagado (depois do sucesso); o outro fica.
+        self.assertFalse(novo.exists(), "o ZIP instalado devia ser apagado depois do sucesso")
+        self.assertTrue(velho.is_file(), "o outro ZIP do Artur não pode ser apagado")
 
-    def test_zip_com_outro_nome_avisa_e_para(self) -> None:
-        """B2: sem proclamare*.zip mas com outro .zip: avisa para renomear e não vai para a internet."""
+    def test_zip_com_outro_nome_e_ignorado_e_segue_pela_internet(self) -> None:
+        """v2.8.3: um .zip cujo nome não começa com 'proclamare' é avisado/ignorado, mas não bloqueia a internet."""
         pasta = self.instalacao("2.7.1")
         self.github = GitHubFalso()
-        self.github.publicar("v2.8", codigo("2.8"))
+        self.github.publicar("v2.8.0", codigo("2.8", **{"static/app.js": b"// DA INTERNET\n"}))
+        outro = fazer_zip(pasta / "versao nova.zip", codigo("2.8", **{"static/app.js": b"// DO ZIP\n"}))
+        r = self.rodar(pasta, "-SemReiniciar")
+        self.assertEqual(r.returncode, 0, r.texto)
+        self.assertIn("versao nova.zip", r.texto)
+        self.assertIn("não começa com 'proclamare'", r.texto)
+        self.assertIn("AVISO", r.texto)
+        self.assertEqual((pasta / "static" / "app.js").read_bytes(), b"// DA INTERNET\n")
+        self.assertTrue(self.github.baixou_zip())
+        self.assertTrue(outro.is_file(), "o ZIP de outro nome nunca é apagado")
+
+    def test_zip_de_outro_nome_com_sem_rede_nao_muda_nada(self) -> None:
+        pasta = self.instalacao("2.7.1")
         fazer_zip(pasta / "versao nova.zip", codigo("2.8"))
+        antes = foto(pasta)
+        r = self.rodar(pasta, "-SemReiniciar", "-SemRede")
+        self.assertEqual(r.returncode, 2, r.texto)
+        self.assertIn("não começa com 'proclamare'", r.texto)
+        self.assert_nada_mudou(pasta, antes)
+
+    # ---- v2.8.3: ZIP velho é ignorado, ZIP instalado é apagado, versão clara na tela -------------------------
+    def test_zip_igual_a_instalada_e_ignorado_e_vai_para_a_internet(self) -> None:
+        """O caso da loja: proclamare-v2.8.0.zip esquecido ao lado do .bat reinstalava a 2.8.0 para sempre."""
+        pasta = self.instalacao("2.8.0")
+        self.github = GitHubFalso()
+        self.github.publicar("v2.8.3", codigo("2.8.3", **{"static/app.js": b"// DA INTERNET\n"}))
+        velho = fazer_zip(pasta / "proclamare-v2.8.0.zip", codigo("2.8.0", **{"static/app.js": b"// VELHO\n"}))
+        r = self.rodar(pasta, "-SemReiniciar")
+        self.assertEqual(r.returncode, 0, r.texto)
+        self.assertIn("O ZIP proclamare-v2.8.0.zip é da versão 2.8.0, que não é mais nova que a instalada (2.8.0)."
+                      " Vou ignorá-lo e procurar na internet.", r.texto)
+        self.assertEqual((pasta / "static" / "app.js").read_bytes(), b"// DA INTERNET\n")
+        self.assertTrue(self.github.baixou_zip())
+        self.assertIn("Proclamare atualizado da versão 2.8.0 para a versão 2.8.3", r.texto)
+        self.assertIn("(de onde: internet)", r.texto)
+        self.assertTrue(velho.is_file(), "o ZIP ignorado não pode ser apagado")
+        self.assertIn("Pode apagar os ZIPs antigos desta pasta", r.texto)
+        self.assertIn("proclamare-v2.8.0.zip", r.texto.split("Pode apagar os ZIPs antigos")[1])
+        self.assert_dados_intactos(pasta)
+
+    def test_zip_mais_antigo_na_pasta_tambem_e_ignorado(self) -> None:
+        pasta = self.instalacao("2.8.1")
+        self.github = GitHubFalso()
+        self.github.publicar("v2.8.2", codigo("2.8.2"))
+        velho = fazer_zip(pasta / "proclamare-main.zip", codigo("2.7.1"))
+        r = self.rodar(pasta, "-SemReiniciar")
+        self.assertEqual(r.returncode, 0, r.texto)
+        self.assertIn("é da versão 2.7.1, que não é mais nova que a instalada (2.8.1)", r.texto)
+        self.assertIn("Proclamare atualizado da versão 2.8.1 para a versão 2.8.2", r.texto)
+        self.assertTrue(velho.is_file())
+
+    def test_zip_velho_e_internet_na_mesma_versao_diz_que_ja_esta(self) -> None:
+        """ZIP velho ignorado + release igual à instalada = 'já está na versão', ZIP intocado, nada alterado."""
+        pasta = self.instalacao("2.8")
+        self.github = GitHubFalso()
+        self.github.publicar("v2.8.0", codigo("2.8"))
+        fazer_zip(pasta / "proclamare-main.zip", codigo("2.8"))
+        antes = foto(pasta)
+        r = self.rodar(pasta, "-SemReiniciar")
+        self.assertEqual(r.returncode, 0, r.texto)
+        self.assertIn("O Proclamare já está na versão 2.8. Nada foi alterado.", r.texto)
+        self.assertFalse(self.github.baixou_zip())
+        self.assertTrue((pasta / "proclamare-main.zip").is_file())
+        self.assert_nada_mudou(pasta, antes)
+
+    def test_zip_velho_e_release_publicada_mais_antiga_continua_recusada(self) -> None:
+        pasta = self.instalacao("2.8.3")
+        self.github = GitHubFalso()
+        self.github.publicar("v2.8.0", codigo("2.8.0"))
+        fazer_zip(pasta / "proclamare-main.zip", codigo("2.8.0"))
         antes = foto(pasta)
         r = self.rodar(pasta, "-SemReiniciar")
         self.assertEqual(r.returncode, 2, r.texto)
-        self.assertIn("versao nova.zip", r.texto)
-        self.assertIn("não começa com 'proclamare'", r.texto)
-        self.assertEqual(self.github.pedidos, [], "não podia ter ido para a internet")
+        self.assertIn("mais antiga", r.texto)
         self.assert_nada_mudou(pasta, antes)
+
+    def test_zip_velho_com_sem_rede_recusa_com_mensagem_clara(self) -> None:
+        pasta = self.instalacao("2.8.0")
+        fazer_zip(pasta / "proclamare-v2.8.0.zip", codigo("2.8.0"))
+        antes = foto(pasta)
+        r = self.rodar(pasta, "-SemReiniciar", "-SemRede")
+        self.assertEqual(r.returncode, 2, r.texto)
+        self.assertIn("o ZIP desta pasta é antigo", r.texto)
+        self.assertIn("coloque o ZIP da versão nova ou rode sem -SemRede", r.texto)
+        self.assertIn("Nada foi alterado", r.texto)
+        self.assertTrue((pasta / "proclamare-v2.8.0.zip").is_file())
+        self.assert_nada_mudou(pasta, antes)
+        self.assert_temp_limpo()
+
+    def test_zip_sem_numero_de_versao_continua_recusado(self) -> None:
+        pasta = self.instalacao("2.8.0")
+        self.github = GitHubFalso()
+        self.github.publicar("v2.8.3", codigo("2.8.3"))
+        fazer_zip(pasta / "proclamare-main.zip", codigo(None))
+        antes = foto(pasta)
+        r = self.rodar(pasta, "-SemReiniciar")
+        self.assertEqual(r.returncode, 2, r.texto)
+        self.assertIn("número da versão", r.texto)
+        self.assertEqual(self.github.pedidos, [])
+        self.assert_nada_mudou(pasta, antes)
+
+    def test_varios_zips_o_mais_novo_velho_ignora_todos_e_diz_quantos(self) -> None:
+        pasta = self.instalacao("2.8.0")
+        self.github = GitHubFalso()
+        self.github.publicar("v2.8.3", codigo("2.8.3"))
+        a = fazer_zip(pasta / "proclamare-a.zip", codigo("2.8.0"))
+        b = fazer_zip(pasta / "proclamare-b.zip", codigo("2.7.1"))
+        agora = time.time()
+        os.utime(a, (agora - 3600, agora - 3600))
+        os.utime(b, (agora - 60, agora - 60))
+        r = self.rodar(pasta, "-SemReiniciar")
+        self.assertEqual(r.returncode, 0, r.texto)
+        self.assertIn("Ignorei 2 ZIPs", r.texto)
+        self.assertTrue(a.is_file() and b.is_file())
+        self.assertIn("Proclamare atualizado da versão 2.8.0 para a versão 2.8.3", r.texto)
+
+    def test_zip_explicito_igual_reinstala_e_nao_e_apagado(self) -> None:
+        """-Zip explícito: igual reinstala (reparo) como sempre, e esse ZIP nunca é apagado."""
+        pasta = self.instalacao("2.8")
+        zp = fazer_zip(pasta / "proclamare-main.zip", codigo("2.8", **{"static/app.js": b"// REPARO\n"}))
+        r = self.rodar(pasta, "-SemReiniciar", "-Zip", str(zp))
+        self.assertEqual(r.returncode, 0, r.texto)
+        self.assertEqual((pasta / "static" / "app.js").read_bytes(), b"// REPARO\n")
+        self.assertTrue(zp.is_file(), "o ZIP passado por -Zip nunca é apagado")
+        self.assertIn("(de onde: ZIP proclamare-main.zip)", r.texto)
+
+    def test_zip_mais_novo_instala_e_o_zip_some_so_depois_do_sucesso(self) -> None:
+        pasta = self.instalacao("2.7.1")
+        zp = fazer_zip(pasta / "proclamare-main.zip", codigo("2.8"))
+        r = self.rodar(pasta, "-SemReiniciar")
+        self.assertEqual(r.returncode, 0, r.texto)
+        self.assertFalse(zp.exists())
+        verde = r.texto.index("Proclamare atualizado da versão 2.7.1 para a versão 2.8")
+        self.assertGreater(r.texto.index("proclamare-main.zip foi apagado", verde), verde)
+        self.assertIn("(de onde: ZIP proclamare-main.zip)", r.texto)
+        bloco = r.texto.index("Versão instalada agora: 2.7.1")
+        self.assertLess(bloco, r.texto.index("Desligando o Proclamare"))
+        self.assertIn("Versão que será instalada: 2.8", r.texto)
+        self.assertEqual((pasta / "server.py").read_bytes(), codigo("2.8")["server.py"])
+
+    def test_zip_mais_novo_mas_a_atualizacao_volta_o_zip_fica(self) -> None:
+        pasta = self.instalacao("2.7.1")
+        zp = fazer_zip(pasta / "proclamare-main.zip",
+                       codigo("2.8", **{"server.py": server_py("2.8", "def quebrado(:\n")}))
+        r = self.rodar(pasta, "-SemReiniciar")
+        self.assertEqual(r.returncode, 1, r.texto)
+        self.assertTrue(zp.is_file(), "voltou para a versão anterior: o ZIP não pode ser apagado")
+        self.assertNotIn("foi apagado", r.texto)
+
+    def test_zip_que_nao_da_para_apagar_so_avisa(self) -> None:
+        pasta = self.instalacao("2.7.1")
+        zp = fazer_zip(pasta / "proclamare-main.zip", codigo("2.8"))
+        trava = None
+        try:
+            # Segura o ZIP aberto SÓ depois de o atualizador tê-lo lido: usa um gancho simples (a trava de leitura
+            # compartilhada não impede a leitura, só o apagar).
+            trava = TravaExclusiva(zp)
+            r = self.rodar(pasta, "-SemReiniciar")
+        finally:
+            if trava:
+                trava.soltar()
+        self.assertEqual(r.returncode, 0, r.texto)
+        self.assertIn("pode apagar o ZIP à mão", r.texto)
+        self.assertTrue(zp.is_file())
+        self.assertEqual((pasta / "server.py").read_bytes(), codigo("2.8")["server.py"])
+        self.assertFalse(self.backups(pasta) == [])
+
+    def test_zip_so_e_apagado_se_for_arquivo_comum_da_pasta_do_bat(self) -> None:
+        """Reconferência na hora de apagar: só arquivo comum proclamare*.zip DENTRO da pasta do .bat (nunca link)."""
+        raiz = self.tmp / "pasta_bat"
+        (raiz / "sub").mkdir(parents=True)
+        alvo = raiz / "alvo.txt"
+        alvo.write_bytes(b"x")
+        normal = raiz / "proclamare-ok.zip"
+        normal.write_bytes(b"x")
+        fora = raiz / "sub" / "proclamare-fora.zip"
+        fora.write_bytes(b"x")
+        link = raiz / "proclamare-link.zip"
+        r = subprocess.run(f'"{CMD}" /d /c mklink "{link}" "{alvo}"', capture_output=True, timeout=30)
+        tem_link = r.returncode == 0   # link simbólico exige privilégio; sem ele, só o resto é conferido
+        saida = self.funcoes(
+            f"'link=' + (Pode-Apagar-Zip '{link}' '{raiz}')\n"
+            f"'normal=' + (Pode-Apagar-Zip '{normal}' '{raiz}')\n"
+            f"'fora=' + (Pode-Apagar-Zip '{fora}' '{raiz}')\n"
+            f"'outronome=' + (Pode-Apagar-Zip '{alvo}' '{raiz}')\n"
+            f"'inexistente=' + (Pode-Apagar-Zip '{raiz / 'proclamare-x.zip'}' '{raiz}')\n"
+            f"'nulo=' + (Pode-Apagar-Zip $null '{raiz}')\n")
+        self.assertIn("normal=True", saida)
+        self.assertIn("fora=False", saida)
+        self.assertIn("outronome=False", saida)
+        self.assertIn("inexistente=False", saida)
+        self.assertIn("nulo=False", saida)
+        if tem_link:
+            self.assertIn("link=False", saida)
 
     def test_sem_rede_e_sem_zip_explica_e_nao_muda_nada(self) -> None:
         pasta = self.instalacao("2.7.1")
@@ -780,7 +968,7 @@ class TesteAtualizador(unittest.TestCase):
         r = self.rodar(pasta, "-SemReiniciar")
         self.assertEqual(r.returncode, 0, r.texto)
         self.assertIn("A última atualização foi interrompida", r.texto)
-        self.assertIn("Instalada agora: versão 2.7.1", r.texto)
+        self.assertIn("Versão instalada agora: 2.7.1", r.texto)
         self.assertEqual((pasta / "musicas.py").read_bytes(), codigo("2.8")["musicas.py"])
         self.assertTrue(copia.is_dir(), "a cópia da atualização interrompida não pode ser podada")
         self.assertFalse((pasta / "logs" / "atualizar.pendente").exists())
@@ -907,7 +1095,7 @@ class TesteAtualizador(unittest.TestCase):
         fazer_zip(pasta / "Proclamare-2.8.zip", {**codigo("2.8"), BAT.name: bat_novo})
         r = self.rodar(pasta, "-SemReiniciar", bat=pasta / BAT.name)
         self.assertEqual(r.returncode, 0, r.texto)
-        self.assertIn("Proclamare atualizado para a versão 2.8", r.texto)
+        self.assertIn("Proclamare atualizado da versão 2.7.1 para a versão 2.8", r.texto)
         self.assertTrue((pasta / "tools" / "instalar.ps1").is_file())
         self.assertEqual((pasta / BAT.name).read_bytes(), bat_novo)
         self.assertNotIn("não é reconhecido", r.texto)

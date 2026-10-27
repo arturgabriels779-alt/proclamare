@@ -3,8 +3,9 @@ rem ----------------------------------------------------------------
 rem  Atualizador do Proclamare - de um duplo clique neste arquivo.
 rem
 rem  Este arquivo fica na pasta do Proclamare (a que tem o Proclamare.pyw).
-rem  Se houver um ZIP do Proclamare ao lado dele (ex.: trazido no pen drive),
-rem  usa o ZIP; senao, baixa a ultima versao PUBLICADA (release) do GitHub.
+rem  Se houver um ZIP do Proclamare ao lado dele (ex.: trazido no pen drive)
+rem  mais novo que o instalado, usa o ZIP (e o apaga depois de instalar);
+rem  senao, baixa a ultima versao PUBLICADA (release) do GitHub.
 rem  Antes de trocar qualquer coisa ele confere o pacote, desliga o
 rem  Proclamare e guarda uma copia do codigo atual em backups\. Se algo
 rem  falhar, volta sozinho para a versao anterior. Os seus dados
@@ -58,6 +59,9 @@ setlocal EnableDelayedExpansion
 #   2. Fonte: -Zip, ou o ZIP "proclamare*.zip" mais novo ao lado do .bat, ou a ULTIMA RELEASE publicada no
 #      GitHub (api.github.com -> tag vX.Y[.Z] -> codeload.github.com; hosts fixos, HTTPS TLS 1.2+, sem
 #      redirecionamento, tetos de tamanho e tempo). Nunca a branch main. -SemRede proibe a internet.
+#      v2.8.3: um ZIP ACHADO na pasta (nao o -Zip) de versao menor ou igual a instalada e IGNORADO (avisa e
+#      segue pela internet; com -SemRede para sem mudar nada); outro .zip de nome diferente so avisa. Depois do
+#      sucesso o ZIP que foi instalado (so o da pasta do .bat) e apagado; falhar ao apagar e so um aviso.
 #   3. Confere e extrai o pacote numa pasta temporaria NOVA em %TEMP%: recusa "..", caminho absoluto, letra
 #      de disco, link, nome curto do Windows (8.3, "~1"), nome de arquivo de dados, caracteres invisiveis,
 #      nomes reservados, duplicados; teto de tamanho e de quantidade; exige UMA raiz (fora de pastas
@@ -158,6 +162,7 @@ $script:Opc = $null
 $script:Desligou = $false             # o atualizador desligou um Proclamare que estava ligado
 $script:BatTamanho = -1               # tamanho e SHA-256 do .bat que o cmd esta executando (ver Eh-Copia-Do-Bat)
 $script:BatHash = $null
+$script:ZipsIgnorados = @()           # nomes dos ZIPs da pasta ignorados por serem velhos (nunca apagados)
 
 # ---- Mensagens e registro (logs\atualizar.log) -----------------------------------------------------------
 function Registrar([string]$Texto) {
@@ -1360,6 +1365,28 @@ function Abrir-Trava {
     }
 }
 
+# v2.8.3: depois do sucesso, apaga o ZIP que FOI INSTALADO quando veio da pasta do .bat. Reconferido na hora:
+# arquivo comum (nunca link), proclamare*.zip, DENTRO da pasta do .bat, e o nome real e o mesmo (nada de 8.3).
+function Pode-Apagar-Zip($Caminho, [string]$PastaBat) {
+    try {
+        if (-not $Caminho -or -not [System.IO.File]::Exists([string]$Caminho)) { return $false }
+        $info = New-Object System.IO.FileInfo([string]$Caminho)
+        if (Eh-Link $info) { return $false }
+        # As duas pastas passam pelo mesmo DirectoryInfo (o .NET pode expandir nomes curtos 8.3 de um lado so).
+        $paiZip = $info.Directory.FullName.TrimEnd('\')
+        $paiBat = (New-Object System.IO.DirectoryInfo($PastaBat)).FullName.TrimEnd('\')
+        if (-not [string]::Equals($paiZip, $paiBat, $OrdIC)) { return $false }
+        if (-not (Casa-Nome $info.Name 'proclamare*.zip')) { return $false }
+        $real = Nome-Real $info.FullName
+        return ($null -ne $real -and [string]::Equals($real, $info.Name, $OrdIC))
+    } catch { return $false }
+}
+function Dizer-ZipsAntigos {
+    if ($script:ZipsIgnorados.Count -gt 0) {
+        Dizer ('    Pode apagar os ZIPs antigos desta pasta: ' + ($script:ZipsIgnorados -join ', ') + '.') 'Gray'
+    }
+}
+
 # ==== FLUXO PRINCIPAL (os testes de funcao usam so o que vem ACIMA desta linha) ====
 function Atualizar {
     $bat = [string]$env:PROCLAMARE_ATUALIZAR_BAT
@@ -1430,13 +1457,21 @@ function Atualizar {
     $zip = $null
     $zipDaPasta = $null
     $daInternet = $false
+    $buscarNaInternet = $false
+    $pacote = $null
+    $script:ZipsIgnorados = @()
     if ($opc.Zip) {
         $zip = [System.IO.Path]::GetFullPath($opc.Zip)
         if (-not [System.IO.File]::Exists($zip)) { Recusar "Não achei o arquivo $zip. Nada foi alterado." }
         Ok "usando o ZIP informado: $([System.IO.Path]::GetFileName($zip))"
     } else {
-        $todos = @(Filhos $pastaBat | Where-Object { -not ($_ -is [System.IO.DirectoryInfo]) -and -not (Eh-Link $_) -and $_.Name -like '*.zip' })
-        $zips = @($todos | Where-Object { $_.Name -like 'proclamare*.zip' } | Sort-Object LastWriteTime -Descending)
+        $todos = @(Filhos $pastaBat | Where-Object { -not ($_ -is [System.IO.DirectoryInfo]) -and -not (Eh-Link $_) -and (Casa-Nome $_.Name '*.zip') })
+        $zips = @($todos | Where-Object { Casa-Nome $_.Name 'proclamare*.zip' } | Sort-Object LastWriteTime -Descending)
+        # Um .zip de outro nome nao e do Proclamare: avisa e ignora, mas NAO bloqueia mais a internet.
+        foreach ($o in @($todos | Where-Object { -not (Casa-Nome $_.Name 'proclamare*.zip') })) {
+            Aviso ("Ignorei o arquivo $($o.Name): o nome não começa com 'proclamare'. Se ele for a versão nova do`n" +
+                "    Proclamare, renomeie para 'proclamare-nova.zip' e dê dois cliques de novo.")
+        }
         if ($zips.Count -gt 0) {
             $zip = $zips[0].FullName
             $zipDaPasta = $zip
@@ -1446,33 +1481,63 @@ function Atualizar {
             } else {
                 Ok "usando o ZIP desta pasta: $($zips[0].Name)"
             }
-        } elseif ($todos.Count -gt 0) {
-            Recusar ("Achei o arquivo $($todos[0].Name) nesta pasta, mas o nome não começa com 'proclamare'.`n" +
-                "    Se ele for a versão nova do Proclamare, renomeie para 'proclamare-nova.zip' e dê dois cliques`n" +
-                '    de novo. Se não for, tire-o desta pasta. Nada foi alterado.')
-        } elseif ($opc.SemRede) {
-            Recusar ("Não achei a versão nova (e -SemRede proíbe a internet).`n" + (Texto-ColoqueZip))
         } else {
-            Dizer '    Nenhum ZIP nesta pasta: procurando a última versão publicada no GitHub (precisa de internet)...'
-            $tag = Ler-Release
-            $vTag = $tag.Substring(1)
-            Ok "versão publicada: $vTag"
-            if ($vAtual) {
-                $cmp = (Versao-Comparavel $vTag).CompareTo((Versao-Comparavel $vAtual))
-                if ($cmp -eq 0) { Dizer "`nO Proclamare já está na versão $vAtual. Nada foi alterado." 'Green'; return 0 }
-                if ($cmp -lt 0) {
-                    Recusar "A versão publicada no GitHub ($vTag) é mais antiga que a instalada ($vAtual). Nada foi alterado."
-                }
-            }
-            $zip = Join-Path $script:Temp 'proclamare-github.zip'
-            Baixar-Tag $tag $zip
-            $daInternet = $true
+            $buscarNaInternet = $true
         }
     }
 
     # ---- 3. Conferir e extrair
-    Passo 'Conferindo o pacote (antes de mexer em qualquer coisa)...'
-    $pacote = Extrair-Pacote $zip (Join-Path $script:Temp 'n')
+    if ($zipDaPasta) {
+        Passo 'Conferindo o pacote (antes de mexer em qualquer coisa)...'
+        $pacote = Extrair-Pacote $zip (Join-Path $script:Temp 'n')
+        # v2.8.3: ZIP ACHADO na pasta que nao e mais novo que o instalado (ex.: o da versao ja instalada,
+        # esquecido ao lado do .bat) NAO e instalado: vai-se para a internet. Sem versao legivel: regras de sempre.
+        $vZip = Ler-Versao (Join-Path $pacote.Raiz 'server.py')
+        if ($vAtual -and $vZip -and ((Versao-Comparavel $vZip).CompareTo((Versao-Comparavel $vAtual)) -le 0)) {
+            $nomeZip = [System.IO.Path]::GetFileName($zipDaPasta)
+            if ($opc.SemRede) {
+                Recusar ("O ZIP $nomeZip é da versão $vZip, que não é mais nova que a instalada ($vAtual): o ZIP desta pasta é antigo.`n" +
+                    '    Com -SemRede não procuro na internet: coloque o ZIP da versão nova ou rode sem -SemRede. Nada foi alterado.')
+            }
+            Aviso "O ZIP $nomeZip é da versão $vZip, que não é mais nova que a instalada ($vAtual). Vou ignorá-lo e procurar na internet."
+            if ($zips.Count -gt 1) { Aviso "Ignorei $($zips.Count) ZIPs desta pasta (o mais novo deles já não é mais novo que a instalada)." }
+            $script:ZipsIgnorados = @($zips | ForEach-Object { $_.Name })
+            $zip = $null
+            $zipDaPasta = $null
+            $pacote = $null
+            try { [System.IO.Directory]::Delete((Join-Path $script:Temp 'n'), $true) } catch { }
+            $buscarNaInternet = $true
+        }
+    }
+    if ($buscarNaInternet) {
+        if ($opc.SemRede) { Recusar ("Não achei a versão nova (e -SemRede proíbe a internet).`n" + (Texto-ColoqueZip)) }
+        if ($script:ZipsIgnorados.Count -gt 0) {
+            Dizer '    Procurando a última versão publicada no GitHub (precisa de internet)...'
+        } else {
+            Dizer '    Nenhum ZIP nesta pasta: procurando a última versão publicada no GitHub (precisa de internet)...'
+        }
+        $tag = Ler-Release
+        $vTag = $tag.Substring(1)
+        Ok "versão publicada: $vTag"
+        if ($vAtual) {
+            $cmp = (Versao-Comparavel $vTag).CompareTo((Versao-Comparavel $vAtual))
+            if ($cmp -eq 0) {
+                Dizer "`nO Proclamare já está na versão $vAtual. Nada foi alterado." 'Green'
+                Dizer-ZipsAntigos
+                return 0
+            }
+            if ($cmp -lt 0) {
+                Recusar "A versão publicada no GitHub ($vTag) é mais antiga que a instalada ($vAtual). Nada foi alterado."
+            }
+        }
+        $zip = Join-Path $script:Temp 'proclamare-github.zip'
+        Baixar-Tag $tag $zip
+        $daInternet = $true
+    }
+    if (-not $pacote) {
+        Passo 'Conferindo o pacote (antes de mexer em qualquer coisa)...'
+        $pacote = Extrair-Pacote $zip (Join-Path $script:Temp 'n')
+    }
     $novo = $pacote.Raiz
 
     # ---- 4. Versoes
@@ -1480,8 +1545,6 @@ function Atualizar {
     $dNova = $pacote.Data
     if (-not $dNova) { $dNova = Data-Mais-Nova $novo }
     $descNova = Descrever-Versao $vNova $dNova
-    Dizer "    Instalada agora: $(Descrever-Versao $vAtual (Data-Mais-Nova $raiz))"
-    Dizer "    Versão nova:     $descNova"
     if ($vAtual -and -not $vNova) {
         Recusar ("Não consegui ler o número da versão no pacote novo (a instalada é a $vAtual).`n" +
             '    Por segurança ele foi recusado. Confira se o ZIP é mesmo do Proclamare. Nada foi alterado.')
@@ -1492,7 +1555,11 @@ function Atualizar {
             Recusar ("O pacote é de uma versão MAIS ANTIGA ($vNova) do que a instalada ($vAtual).`n" +
                 '    Se for um ZIP velho esquecido nesta pasta, apague-o e tente de novo. Nada foi alterado.')
         }
-        if ($cmp -eq 0 -and $daInternet) { Dizer "`nO Proclamare já está na versão $vAtual. Nada foi alterado." 'Green'; return 0 }
+        if ($cmp -eq 0 -and $daInternet) {
+            Dizer "`nO Proclamare já está na versão $vAtual. Nada foi alterado." 'Green'
+            Dizer-ZipsAntigos
+            return 0
+        }
     }
 
     # requirements.lock: so pacotes e --hash; mudou (sem contar CRLF/LF) = precisa de internet para o pip.
@@ -1535,6 +1602,17 @@ function Atualizar {
             Recusar ((Descrever-Link $c) + '; por segurança não vou atualizar. Nada foi alterado.')
         }
     }
+
+    # ---- Versoes bem claras na tela, ANTES de desligar o Proclamare
+    $txtAtual = if ($vAtual) { $vAtual } else { Descrever-Versao $null (Data-Mais-Nova $raiz) }
+    $txtNova = if ($vNova) { $vNova } else { $descNova }
+    $deOnde = if ($daInternet) { 'internet' } else { 'ZIP ' + [System.IO.Path]::GetFileName($zip) }
+    Dizer ''
+    Dizer '  ============================================================' 'Cyan'
+    Dizer "  Versão instalada agora: $txtAtual" 'White'
+    Dizer "  Versão que será instalada: $txtNova  (de onde: $deOnde)" 'White'
+    Dizer '  ============================================================' 'Cyan'
+    Dizer ''
 
     # ---- 5. Desligar
     Passo 'Desligando o Proclamare...'
@@ -1591,14 +1669,25 @@ function Atualizar {
     Remover-Pendente
     $script:Fase = 'pronto'
     $rotulo = if ($vNova) { "a versão $vNova" } else { $descNova }
-    Dizer ("`nProclamare atualizado para $rotulo. Seus dados (contas, listas, horários, mensagens," +
+    $quem = if ($vAtual -and $vNova) { "da versão $vAtual para a versão $vNova" } else { "para $rotulo" }
+    Dizer ("`nProclamare atualizado $quem. Seus dados (contas, listas, horários, mensagens," +
         ' configuração) foram mantidos.') 'Green'
     Dizer "    Se o painel já estava aberto (inclusive a aba 'Tocador da loja' e nos celulares), aperte F5 nele." 'Green'
     Dizer "    Cópia da versão anterior: backups\$([System.IO.Path]::GetFileName($script:Backup))" 'Gray'
+    # So agora (codigo instalado, conferido e, se religou, respondendo) o ZIP que FOI instalado sai da pasta.
+    # Falhar aqui e so um aviso: nunca erro e nunca volta de versao.
     if ($zipDaPasta) {
-        Dizer ("    O arquivo $([System.IO.Path]::GetFileName($zipDaPasta)) já pode ser apagado desta pasta" +
-            ' (na próxima vez, sem ZIP aqui, a versão nova vem da internet).') 'Gray'
+        $nomeZip = [System.IO.Path]::GetFileName($zipDaPasta)
+        try {
+            if (-not (Pode-Apagar-Zip $zipDaPasta $pastaBat)) { throw 'o arquivo não é mais um ZIP comum desta pasta' }
+            Apagar-Arquivo $zipDaPasta
+            Dizer "    O ZIP $nomeZip foi apagado desta pasta (já foi instalado)." 'Gray'
+        } catch {
+            Registrar ('zip nao apagado: ' + $_.Exception.Message)
+            Aviso "não consegui apagar o ZIP $nomeZip; pode apagar o ZIP à mão (a versão nova já está instalada)."
+        }
     }
+    Dizer-ZipsAntigos
     return 0
 }
 
