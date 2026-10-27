@@ -1666,7 +1666,9 @@
     if (it.id) {
       // v2.8 (P1): quem gravou esta mensagem por último (só modo contas); mensagem nova ainda não tem autor
       const autor = mk("p", "autor msg-card__autor");
-      pintarAutor(autor, it.autorNome, msgs.deFabrica ? "Mensagem de fábrica" : "");
+      // fab-1..fab-6 sem autor (mesmo depois do 1º salvamento em modo contas) seguem "de fábrica", não "Antes das contas"
+      const deFab = msgs.deFabrica || (!it.autorNome && /^fab-/.test(it.id));
+      pintarAutor(autor, it.autorNome, deFab ? "Mensagem de fábrica" : "");
       if (!autor.hidden) li.append(autor);
     }
     li.append(buildMsgField(it, "titulo"), buildMsgField(it, "texto"));
@@ -10128,16 +10130,16 @@
       notas.push(["seg__note--bad", "Login pela rede travado para aparelhos desconhecidos (muitas tentativas erradas). " + quando + " Quem já está conectado não é afetado."]);
     }
     if (seg.bloqueios > 0) {
-      notas.push(["", (seg.bloqueios === 1 ? "1 aparelho/rede bloqueado" : seg.bloqueios + " aparelhos/redes bloqueados") + " agora por errar o PIN."]);
+      notas.push(["", (seg.bloqueios === 1 ? "1 aparelho/rede bloqueado" : seg.bloqueios + " aparelhos/redes bloqueados") + (auth.modoContas ? " agora por errar a senha." : " agora por errar o PIN.")]);
     }
     if (seg.falhas24 > 0) {
-      let t = plural(seg.falhas24, "tentativa de PIN errada", "tentativas de PIN erradas") + " nas últimas 24 horas";
+      let t = (auth.modoContas ? plural(seg.falhas24, "tentativa de login errada", "tentativas de login erradas") : plural(seg.falhas24, "tentativa de PIN errada", "tentativas de PIN erradas")) + " nas últimas 24 horas";
       if (seg.falhasNovas > 0 && seg.falhasNovas < seg.falhas24) t += " (" + seg.falhasNovas + " desde a última vez que você marcou como visto)";
       notas.push([seg.falhasNovas >= 5 ? "" : "seg__note--soft", t + "."]);
     }
     if (seg.logins.length) {
       const l = seg.logins[0];
-      notas.push(["", (seg.logins.length === 1 ? "Um aparelho novo entrou pela rede" : seg.logins.length + " aparelhos novos entraram pela rede") + " (" + l.ip + (segQuando(l.em) ? ", " + segQuando(l.em) : "") + "). Se não foi alguém da equipe, troque o PIN."]);
+      notas.push(["", (seg.logins.length === 1 ? "Um aparelho novo entrou pela rede" : seg.logins.length + " aparelhos novos entraram pela rede") + " (" + l.ip + (segQuando(l.em) ? ", " + segQuando(l.em) : "") + "). " + (auth.modoContas ? "Se não foi alguém da equipe, desative a conta ou use “Sair de todos os aparelhos” e troque a senha." : "Se não foi alguém da equipe, troque o PIN.")]);
     }
     if (seg.fortes.length) {
       // com a confiança no loopback suspensa o PC cai na tela de PIN (aviso lá); aqui só chega quem ainda é local
@@ -11051,7 +11053,8 @@
     if (!auth.conta) return;
     const salvo = store.get(LS.conta);
     const anterior = contaUltima || salvo;
-    if (anterior && anterior !== auth.conta.id) limparComposerEHistorico();
+    // Sem conta anterior = 1º login de conta neste navegador: o histórico local do modo PIN não pode vazar para ela.
+    if (!anterior || anterior !== auth.conta.id) limparComposerEHistorico();
     contaUltima = auth.conta.id;
     if (salvo !== auth.conta.id) store.set(LS.conta, auth.conta.id);
   }

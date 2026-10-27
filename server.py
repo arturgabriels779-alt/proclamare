@@ -1176,7 +1176,8 @@ from werkzeug.http import parse_cookie
 # pycaw/pygame entram de forma tardia e tolerante dentro dele.
 import som as som_pkg
 from som import modelo as som_modelo
-from som.aviso import (AVISO_MAX_S, AVISO_PADRAO, AVISO_PIOR_CASO_S, AVISOS, NOMES_AVISO, wav_do_aviso,
+from som.aviso import (AVISO_MAX_S, AVISO_PADRAO, AVISO_PIOR_CASO_S, AVISOS, AVISOS_COM_FIM,
+                       NOMES_AVISO, wav_do_aviso,
                        wav_do_aviso_fim)
 from som.motor import frase_de_teste, gerar_bipe, texto_para_sapi
 
@@ -4436,6 +4437,17 @@ def limpar_audios_antigos(forcar: bool = False) -> None:
         try:
             if p.stat().st_mtime < limite:
                 apagar_audio(p)
+        except OSError:
+            continue
+    # v2.8: sinetas de versões antigas (aviso_sino.wav, aviso_aeroporto_inicio_fim.fim.wav...) cujo nome já não é
+    # válido. Só aviso_*.wav; os nomes válidos (início e fim) nunca são tocados.
+    validos = {f"aviso_{a}.wav" for a in AVISOS if a != "nenhum"}
+    validos |= {f"aviso_{a}.fim.wav" for a in AVISOS_COM_FIM}
+    for p in AUDIO_DIR.glob("aviso_*.wav"):
+        if p.name in validos:
+            continue
+        try:
+            apagar_audio(p)
         except OSError:
             continue
 

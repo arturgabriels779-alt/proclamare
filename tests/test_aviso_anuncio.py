@@ -784,6 +784,21 @@ class TestSinetaDoFim(BaseAviso):
         self.assertTrue(outro.exists())                                # só o padrão aviso_*.tmp
         self.assertTrue(c.exists())
 
+    def test_limpeza_apaga_sinetas_com_nome_que_ja_nao_vale(self) -> None:
+        # v2.8: aviso_*.wav de versões antigas somem; os nomes válidos (início e fim) e outros arquivos ficam
+        validos = [self.audio / f"aviso_{a}.wav" for a in aviso_mod.AVISOS if a != "nenhum"]
+        validos += [self.audio / f"aviso_{a}.fim.wav" for a in aviso_mod.AVISOS_COM_FIM]
+        velhos = [self.audio / "aviso_sino.wav", self.audio / "aviso_aeroporto_inicio_fim.fim.wav",
+                  self.audio / "aviso_nenhum.wav", self.audio / "aviso_ding_dong_duplo.fim.wav"]
+        outros = [self.audio / "outra_coisa.wav", self.audio / "aviso_sino.mp3"]
+        for arq in validos + velhos + outros:
+            arq.write_bytes(b"x")
+        server.limpar_audios_antigos(forcar=True)
+        for arq in velhos:
+            self.assertFalse(arq.exists(), arq.name)
+        for arq in validos + outros:
+            self.assertTrue(arq.exists(), arq.name)
+
     def test_inicio_do_servidor_limpa_com_forcar(self) -> None:
         # a limpeza (com os aviso_*.tmp) roda ao ligar: o main() chama limpar_audios_antigos(forcar=True)
         import inspect

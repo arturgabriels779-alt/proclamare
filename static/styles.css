@@ -3216,3 +3216,8 @@ html[data-so-anuncio] .conta-bar { width: 100%; max-width: 920px; margin-inline:
 
 /* ---- P7: as contas sumiram (porta "contas") ---- */
 .gate__nota { max-width: 36ch; text-align: center; }
+
+/* v2.8 (QA): alvos de toque >= 44 px nos botões pequenos do histórico e das mensagens, só no celular */
+@media (max-width: 767.98px) {
+  #btn-hist-abrir, #btn-msgs-edit, #btn-history-clear { height: 44px; min-height: 44px; }
+}

@@ -1,3 +1,5 @@
+> Nota (2026-10-27): a lista final de avisos é nenhum, microfone (padrão), aeroporto, supermercado e ding_dong_duplo (commit adc3106); os nomes abaixo são do desenho original.
+
 # Proclamare v2.8: aviso sonoro antes do anúncio + contas com perfis
 
 Data: 2026-10-22. Pedido do Artur (dono do projeto, não técnico). Este documento descreve O QUE construir e

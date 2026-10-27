@@ -473,6 +473,30 @@ class TesteCspDoHtml(unittest.TestCase):
         self.assertEqual(re.findall(r"\sstyle\s*=", HTML), [])
         self.assertEqual(re.findall(r"<[^>]*\son[a-z]+\s*=", HTML), [])
 
+class TesteDetalhesDoQA(unittest.TestCase):
+    """Rodada de polimento: textos de Segurança por modo, histórico local do modo PIN e mensagens de fábrica."""
+
+    def test_seguranca_em_modo_contas_fala_de_login_e_senha(self) -> None:
+        for trecho in ("tentativas de login erradas", "agora por errar a senha", "Sair de todos os aparelhos",
+                       "troque a senha"):
+            self.assertIn(trecho, JS)
+        # o texto do PIN continua para o modo PIN
+        self.assertIn("tentativas de PIN erradas", JS)
+        self.assertIn("troque o PIN", JS)
+
+    def test_primeiro_login_de_conta_limpa_o_historico_local(self) -> None:
+        m = re.search(r"function limparDaPessoaAnterior\(\) \{(.*?)\n  \}", JS, re.S)
+        self.assertIsNotNone(m)
+        self.assertIn("!anterior ||", m.group(1))
+        self.assertIn("limparComposerEHistorico()", m.group(1))
+
+    def test_mensagem_de_fabrica_nao_diz_antes_das_contas(self) -> None:
+        self.assertIn('/^fab-/.test(it.id)', JS)
+        self.assertIn('"Mensagem de fábrica"', JS)
+
+    def test_botoes_do_historico_tem_44px_no_celular(self) -> None:
+        css = (RAIZ / "static" / "styles.css").read_text(encoding="utf-8")
+        self.assertRegex(css, r"#btn-hist-abrir,\s*#btn-msgs-edit,\s*#btn-history-clear\s*\{[^}]*44px")
 
 if __name__ == "__main__":
     unittest.main()
