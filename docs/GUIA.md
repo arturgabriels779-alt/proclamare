@@ -205,7 +205,10 @@ GitHub do projeto e baixa só ela, nunca o trabalho em andamento. É só dar doi
 estiver na versão publicada, ele diz **"O Proclamare já está na versão X. Nada foi alterado."** Sem internet (ou se
 ainda não houver versão publicada), ele avisa e **nada muda**: use o pen drive.
 
-**ZIPs na pasta:** com mais de um ZIP do Proclamare, ele usa o mais novo (pela data do arquivo) e diz qual.
+**ZIPs na pasta:** com mais de um ZIP do Proclamare, ele usa o de **data de arquivo mais nova** (não o de maior
+número de versão) e diz qual; se esse for antigo, ele ignora os ZIPs da pasta e vai para a internet. Por isso:
+**deixe só o ZIP da versão nova na pasta.** O atualizador não tem "modo de teste" para o usuário (o gancho de
+teste só existe com um arquivo especial dentro de `logs\`, usado pelos testes automáticos).
 **Um ZIP velho esquecido na pasta é ignorado:** se o ZIP achado na pasta for da **mesma versão** que a instalada
 (ou de uma mais antiga), ele **não é instalado**: o atualizador avisa em amarelo ("O ZIP … é da versão X, que não é
 mais nova que a instalada (Y). Vou ignorá-lo e procurar na internet.") e vai buscar a última versão publicada. Esses
