@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.8.3 "Atualizador: ignora ZIP antigo"; v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.8.4 "Volume do aviso"; v2.8.3 "Atualizador: ignora ZIP antigo"; v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -66,7 +66,7 @@ Inventário de rotas (v2.8)
   POST /api/announce                       pin | 10/min por IP remoto | {"text","teste"?} (engine/voice/speed/offline_voice_id: ignorados; outra chave = 400)
   GET  /api/voices                         local | - | -
   GET  /api/voz                            pin | - | -
-  POST /api/voz                            pin | 20/min | {"motor"?,"voz"?,"velocidade"?,"aviso"?}
+  POST /api/voz                            pin | 20/min | {"motor"?,"voz"?,"velocidade"?,"aviso"?,"aviso_volume"? (so ADM)}
   POST /api/voz/ouvir                      pin | 6/min por IP remoto, 20/10 min no total | {"aviso"}
   GET  /api/youtube/state                  pin | - | -
   POST /api/youtube/state                  pin | 60/10 s | heartbeat da aba Tocador (chaves conhecidas; outra = 400)
@@ -374,10 +374,19 @@ Contrato v2.8 (Parte A: voz da loja)
 ------------------------------------
   A voz dos anúncios é da LOJA, não de cada aparelho: mora em config.json["voz_loja"] =
   {"motor": auto|online|offline, "voz": francisca|antonio, "velocidade": -50..50, "aviso": nenhum|microfone|
-  aviao|aeroporto|supermercado|ding_dong_duplo}. Padrão (VOZ_LOJA_PADRAO): auto / francisca / 0 / microfone. voz_loja() nunca levanta:
+  aviao|aeroporto|supermercado|ding_dong_duplo, "aviso_volume": 10..100}. Padrão (VOZ_LOJA_PADRAO): auto / francisca / 0 / microfone / 80. voz_loja() nunca levanta:
   chave ausente ou campo torto cai no padrão campo a campo; "definida" = a chave existe no config. Os avisos que saíram
   da lista na v2.8 (ding_dong, suave, sino, comissario, aeroporto_inicio_fim) são "campo torto": guardados no
   config.json, viram o padrão (microfone) na leitura; no POST /api/voz e no /api/voz/ouvir, 400 com "campo":"aviso".
+  v2.8.4 "aviso_volume": volume das sinetas (início E fim) em % — inteiro de 10 a 100, múltiplo de 10 (bool, float, texto,
+  0, 5, 55, 105 = 400 com "campo":"aviso_volume"); ausente/torto no config = 80. Só o ADM muda: mandar a chave no POST /api/voz
+  exige a capacidade "aviso_volume" (contas.PODE: só "adm"; gerente/funcionário = 403 "sem_permissao" e NADA do corpo é gravado,
+  nem as outras chaves; modo PIN: só o PC das caixas, aparelho remoto com PIN = 403). O volume entra na SÍNTESE do WAV (pico =
+  0,9 x volume/100; 100% = o WAV antigo, bit a bit) e o cache tem o volume no nome (audios_temp/aviso_<nome>.v80.wav e
+  aviso_<nome>.fim.v80.wav; 100% mantém os nomes antigos): vale no legado (pygame), na saída fixada, no "Ouvir" (toca o volume
+  GRAVADO), no anúncio digitado, nas Mensagens prontas e no tipo `anuncio` da Programação. A fala não muda. GET /api/voz devolve
+  o campo; /api/auth/status -> permissoes traz "aviso_volume" para o ADM (e no modo PIN para o PC local). Auditoria: voz_salvar
+  com campos=N e aviso_volume=<número>.
   GET  /api/voz   -> {ok, voz_loja:{motor,voz,velocidade,aviso,definida}, opcoes:{motores,vozes[{id,nome}],avisos[{id,nome}]}}
   POST /api/voz   -> qualquer subconjunto (>= 1) de motor/voz/velocidade/aviso; o resto é preservado. Chave fora da
                      lista = 400 "Campo desconhecido."; valor inválido = 400 com "campo". 20 gravações/min por IP.
@@ -1180,7 +1189,7 @@ from werkzeug.http import parse_cookie
 import som as som_pkg
 from som import modelo as som_modelo
 from som.aviso import (AVISO_MAX_S, AVISO_PADRAO, AVISO_PIOR_CASO_S, AVISOS, AVISOS_COM_FIM,
-                       NOMES_AVISO, wav_do_aviso,
+                       NOMES_AVISO, VOLUME_MAX, VOLUME_PADRAO, volume_valido, wav_do_aviso,
                        wav_do_aviso_fim)
 from som.motor import frase_de_teste, gerar_bipe, texto_para_sapi
 
@@ -2374,7 +2383,7 @@ PERMISSOES_ROTAS: dict[tuple[str, str], str | None] = {
     ("POST", "/api/mensagens"): "mensagens_editar",
     ("POST", "/api/mensagens/restaurar"): "mensagens_editar",
     ("GET", "/api/voz"): None,                        # leitura da voz da loja (o painel mostra qual é)
-    ("POST", "/api/voz"): "voz",
+    ("POST", "/api/voz"): "voz",   # v2.8.4: com "aviso_volume" no corpo a rota exige também a capacidade aviso_volume
     ("POST", "/api/voz/ouvir"): "voz",
     ("GET", "/api/voices"): None,                     # diagnóstico; continua SÓ LOCAL (somente_local)
     # Acesso / segurança do PC das caixas (as rotas também exigem ADM no PC: _exigir_adm_local).
@@ -4354,7 +4363,7 @@ def apagar_audio(caminho: Path | None) -> None:
             caminho.unlink(missing_ok=True)
 
 
-def caminho_do_aviso(nome: str, *, fim: bool = False) -> Path | None:
+def caminho_do_aviso(nome: str, *, fim: bool = False, volume: int = VOLUME_MAX) -> Path | None:
     """
     v2.8 (A3): o WAV do aviso sonoro em AUDIO_DIR/aviso_<nome>.wav (fora do padrão anuncio_* do
     limpar_audios_antigos, então nunca é apagado pela limpeza nem pelo anúncio). Grava uma vez só (de novo só se
@@ -4363,13 +4372,19 @@ def caminho_do_aviso(nome: str, *, fim: bool = False) -> Path | None:
     caminho: nunca aceita outra coisa).
     `fim=True`: a sineta de DEPOIS da fala, em AUDIO_DIR/aviso_<nome>.fim.wav (os ids de AVISOS não têm ponto, então
     esse nome nunca coincide com o de outro aviso); None para todo aviso sem sineta do fim. Mesmas regras.
+    v2.8.4: `volume` (% de 10 a 100, múltiplo de 10; ValueError se outro) já vem na síntese do WAV. O padrão da função
+    é 100 (= o som e os nomes de arquivo de sempre, para quem a chama sem volume); quem toca para a loja passa o
+    `aviso_volume` da voz da loja (`_preparar_aviso`, `voz_ouvir`). Abaixo de 100 o nome ganha `.v<volume>`
+    (aviso_<nome>.v80.wav / aviso_<nome>.fim.v80.wav): cada volume tem o seu cache e nunca se confunde com outro.
     """
     if nome not in AVISOS:
         raise ValueError("Aviso sonoro desconhecido.")
-    dados = wav_do_aviso_fim(nome) if fim else wav_do_aviso(nome)
+    dados = wav_do_aviso_fim(nome, volume=volume) if fim else wav_do_aviso(nome, volume=volume)   # ValueError se torto
     if dados is None:
         return None
     base = f"aviso_{nome}.fim" if fim else f"aviso_{nome}"
+    if volume != VOLUME_MAX:
+        base += f".v{volume}"
     destino = AUDIO_DIR / f"{base}.wav"
     try:
         if destino.read_bytes() == dados:   # ~50-90 KB: comparar tudo é barato
@@ -4446,6 +4461,10 @@ def limpar_audios_antigos(forcar: bool = False) -> None:
     # válido. Só aviso_*.wav; os nomes válidos (início e fim) nunca são tocados.
     validos = {f"aviso_{a}.wav" for a in AVISOS if a != "nenhum"}
     validos |= {f"aviso_{a}.fim.wav" for a in AVISOS_COM_FIM}
+    # v2.8.4: os de cada volume (aviso_<nome>.v80.wav, aviso_<nome>.fim.v80.wav): no máximo 5 x 2 x 9 arquivos pequenos
+    for v in range(10, 100, 10):
+        validos |= {f"aviso_{a}.v{v}.wav" for a in AVISOS if a != "nenhum"}
+        validos |= {f"aviso_{a}.fim.v{v}.wav" for a in AVISOS_COM_FIM}
     for p in AUDIO_DIR.glob("aviso_*.wav"):
         if p.name in validos:
             continue
@@ -4580,7 +4599,9 @@ VOZES_ONLINE = {
 MOTORES = frozenset({"auto", "online", "offline"})
 VELOCIDADE_OFFLINE_WPM = 165
 # v2.8 (A2): voz da LOJA, guardada no config.json["voz_loja"]. Campo ausente ou torto cai no padrão, campo a campo.
-VOZ_LOJA_PADRAO: dict[str, Any] = {"motor": "auto", "voz": "francisca", "velocidade": 0, "aviso": AVISO_PADRAO}
+# v2.8.4: `aviso_volume` = volume do aviso sonoro em % (10..100, múltiplo de 10; padrão 80, só o ADM muda).
+VOZ_LOJA_PADRAO: dict[str, Any] = {"motor": "auto", "voz": "francisca", "velocidade": 0, "aviso": AVISO_PADRAO,
+                                   "aviso_volume": VOLUME_PADRAO}
 VOZES_LOJA_NOMES = (("francisca", "Francisca (feminina)"), ("antonio", "Antônio (masculina)"))
 VOZ_LOJA_ESCRITA_MAX_POR_MIN = 20   # POST /api/voz, por IP
 
@@ -4595,11 +4616,13 @@ def _voz_loja_campo_ok(campo: str, valor: Any) -> bool:
         return isinstance(valor, int) and not isinstance(valor, bool) and -50 <= valor <= 50
     if campo == "aviso":
         return isinstance(valor, str) and valor in AVISOS
+    if campo == "aviso_volume":
+        return volume_valido(valor)
     return False
 
 
 def voz_loja() -> dict[str, Any]:
-    """Voz da loja (motor, voz, velocidade, aviso) + `definida`. Nunca levanta: o que estiver torto vira padrão."""
+    """Voz da loja (motor, voz, velocidade, aviso, aviso_volume) + `definida`. Nunca levanta: o que estiver torto vira padrão."""
     try:
         cfg = load_config()
     except Exception:   # config ilegível: a loja segue com o padrão
@@ -6951,7 +6974,11 @@ def voz_ler() -> Response:
 
 @app.post("/api/voz")
 def voz_salvar() -> Response:
-    """Grava qualquer subconjunto de motor/voz/velocidade/aviso; o resto da voz da loja fica como estava."""
+    """
+    Grava qualquer subconjunto de motor/voz/velocidade/aviso/aviso_volume; o resto fica como estava.
+    v2.8.4: `aviso_volume` exige a capacidade "aviso_volume" (só o ADM; no modo PIN, só o PC das caixas): sem ela o
+    corpo INTEIRO é recusado com 403 (nada é gravado, nem as outras chaves).
+    """
     corpo = corpo_json()
     exigir_chaves(corpo, VOZ_LOJA_PADRAO)
     if not corpo:
@@ -6959,6 +6986,9 @@ def voz_salvar() -> Response:
     for campo, valor in corpo.items():
         if not _voz_loja_campo_ok(campo, valor):
             raise ErroVozLoja(f"Campo '{campo}' inválido.", campo)
+    if "aviso_volume" in corpo and not _perfil_pode("aviso_volume"):
+        auditar("voz_salvar", resultado="sem_permissao", conta=_conta_auditoria())
+        return _resp_sem_permissao("aviso_volume")
     if _excedeu_limite_ip_e_conta("voz:", VOZ_LOJA_ESCRITA_MAX_POR_MIN, 60.0):   # v2.8: IP e conta
         raise ErroApi("Muitas alterações seguidas. Aguarde um minuto.", 429)
     with _config_lock:
@@ -6968,7 +6998,9 @@ def voz_salvar() -> Response:
         atual.update(corpo)
         cfg["voz_loja"] = atual
         _gravar_config_atomico(cfg)
-    auditar("voz_salvar", campos=len(corpo), conta=_conta_auditoria())   # só quantos campos; nunca os valores
+    # só quantos campos (+ o volume do aviso, um número sem texto de ninguém)
+    auditar("voz_salvar", campos=len(corpo), conta=_conta_auditoria(),
+            **({"aviso_volume": corpo["aviso_volume"]} if "aviso_volume" in corpo else {}))
     return _resposta_voz_loja()
 
 
@@ -7005,8 +7037,9 @@ def voz_ouvir() -> Response | tuple[Response, int]:
             raise ErroSom("O áudio do Proclamare travou. Reinicie o Proclamare.", 503, "motor_contaminado")
         som = SOM.config_som()
         try:
-            caminho = caminho_do_aviso(nome)   # disco cheio/sem permissão: cai no 500 genérico abaixo
-            fim = caminho_do_aviso(nome, fim=True)   # v2.8: só os de AVISOS_COM_FIM têm (senão None)
+            volume = voz_loja()["aviso_volume"]   # v2.8.4: toca no volume GRAVADO (o painel grava antes de ouvir)
+            caminho = caminho_do_aviso(nome, volume=volume)   # disco cheio/sem permissão: cai no 500 genérico abaixo
+            fim = caminho_do_aviso(nome, fim=True, volume=volume)   # v2.8: só os de AVISOS_COM_FIM têm (senão None)
             if som is not None and som["saida_anuncio"] is not None:
                 _abrir_saida_som(SOM.candidatas_anuncio(som))   # 503 com "codigo" se não houver saída
                 partes = [caminho] if fim is None else [caminho, fim]
@@ -7051,7 +7084,7 @@ def musica_abaixada(spotify: bool = True, youtube: bool = True) -> Iterator[None
             youtube_enqueue("restore")
 
 
-def _preparar_aviso(aviso: str, *, fim: bool = False) -> Path | None:
+def _preparar_aviso(aviso: str, *, fim: bool = False) -> Path | None:   # volume = o da loja (v2.8.4)
     """
     v2.8 (A3): o WAV do aviso, preparado ANTES de abaixar a música. Falha aqui não impede o anúncio (sem aviso).
     `fim=True`: a sineta de DEPOIS da fala (None se o aviso não tem uma).
@@ -7059,7 +7092,7 @@ def _preparar_aviso(aviso: str, *, fim: bool = False) -> Path | None:
     if aviso == "nenhum":
         return None
     try:
-        return caminho_do_aviso(aviso, fim=fim)
+        return caminho_do_aviso(aviso, fim=fim, volume=voz_loja()["aviso_volume"])
     except Exception:  # noqa: BLE001 - disco cheio, nome torto...: o anúncio sai sem o aviso
         log.warning("Não foi possível preparar o aviso sonoro%s; o anúncio sai sem ele.",
                     " do fim" if fim else "")

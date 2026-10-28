@@ -31,7 +31,7 @@ class MatrizTests(unittest.TestCase):
 
     def test_gerente_sem_som_seguranca_spotify(self):
         for cap in contas.CAPACIDADES:
-            esperado = cap not in {"som", "seguranca", "spotify_config"}
+            esperado = cap not in {"som", "seguranca", "spotify_config", "aviso_volume"}
             self.assertEqual(contas.pode("gerente", cap), esperado, cap)
 
     def test_adm_tudo(self):

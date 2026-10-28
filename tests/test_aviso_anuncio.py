@@ -50,6 +50,11 @@ class BaseAviso(ts.BaseSom):
 
     def setUp(self) -> None:
         super().setUp()
+        # v2.8.4: estes testes conferem os NOMES de arquivo do aviso a 100% (aviso_<nome>.wav); o padrão novo (80%) é
+        # testado em tests/test_aviso_volume.py
+        p100 = mock.patch.dict(server.VOZ_LOJA_PADRAO, {"aviso_volume": 100})
+        p100.start()
+        self.addCleanup(p100.stop)
         ev = self.cen.eventos
 
         def tocar_aviso(caminho: Path, parar: Any = None) -> None:
@@ -438,7 +443,7 @@ class TestOuvir(BaseAviso):
         self.assertEqual(self.ouvir("remoto", aviso="aeroporto").status_code, 429)
 
     def test_ouvir_falha_ao_gravar_o_aviso_500_sem_vazar(self) -> None:
-        def quebra(nome: str) -> Path:
+        def quebra(nome: str, **_kw: Any) -> Path:
             raise OSError(r"C:\caminho\secreto")
 
         with mock.patch.object(server, "caminho_do_aviso", quebra), \
@@ -865,6 +870,9 @@ class TestSinetaDoFimNaProgramacaoSaida(BaseAviso):
 class TestAvisoNaProgramacao(tp.BaseProg):
     def setUp(self) -> None:
         super().setUp()
+        p100 = mock.patch.dict(server.VOZ_LOJA_PADRAO, {"aviso_volume": 100})   # v2.8.4: nomes a 100% (ver BaseAviso)
+        p100.start()
+        self.addCleanup(p100.stop)
         self.ordem: list[Any] = []
         # o histórico de anúncios (B6) só grava em modo contas: aqui basta o resultado que a Programação lhe passa
         self.resultados_hist: list[str] = []
