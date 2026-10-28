@@ -128,6 +128,20 @@ class TesteInventarioDeRotas(unittest.TestCase):
             self.assertIn(publica, server.ROTAS_PUBLICAS)
 
 
+class TesteSintaxeDoPainel(unittest.TestCase):
+    """O app.js inteiro deixa de carregar com um erro de sintaxe (v2.8.4: `let` repetido no mesmo escopo)."""
+
+    def test_app_js_sem_erro_de_sintaxe(self) -> None:
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node não instalado")
+        r = subprocess.run([node, "--check", str(RAIZ / "static" / "app.js")], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=60, stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+
+
 class TesteCodigoSemInvisiveis(unittest.TestCase):
     def test_nenhum_caractere_de_formato_literal_no_codigo(self) -> None:
         """Cf (bidi, zero-width, BOM) escrito de verdade no arquivo é 'Trojan Source': só como escape \\uXXXX."""

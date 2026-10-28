@@ -1315,7 +1315,7 @@
   }
 
   /** Grava o que está pendente. Devolve true se gravou (ou não havia nada) e false se a gravação falhou ou foi adiada. */
-  let vozFalhou = false; // a última gravação falhou (inclusive uma disparada pelo timer enquanto o Ouvir espera)
+  let vozGravacaoFalhou = false; // a última gravação falhou (inclusive uma disparada pelo timer enquanto o Ouvir espera)
   async function vozGravar() {
     vozTimer = null;
     if (vozEnviando !== null) { // um POST ainda não voltou: grava depois dele (um por vez, na ordem)
@@ -1335,8 +1335,8 @@
       erroRede = true;
     }
     vozEnviando = null; // antes de aplicar: os campos deste POST podem ser reaplicados com a resposta dele
-    if (resp && resp.ok && resp.data.ok && vozAplicar(resp.data)) { vozFalhou = false; return true; }
-    vozFalhou = true;
+    if (resp && resp.ok && resp.data.ok && vozAplicar(resp.data)) { vozGravacaoFalhou = false; return true; }
+    vozGravacaoFalhou = true;
     if (erroRede) {
       toast("Erro de conexão: a voz da loja não foi salva.", "error", { silent: true });
     } else {
@@ -1377,13 +1377,13 @@
 
   /** "Ouvir" toca no volume GRAVADO: se há mudança pendente ou em andamento, grava antes (espera até ~10 s). */
   async function vozSalvarPendente() {
-    vozFalhou = false;
+    vozGravacaoFalhou = false;
     if (vozTimer !== null) { clearTimeout(vozTimer); vozTimer = null; }
     for (let i = 0; i < 200 && (vozEnviando !== null || Object.keys(vozPend).length > 0); i++) {
       if (vozEnviando === null) { if (!(await vozGravar())) return false; } // falhou: o toast do erro já apareceu
       else await new Promise((r) => setTimeout(r, 50));
     }
-    return !vozFalhou && !vozOcupada();
+    return !vozGravacaoFalhou && !vozOcupada();
   }
 
   btnAvisoOuvir.addEventListener("click", async () => {
