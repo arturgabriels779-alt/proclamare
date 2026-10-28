@@ -574,6 +574,12 @@ celular) e a música não abaixa; nos avisos com **início e fim** você ouve a 
 fim. Para ninguém ficar tocando sinetas sem
 parar, o **Ouvir** aceita até 6 toques por minuto em cada celular e 20 a cada 10 minutos na loja toda.
 
+**Volume do aviso (só o administrador).** Em **Voz da loja**, o administrador ajusta o **Volume do aviso** de 10% a
+100%, de 10 em 10. Ele já vem em **80%**. Vale para a sineta do início e para a do fim, em todos os anúncios e nos
+horários agendados, e **não muda o volume da voz**. Use o **Ouvir** para conferir. Se o aviso estiver forçando as caixas,
+baixe aqui em vez de mexer no volume do Windows ou da mesa de som. O gerente não vê esse controle. Sem contas criadas,
+só o computador das caixas muda o volume.
+
 **A voz é da loja inteira.** O motor (Auto, Online ou Offline), a voz (Francisca ou Antônio), a velocidade e o aviso
 valem para **todos os aparelhos**: o que você escolhe no celular muda também no computador da loja. Antes, cada
 aparelho guardava a sua voz. Se a loja ainda não tinha uma voz salva, o computador da loja passa a usar a escolha
@@ -640,6 +646,7 @@ computador da loja livre).
 | Trocar a própria senha | sim | sim | sim |
 | Editar as mensagens prontas | não | sim | sim |
 | Escolher a voz e o aviso sonoro | não | sim | sim |
+| Mudar o volume do aviso sonoro | não | não | sim |
 | Música (YouTube, Minhas músicas, listas, Spotify) | não | sim | sim |
 | Programação de horários | não | sim | sim |
 | Criar e editar contas | não | só de funcionários | todas |
