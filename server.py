@@ -387,10 +387,13 @@ Contrato v2.8 (Parte A: voz da loja)
   GRAVADO), no anúncio digitado, nas Mensagens prontas e no tipo `anuncio` da Programação. A fala não muda. GET /api/voz devolve
   o campo; /api/auth/status -> permissoes traz "aviso_volume" para o ADM (e no modo PIN para o PC local). Auditoria: voz_salvar
   com campos=N e aviso_volume=<número>.
-  GET  /api/voz   -> {ok, voz_loja:{motor,voz,velocidade,aviso,definida}, opcoes:{motores,vozes[{id,nome}],avisos[{id,nome}]}}
-  POST /api/voz   -> qualquer subconjunto (>= 1) de motor/voz/velocidade/aviso; o resto é preservado. Chave fora da
-                     lista = 400 "Campo desconhecido."; valor inválido = 400 com "campo". 20 gravações/min por IP.
-                     Auditoria: só quantos campos. Mesma resposta do GET.
+  GET  /api/voz   -> {ok, voz_loja:{motor,voz,velocidade,aviso,aviso_volume,definida}, opcoes:{motores,vozes[{id,nome}],avisos[{id,nome}]}}
+  POST /api/voz   -> qualquer subconjunto (>= 1) de motor/voz/velocidade/aviso/aviso_volume; o resto é preservado. Chave fora
+                     da lista = 400 "Campo desconhecido."; valor inválido = 400 com "campo" (a validação vem ANTES da
+                     permissão: 400 antes de 403). 20 gravações/min por IP e por conta (o teto vem ANTES do 403 de
+                     aviso_volume: 403 repetido gasta a cota e vira 429). Com "aviso_volume" no corpo exige a capacidade
+                     "aviso_volume" (só ADM; modo PIN: só o PC das caixas), senão 403 sem gravar nada.
+                     Auditoria: quantos campos (+ aviso_volume=<número> quando enviado). Mesma resposta do GET.
   Aviso sonoro (A3): o WAV sintetizado (som/aviso.py) é gravado uma vez em audios_temp/aviso_<nome>.wav (fora do
   padrão anuncio_* da limpeza; nunca apagado pelo anúncio). Ordem de TODO anúncio falado: gera o mp3 online (música
   ainda alta) -> abre a saída -> abaixa (ou, na Programação, pausa) a música -> AVISO -> fala -> restaura. Legado:
@@ -1189,7 +1192,7 @@ from werkzeug.http import parse_cookie
 import som as som_pkg
 from som import modelo as som_modelo
 from som.aviso import (AVISO_MAX_S, AVISO_PADRAO, AVISO_PIOR_CASO_S, AVISOS, AVISOS_COM_FIM,
-                       NOMES_AVISO, VOLUME_MAX, VOLUME_PADRAO, volume_valido, wav_do_aviso,
+                       NOMES_AVISO, VOLUME_MAX, VOLUME_MIN, VOLUME_PADRAO, VOLUME_PASSO, volume_valido, wav_do_aviso,
                        wav_do_aviso_fim)
 from som.motor import frase_de_teste, gerar_bipe, texto_para_sapi
 
@@ -4462,7 +4465,7 @@ def limpar_audios_antigos(forcar: bool = False) -> None:
     validos = {f"aviso_{a}.wav" for a in AVISOS if a != "nenhum"}
     validos |= {f"aviso_{a}.fim.wav" for a in AVISOS_COM_FIM}
     # v2.8.4: os de cada volume (aviso_<nome>.v80.wav, aviso_<nome>.fim.v80.wav): no máximo 5 x 2 x 9 arquivos pequenos
-    for v in range(10, 100, 10):
+    for v in range(VOLUME_MIN, VOLUME_MAX, VOLUME_PASSO):   # os volumes abaixo de 100 (o 100 tem os nomes antigos)
         validos |= {f"aviso_{a}.v{v}.wav" for a in AVISOS if a != "nenhum"}
         validos |= {f"aviso_{a}.fim.v{v}.wav" for a in AVISOS_COM_FIM}
     for p in AUDIO_DIR.glob("aviso_*.wav"):
@@ -6986,11 +6989,12 @@ def voz_salvar() -> Response:
     for campo, valor in corpo.items():
         if not _voz_loja_campo_ok(campo, valor):
             raise ErroVozLoja(f"Campo '{campo}' inválido.", campo)
+    if _excedeu_limite_ip_e_conta("voz:", VOZ_LOJA_ESCRITA_MAX_POR_MIN, 60.0):   # v2.8: IP e conta
+        raise ErroApi("Muitas alterações seguidas. Aguarde um minuto.", 429)
+    # v2.8.4: o teto vem ANTES do 403, então um 403 repetido gasta a cota (e não enche o auditoria.log)
     if "aviso_volume" in corpo and not _perfil_pode("aviso_volume"):
         auditar("voz_salvar", resultado="sem_permissao", conta=_conta_auditoria())
         return _resp_sem_permissao("aviso_volume")
-    if _excedeu_limite_ip_e_conta("voz:", VOZ_LOJA_ESCRITA_MAX_POR_MIN, 60.0):   # v2.8: IP e conta
-        raise ErroApi("Muitas alterações seguidas. Aguarde um minuto.", 429)
     with _config_lock:
         cfg = load_config()
         atual = voz_loja()
@@ -7084,15 +7088,19 @@ def musica_abaixada(spotify: bool = True, youtube: bool = True) -> Iterator[None
             youtube_enqueue("restore")
 
 
-def _preparar_aviso(aviso: str, *, fim: bool = False) -> Path | None:   # volume = o da loja (v2.8.4)
+def _preparar_aviso(aviso: str, *, fim: bool = False, volume: int | None = None) -> Path | None:
     """
     v2.8 (A3): o WAV do aviso, preparado ANTES de abaixar a música. Falha aqui não impede o anúncio (sem aviso).
     `fim=True`: a sineta de DEPOIS da fala (None se o aviso não tem uma).
+    v2.8.4: `volume` None = o da loja; quem prepara início E fim lê `voz_loja()["aviso_volume"]` UMA vez e passa às duas
+    (uma gravação do ADM no meio nunca mistura volumes no mesmo anúncio).
     """
     if aviso == "nenhum":
         return None
     try:
-        return caminho_do_aviso(aviso, fim=fim, volume=voz_loja()["aviso_volume"])
+        if volume is None:
+            volume = voz_loja()["aviso_volume"]
+        return caminho_do_aviso(aviso, fim=fim, volume=volume)
     except Exception:  # noqa: BLE001 - disco cheio, nome torto...: o anúncio sai sem o aviso
         log.warning("Não foi possível preparar o aviso sonoro%s; o anúncio sai sem ele.",
                     " do fim" if fim else "")
@@ -7183,8 +7191,9 @@ def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
             # Fase 2 — reprodução: falha aqui NÃO repete o anúncio em voz offline
             # (o cliente poderia ouvir duas vezes); sobe como erro 500.
             if caminho is not None:
-                arquivo_aviso = _preparar_aviso(aviso)   # antes de abaixar a música
-                arquivo_fim = _preparar_aviso(aviso, fim=True)
+                volume_aviso = voz_loja()["aviso_volume"]   # v2.8.4: lido uma vez por anúncio
+                arquivo_aviso = _preparar_aviso(aviso, volume=volume_aviso)   # antes de abaixar a música
+                arquivo_fim = _preparar_aviso(aviso, fim=True, volume=volume_aviso)
                 with abaixar():
                     if _tocar_aviso_legado(arquivo_aviso, parar):
                         # apaga o mp3 ao terminar
@@ -7195,8 +7204,9 @@ def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
         finally:
             apagar_audio(caminho)  # no-op se já foi apagado
     voz_id = resolver_voz_offline(voz_offline_id)
-    arquivo_aviso = _preparar_aviso(aviso)
-    arquivo_fim = _preparar_aviso(aviso, fim=True)
+    volume_aviso = voz_loja()["aviso_volume"]   # v2.8.4: lido uma vez por anúncio
+    arquivo_aviso = _preparar_aviso(aviso, volume=volume_aviso)
+    arquivo_fim = _preparar_aviso(aviso, fim=True, volume=volume_aviso)
     with abaixar():
         if _tocar_aviso_legado(arquivo_aviso, parar):
             if parar is not None:
@@ -7643,8 +7653,9 @@ def _anunciar_na_saida(texto: str, modo: str, voz_online: str, velocidade: int,
         if caminho is None:
             caminho = AUDIO_DIR / f"anuncio_{uuid.uuid4().hex}.wav"
             executar_no_audio(_som_sintetizar, texto, resolver_voz_offline(voz_offline_id), caminho)
-        arquivo_aviso = _preparar_aviso(aviso)
-        arquivo_fim = _preparar_aviso(aviso, fim=True)   # v2.8: só em AVISOS_COM_FIM (senão None)
+        volume_aviso = voz_loja()["aviso_volume"]   # v2.8.4: lido uma vez por anúncio
+        arquivo_aviso = _preparar_aviso(aviso, volume=volume_aviso)
+        arquivo_fim = _preparar_aviso(aviso, fim=True, volume=volume_aviso)   # v2.8: só em AVISOS_COM_FIM (senão None)
         tocar = [p for p in (arquivo_aviso, caminho, arquivo_fim) if p is not None]
         sid_medicao = usada.sid if usada.sid is not None else SOM.padrao_sid()
         duracoes = executar_no_audio(_som_medir, tocar)   # fora da janela com a música baixa

@@ -145,7 +145,13 @@ class TestRotaContas(tpm.BasePermissoes):
 
     def test_volume_ruim_com_gerente_nao_grava(self) -> None:
         r = self.voz("gerente", {"aviso_volume": 5})
-        self.assertIn(r.status_code, (400, 403))
+        self.assertEqual(r.status_code, 400)   # a validação vem antes da permissão
+        self.assertFalse(server.voz_loja()["definida"])
+
+    def test_403_repetido_gasta_a_cota_e_vira_429(self) -> None:
+        codigos = [self.voz("gerente", {"aviso_volume": 20}).status_code
+                   for _ in range(server.VOZ_LOJA_ESCRITA_MAX_POR_MIN + 1)]
+        self.assertEqual(codigos, [403] * server.VOZ_LOJA_ESCRITA_MAX_POR_MIN + [429])
         self.assertFalse(server.voz_loja()["definida"])
 
     def test_permissoes_no_status(self) -> None:
@@ -225,6 +231,37 @@ class TestArquivoNoVolume(taa.BaseAviso):
             (self.audio / f"anuncio_{i:03d}.wav").write_bytes(b"x")
         server.limpar_audios_antigos(forcar=True)
         self.assertTrue(c.exists())
+
+    def test_100_nunca_gera_v100(self) -> None:
+        self.assertEqual(server.caminho_do_aviso("microfone", volume=100).name, "aviso_microfone.wav")
+        self.assertEqual(server.caminho_do_aviso("microfone", fim=True, volume=100).name, "aviso_microfone.fim.wav")
+        self.assertFalse(list(self.audio.glob("*.v100.*")))
+
+    def test_limpeza_apaga_volume_invalido_e_mantem_os_validos(self) -> None:
+        validos = [server.caminho_do_aviso("microfone", volume=v) for v in (10, 80, 100)]
+        validos.append(server.caminho_do_aviso("microfone", fim=True, volume=40))
+        ruins = [self.audio / n for n in ("aviso_x.v55.wav", "aviso_microfone.v55.wav", "aviso_microfone.v100.wav",
+                                          "aviso_microfone.v0.wav", "aviso_microfone.v110.wav")]
+        for r in ruins:
+            r.write_bytes(b"x")
+        server.limpar_audios_antigos(forcar=True)
+        self.assertTrue(all(v.exists() for v in validos))
+        self.assertFalse(any(r.exists() for r in ruins))
+
+    def test_volume_lido_uma_vez_por_anuncio(self) -> None:
+        vistos: list[int] = []
+        seq = iter([30, 90, 90, 90])
+        original = server.caminho_do_aviso
+
+        def espiao(nome: str, *, fim: bool = False, volume: int = 100) -> Any:
+            vistos.append(volume)
+            return original(nome, fim=fim, volume=volume)
+
+        with mock.patch.object(server, "voz_loja", lambda: {"aviso_volume": next(seq)}),                 mock.patch.object(server, "caminho_do_aviso", espiao):
+            ini = server._preparar_aviso("microfone", volume=30)
+            fim = server._preparar_aviso("microfone", fim=True, volume=30)
+        self.assertEqual(vistos, [30, 30])
+        self.assertEqual((ini.name, fim.name), ("aviso_microfone.v30.wav", "aviso_microfone.fim.v30.wav"))
 
 
 class TestToqueNoVolumeDaLoja(taa.BaseAviso):
