@@ -394,6 +394,11 @@
               <button type="button" class="btn btn--ghost btn--sm" id="btn-aviso-ouvir" disabled>Ouvir</button>
             </div>
           </div>
+          <div class="field" id="aviso-volume-field" data-perm="aviso_volume">
+            <label class="label label--split" for="aviso-volume-range">Volume do aviso <output class="label__value" id="aviso-volume-value" for="aviso-volume-range">80%</output></label>
+            <input type="range" id="aviso-volume-range" class="range" min="10" max="100" step="10" value="80" aria-describedby="aviso-volume-hint" disabled>
+            <p class="hint" id="aviso-volume-hint">Só a sineta antes e depois do anúncio. A voz não muda.</p>
+          </div>
         </div>
       </div>
 
