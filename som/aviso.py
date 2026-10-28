@@ -144,27 +144,41 @@ def _sintetizar(nome: str, taxa: int, fim: bool = False) -> list[float]:
     return saida
 
 
-def _finalizar(amostras: list[float]) -> list[float]:
-    """Saturação suave (tanh, sem clip) e normalização do pico em _PICO; amostras em [-1, 1]."""
+VOLUME_MIN, VOLUME_MAX, VOLUME_PASSO = 10, 100, 10   # v2.8.4: volume do aviso, em % (múltiplos de 10)
+VOLUME_PADRAO = 80                                    # padrão da LOJA (decisão do dono); 100 = o som das versões antigas
+
+
+def volume_valido(valor: object) -> bool:
+    """True para um int (nunca bool) de 10 a 100, múltiplo de 10."""
+    return (isinstance(valor, int) and not isinstance(valor, bool)
+            and VOLUME_MIN <= valor <= VOLUME_MAX and valor % VOLUME_PASSO == 0)
+
+
+def _finalizar(amostras: list[float], volume: int = VOLUME_MAX) -> list[float]:
+    """
+    Saturação suave (tanh, sem clip) e normalização do pico em _PICO x volume/100; amostras em [-1, 1].
+    v2.8.4: o volume entra AQUI (na síntese), então o WAV já nasce no volume pedido; 100% é bit a bit o de sempre.
+    """
     norm = math.tanh(_SATURACAO)
     pico_in = max(abs(x) for x in amostras) or 1.0
     amostras = [math.tanh(_SATURACAO * x / pico_in) / norm for x in amostras]
     pico = max(abs(x) for x in amostras) or 1.0
-    return [x * _PICO / pico for x in amostras]
+    alvo = _PICO if volume == VOLUME_MAX else _PICO * volume / 100.0
+    return [x * alvo / pico for x in amostras]
 
 
 _TAXA_PADRAO = 22050
 
 
-@functools.lru_cache(maxsize=16)
-def _wav(nome: str, taxa: int, fim: bool = False) -> bytes:
+@functools.lru_cache(maxsize=64)
+def _wav(nome: str, taxa: int, fim: bool = False, volume: int = VOLUME_MAX) -> bytes:
     """
     WAV pronto, cacheado (v2.8 A3): o anúncio e a estimativa da Programação pedem o mesmo aviso muitas vezes.
     Guarda os BYTES (~50-120 KB cada), não as amostras em float (mais de 1 MB em objetos Python por aviso).
-    `fim` = a sineta de DEPOIS da fala (só para AVISOS_COM_FIM). 16 entradas cobrem todos os avisos + os de fim
-    (hoje 5 + 3).
+    `fim` = a sineta de DEPOIS da fala (só para AVISOS_COM_FIM). 64 entradas: os avisos + os de fim (5 + 3) em
+    alguns volumes (v2.8.4; cada um ~100 KB).
     """
-    amostras = _finalizar(_sintetizar(nome, taxa, fim))
+    amostras = _finalizar(_sintetizar(nome, taxa, fim), volume)
     quadros = struct.pack("<%dh" % len(amostras), *(int(round(32767 * x)) for x in amostras))
     buf = io.BytesIO()
     with wave.open(buf, "wb") as arq:
@@ -175,25 +189,34 @@ def _wav(nome: str, taxa: int, fim: bool = False) -> bytes:
     return buf.getvalue()
 
 
-def wav_do_aviso(nome: str, *, taxa: int = _TAXA_PADRAO) -> bytes | None:
-    """WAV (bytes) do aviso; None para "nenhum"; ValueError se o nome não existe."""
+def _conferir_volume(volume: object) -> int:
+    if not volume_valido(volume):
+        raise ValueError("Volume do aviso inválido.")
+    return volume   # type: ignore[return-value]
+
+
+def wav_do_aviso(nome: str, *, taxa: int = _TAXA_PADRAO, volume: int = VOLUME_MAX) -> bytes | None:
+    """WAV (bytes) do aviso no `volume` (%, 10..100, padrão 100 = som de sempre); None para "nenhum"; ValueError se
+    o nome ou o volume não existem."""
     if nome not in AVISOS:
         raise ValueError(f"Aviso sonoro desconhecido: {nome!r}")
+    volume = _conferir_volume(volume)
     if nome == "nenhum":
         return None
-    return _wav(nome, taxa)
+    return _wav(nome, taxa, False, volume)
 
 
-def wav_do_aviso_fim(nome: str, *, taxa: int = _TAXA_PADRAO) -> bytes | None:
+def wav_do_aviso_fim(nome: str, *, taxa: int = _TAXA_PADRAO, volume: int = VOLUME_MAX) -> bytes | None:
     """
     WAV (bytes) da sineta do FIM (tocada DEPOIS da fala); None para todo aviso fora de AVISOS_COM_FIM (inclusive
     "nenhum"); ValueError se o nome não existe.
     """
     if nome not in AVISOS:
         raise ValueError(f"Aviso sonoro desconhecido: {nome!r}")
+    volume = _conferir_volume(volume)
     if nome not in AVISOS_COM_FIM:
         return None
-    return _wav(nome, taxa, True)
+    return _wav(nome, taxa, True, volume)
 
 
 def _duracao_wav(dados: bytes | None) -> float:
