@@ -1314,15 +1314,17 @@
     vozTimer = setTimeout(vozGravar, 400);
   }
 
+  /** Grava o que está pendente. Devolve true se gravou (ou não havia nada) e false se a gravação falhou ou foi adiada. */
+  let vozFalhou = false; // a última gravação falhou (inclusive uma disparada pelo timer enquanto o Ouvir espera)
   async function vozGravar() {
     vozTimer = null;
     if (vozEnviando !== null) { // um POST ainda não voltou: grava depois dele (um por vez, na ordem)
       vozTimer = setTimeout(vozGravar, 400);
-      return;
+      return false;
     }
     const corpo = vozPend;
     vozPend = {};
-    if (!Object.keys(corpo).length) return;
+    if (!Object.keys(corpo).length) return true;
     vozSeq++;
     vozEnviando = corpo;
     let resp = null;
@@ -1333,7 +1335,8 @@
       erroRede = true;
     }
     vozEnviando = null; // antes de aplicar: os campos deste POST podem ser reaplicados com a resposta dele
-    if (resp && resp.ok && resp.data.ok && vozAplicar(resp.data)) return;
+    if (resp && resp.ok && resp.data.ok && vozAplicar(resp.data)) { vozFalhou = false; return true; }
+    vozFalhou = true;
     if (erroRede) {
       toast("Erro de conexão: a voz da loja não foi salva.", "error", { silent: true });
     } else {
@@ -1345,6 +1348,12 @@
     // erro: volta ao que o servidor tem (os campos com mudança NOVA a caminho continuam como o usuário deixou)
     // v2.8: 403 "sem_permissao" não relê (o perfil não pode mudar a voz: nada de laço POST -> GET -> POST)
     if (!vozOcupada() && !(resp && resp.status === 403)) scheduler.kick("voz");
+    // v2.8.4: o controle do volume volta ao último valor CONFIRMADO pelo servidor (vale também no 403, que não relê)
+    if ("aviso_volume" in corpo && !vozCampoPendente("aviso_volume")) {
+      avisoVolRange.value = String(voz.aviso_volume);
+      updateAvisoVolLabel();
+    }
+    return false;
   }
 
   speedRange.addEventListener("input", updateSpeedLabel);
@@ -1368,12 +1377,13 @@
 
   /** "Ouvir" toca no volume GRAVADO: se há mudança pendente ou em andamento, grava antes (espera até ~10 s). */
   async function vozSalvarPendente() {
+    vozFalhou = false;
     if (vozTimer !== null) { clearTimeout(vozTimer); vozTimer = null; }
     for (let i = 0; i < 200 && (vozEnviando !== null || Object.keys(vozPend).length > 0); i++) {
-      if (vozEnviando === null) await vozGravar();
+      if (vozEnviando === null) { if (!(await vozGravar())) return false; } // falhou: o toast do erro já apareceu
       else await new Promise((r) => setTimeout(r, 50));
     }
-    return !vozOcupada();
+    return !vozFalhou && !vozOcupada();
   }
 
   btnAvisoOuvir.addEventListener("click", async () => {
@@ -1382,10 +1392,7 @@
     vozOuvindo = true;
     vozHabilitar();
     try {
-      if (!(await vozSalvarPendente())) {
-        toast("Aguarde a gravação terminar para ouvir o aviso.", "info", { silent: true });
-        return;
-      }
+      if (!(await vozSalvarPendente())) return; // não gravou: não toca (o toast do erro real já apareceu)
       const { ok, status, data } = await postJSON("/api/voz/ouvir", { aviso }, { timeout: VOZ_OUVIR_TIMEOUT_MS });
       if (!(ok && data.ok)) {
         const erro = typeof data.error === "string" && data.error ? data.error : "";
