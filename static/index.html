@@ -394,6 +394,11 @@
               <button type="button" class="btn btn--ghost btn--sm" id="btn-aviso-ouvir" disabled>Ouvir</button>
             </div>
           </div>
+          <div class="field" id="voz-volume-field" data-perm="voz_volume">
+            <label class="label label--split" for="voz-volume-range">Volume da voz <output class="label__value" id="voz-volume-value" for="voz-volume-range">100%</output></label>
+            <input type="range" id="voz-volume-range" class="range" min="10" max="100" step="10" value="100" aria-describedby="voz-volume-hint" disabled>
+            <p class="hint" id="voz-volume-hint">Só a voz dos anúncios. Use Testar caixas para conferir.</p>
+          </div>
           <div class="field" id="aviso-volume-field" data-perm="aviso_volume">
             <label class="label label--split" for="aviso-volume-range">Volume do aviso <output class="label__value" id="aviso-volume-value" for="aviso-volume-range">80%</output></label>
             <input type="range" id="aviso-volume-range" class="range" min="10" max="100" step="10" value="80" aria-describedby="aviso-volume-hint" disabled>

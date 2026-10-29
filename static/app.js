@@ -1137,7 +1137,7 @@
   const VOZ_OUVIR_TIMEOUT_MS = 45000; // > espera do servidor pela thread de áudio: até 2 x 3 s + 0,6 s + 15 s = 21,6 s
   const VOZ_CAMPOS = ["motor", "voz", "velocidade", "aviso"];
   // aviso: o padrão de fábrica do servidor (AVISO_PADRAO, "microfone"); vale só até a 1ª leitura de /api/voz
-  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "microfone", aviso_volume: 80, definida: true, carregada: false };
+  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "microfone", aviso_volume: 80, voz_volume: 100, definida: true, carregada: false };
   // v2.8.4: volume da sineta (10..100, passo 10); só o ADM (capacidade aviso_volume; em modo PIN, só o PC das caixas)
   const avisoVolRange = $("aviso-volume-range");
   const avisoVolValue = $("aviso-volume-value");
@@ -1145,6 +1145,11 @@
   const avisoVolValido = (n) => Number.isInteger(n) && n >= 10 && n <= 100 && n % 10 === 0;
   /** Quem vê e usa o controle: com contas, só quem tem a capacidade; em modo PIN, só o PC das caixas. */
   const podeAvisoVolume = () => (auth.modoContas ? auth.permissoes.includes("aviso_volume") : auth.supported && auth.local);
+  // v2.8.5: volume da VOZ dos anúncios (10..100, passo 10, padrão 100); só o ADM (capacidade voz_volume; modo PIN: só o PC das caixas)
+  const vozVolRange = $("voz-volume-range");
+  const vozVolValue = $("voz-volume-value");
+  const vozVolField = $("voz-volume-field");
+  const podeVozVolume = () => (auth.modoContas ? auth.permissoes.includes("voz_volume") : auth.supported && auth.local);
   let vozTimer = null; // debounce da gravação
   let vozPend = {}; // mudanças do usuário ainda não enviadas
   let vozEnviando = null; // corpo do POST em andamento (null = nenhum)
@@ -1175,6 +1180,7 @@
     speedRange.disabled = !on;
     avisoSelect.disabled = !on;
     avisoVolRange.disabled = !on || !podeAvisoVolume();
+    vozVolRange.disabled = !on || !podeVozVolume();
     btnAvisoOuvir.disabled = !on || vozOuvindo || !avisoSelect.value || avisoSelect.value === "nenhum";
   }
   vozHabilitar();
@@ -1236,11 +1242,16 @@
       voz.aviso_volume = v.aviso_volume;
       if (avisoVolRange.value !== String(v.aviso_volume)) avisoVolRange.value = String(v.aviso_volume);
     }
+    if (avisoVolValido(v.voz_volume) && !vozCampoPendente("voz_volume")) {
+      voz.voz_volume = v.voz_volume;
+      if (vozVolRange.value !== String(v.voz_volume)) vozVolRange.value = String(v.voz_volume);
+    }
     voz.definida = v.definida !== false;
     voz.carregada = true;
     vozHabilitar();
     updateSpeedLabel();
     updateAvisoVolLabel();
+    updateVozVolLabel();
     return true;
   }
 
@@ -1353,6 +1364,10 @@
       avisoVolRange.value = String(voz.aviso_volume);
       updateAvisoVolLabel();
     }
+    if ("voz_volume" in corpo && !vozCampoPendente("voz_volume")) {
+      vozVolRange.value = String(voz.voz_volume);
+      updateVozVolLabel();
+    }
     return false;
   }
 
@@ -1374,6 +1389,17 @@
     if (avisoVolValido(n)) vozAgendar({ aviso_volume: n });
   });
   updateAvisoVolLabel();
+
+  function updateVozVolLabel() {
+    setText(vozVolValue, vozVolRange.value + "%");
+    paintRange(vozVolRange, false);
+  }
+  vozVolRange.addEventListener("input", updateVozVolLabel);
+  vozVolRange.addEventListener("change", () => {
+    const n = Number(vozVolRange.value);
+    if (avisoVolValido(n)) vozAgendar({ voz_volume: n });
+  });
+  updateVozVolLabel();
 
   /** "Ouvir" toca no volume GRAVADO: se há mudança pendente ou em andamento, grava antes (espera até ~10 s). */
   async function vozSalvarPendente() {
@@ -10896,7 +10922,7 @@
   // ---- Conta logada e permissões (v2.8, Parte B) ----
   const PERFIL_NOMES = { adm: "Administrador", gerente: "Gerente", funcionario: "Funcionário" };
   const CAPACIDADES = ["anunciar", "mensagens_editar", "voz", "musica", "programacao", "historico_todos",
-    "contas", "som", "seguranca", "spotify_config", "desligar", "aviso_volume"]; // = contas.CAPACIDADES (lista fixa: o resto é ignorado)
+    "contas", "som", "seguranca", "spotify_config", "desligar", "aviso_volume", "voz_volume"]; // = contas.CAPACIDADES (lista fixa: o resto é ignorado)
   const USUARIO_RE = /^[a-z0-9._]{3,30}$/; // = contas.normalizar_usuario
   const SENHA_MIN = 8;
   const SENHA_MAX = 128;
@@ -10978,6 +11004,7 @@
     }
     // v2.8.4: volume do aviso. Em modo PIN pode() é sempre true, mas o servidor só aceita o PC das caixas (remoto = 403)
     avisoVolField.classList.toggle("perm-off", !podeAvisoVolume());
+    vozVolField.classList.toggle("perm-off", !podeVozVolume()); // v2.8.5: idem, volume da voz
     vozHabilitar();
     // Abas do celular: só as do perfil; com uma aba só (funcionário) a barra some
     const abas = Array.from(tabbar.querySelectorAll("[data-value]")).filter((b) => !b.classList.contains("perm-off"));
