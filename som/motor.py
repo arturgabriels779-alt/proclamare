@@ -339,7 +339,7 @@ class MotorAudio:
 
     def tocar(self, caminho: Path, *, prazo: float | None = None, duracao: float | None = None,
               parar: Any = None, teto_s: float | None = None, folga_proporcional: float = 0.0,
-              margem_s: float | None = None) -> float:
+              margem_s: float | None = None, volume: int = 100) -> float:
         """
         (Thread de áudio) Toca o arquivo no dispositivo já aberto e espera terminar, com o
         vigia de progresso. `prazo` = instante (relógio do motor) até o qual o servidor
@@ -352,6 +352,9 @@ class MotorAudio:
         `teto_s` e continuam com o teto de sempre. `folga_proporcional`/`margem_s` alargam o teto
         relativo à duração medida (duração x (1 + folga) + margem; padrão: duração + 3 s): o áudio
         agendado usa 15% + 10 s porque a duração de um mp3 VBR sem cabeçalho pode ser subestimada.
+        v2.8.5: `volume` (%, 10..100) é o ganho do `mixer.music` só nesta chamada (a fala do anúncio); 100 (padrão) não
+        chama `set_volume`. Abaixo de 100 vai antes do play e volta a 1.0 no `finally`, qualquer que seja o desfecho:
+        o aviso, a sineta do fim e a música da pasta nunca herdam o volume baixo.
         """
         self._exigir_vivo()
         musica = self._modulo().mixer.music
@@ -364,9 +367,12 @@ class MotorAudio:
         inicio = self._relogio()
         if prazo is not None:
             teto = min(teto, max(1.0, prazo - inicio))
+        ajustou = volume < 100
         try:
             try:
                 musica.load(str(caminho))
+                if ajustou:
+                    musica.set_volume(volume / 100.0)
                 musica.play()
             except Exception as exc:  # noqa: BLE001
                 self.invalidar()
@@ -394,6 +400,9 @@ class MotorAudio:
             with contextlib.suppress(Exception):
                 musica.stop()
                 musica.unload()   # libera o arquivo (o Windows trava a exclusão)
+            if ajustou:
+                with contextlib.suppress(Exception):
+                    musica.set_volume(1.0)
 
     def sintetizar(self, texto: str, velocidade_wpm: int, voz_id: str | None, destino: Path) -> Path:
         """(Thread de áudio) Voz offline -> WAV em `destino` (não toca nada)."""

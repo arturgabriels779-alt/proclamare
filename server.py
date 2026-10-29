@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.8.4 "Volume do aviso"; v2.8.3 "Atualizador: ignora ZIP antigo"; v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.8.5 "Volume da voz"; v2.8.4 "Volume do aviso"; v2.8.3 "Atualizador: ignora ZIP antigo"; v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -66,7 +66,7 @@ Inventário de rotas (v2.8)
   POST /api/announce                       pin | 10/min por IP remoto | {"text","teste"?} (engine/voice/speed/offline_voice_id: ignorados; outra chave = 400)
   GET  /api/voices                         local | - | -
   GET  /api/voz                            pin | - | -
-  POST /api/voz                            pin | 20/min | {"motor"?,"voz"?,"velocidade"?,"aviso"?,"aviso_volume"? (so ADM)}
+  POST /api/voz                            pin | 20/min | {"motor"?,"voz"?,"velocidade"?,"aviso"?,"aviso_volume"? (so ADM),"voz_volume"? (so ADM)}
   POST /api/voz/ouvir                      pin | 6/min por IP remoto, 20/10 min no total | {"aviso"}
   GET  /api/youtube/state                  pin | - | -
   POST /api/youtube/state                  pin | 60/10 s | heartbeat da aba Tocador (chaves conhecidas; outra = 400)
@@ -387,13 +387,27 @@ Contrato v2.8 (Parte A: voz da loja)
   GRAVADO), no anúncio digitado, nas Mensagens prontas e no tipo `anuncio` da Programação. A fala não muda. GET /api/voz devolve
   o campo; /api/auth/status -> permissoes traz "aviso_volume" para o ADM (e no modo PIN para o PC local). Auditoria: voz_salvar
   com campos=N e aviso_volume=<número>.
-  GET  /api/voz   -> {ok, voz_loja:{motor,voz,velocidade,aviso,aviso_volume,definida}, opcoes:{motores,vozes[{id,nome}],avisos[{id,nome}]}}
-  POST /api/voz   -> qualquer subconjunto (>= 1) de motor/voz/velocidade/aviso/aviso_volume; o resto é preservado. Chave fora
+  v2.8.5 "voz_volume": volume da FALA dos anúncios em % — mesma regra do aviso_volume (inteiro 10..100, múltiplo de 10; 400 com
+  "campo":"voz_volume"); ausente/torto no config = 100 (VOZ_LOJA_PADRAO["voz_volume"] = como sempre). Capacidade NOVA
+  "voz_volume" (contas.PODE: só "adm"; gerente/funcionário = 403 "sem_permissao" e nada do corpo é gravado; modo PIN: só o PC
+  das caixas; /api/auth/status -> permissoes traz "voz_volume" nos mesmos casos do aviso_volume). Vale para TODA fala: anúncio
+  digitado, Mensagens prontas, tipo `anuncio` da Programação (o volume é o da LOJA, mesmo com motor/voz/velocidade próprios do
+  item) e "Testar caixas" (`teste: true`). NÃO vale para a sineta (aviso_volume), o `audio` agendado, listas, músicas, YouTube,
+  Spotify nem /api/som/testar (bipe + frase de uma saída), e nunca mexe no volume/mudo do Windows. Lido UMA vez por anúncio
+  (junto com o aviso_volume). 100% = nenhum processamento (nem set_volume; as chamadas internas são as de sempre). Três caminhos:
+  (1) legado online: mp3 em pygame.mixer.music, _reproduzir_legado(volume=) faz set_volume(v/100) antes do play e volta a 1.0
+  no finally (aviso, áudio agendado e o resto passam pela mesma função sem volume e nunca herdam); (2) legado offline: pyttsx3
+  setProperty("volume") e volta a 1.0 no finally (o motor é cacheado pelo pyttsx3); (3) saída fixada: MotorAudio.tocar(volume=)
+  só na chamada da FALA em _som_tocar_anuncio (ganho do mixer por item, sem reescrever o WAV/mp3, sem tocar o motor inteiro; aviso
+  e sineta do fim seguem no volume deles). Auditoria: voz_salvar com voz_volume=<número> (sem texto).
+  GET  /api/voz   -> {ok, voz_loja:{motor,voz,velocidade,aviso,aviso_volume,voz_volume,definida}, opcoes:{motores,vozes[{id,nome}],avisos[{id,nome}]}}
+  POST /api/voz   -> qualquer subconjunto (>= 1) de motor/voz/velocidade/aviso/aviso_volume/voz_volume; o resto é preservado. Chave fora
                      da lista = 400 "Campo desconhecido."; valor inválido = 400 com "campo" (a validação vem ANTES da
                      permissão: 400 antes de 403). 20 gravações/min por IP e por conta (o teto vem ANTES do 403 de
                      aviso_volume: 403 repetido gasta a cota e vira 429). Com "aviso_volume" no corpo exige a capacidade
-                     "aviso_volume" (só ADM; modo PIN: só o PC das caixas), senão 403 sem gravar nada.
-                     Auditoria: quantos campos (+ aviso_volume=<número> quando enviado). Mesma resposta do GET.
+                     "aviso_volume" (só ADM; modo PIN: só o PC das caixas), senão 403 sem gravar nada; "voz_volume" (v2.8.5)
+                     idem, com a capacidade "voz_volume".
+                     Auditoria: quantos campos (+ aviso_volume=/voz_volume=<número> quando enviados). Mesma resposta do GET.
   Aviso sonoro (A3): o WAV sintetizado (som/aviso.py) é gravado uma vez em audios_temp/aviso_<nome>.wav (fora do
   padrão anuncio_* da limpeza; nunca apagado pelo anúncio). Ordem de TODO anúncio falado: gera o mp3 online (música
   ainda alta) -> abre a saída -> abaixa (ou, na Programação, pausa) a música -> AVISO -> fala -> restaura. Legado:
@@ -4318,20 +4332,27 @@ def _garantir_mixer(reiniciar: bool = False) -> Any:
     return pygame
 
 
-def _reproduzir_legado(caminho: Path, teto_s: float, parar: Any = None) -> bool:
+def _reproduzir_legado(caminho: Path, teto_s: float, parar: Any = None, volume: int = VOLUME_MAX) -> bool:
     """
     (Thread de áudio) Toca o arquivo pelo mixer padrão (fluxo legado, sem "saídas de som") até o fim,
     até `teto_s` ou até `parar.is_set()` (v2.6: programação). Devolve True se foi cortado por `parar`.
     NÃO apaga o arquivo: quem chamou decide (o anúncio apaga o mp3 temporário; o áudio agendado toca
     um arquivo da pasta de músicas, que nunca pode ser apagado aqui).
+    v2.8.5: `volume` (% de 10 a 100) é o da VOZ da loja e só a fala do anúncio o passa. A 100 (padrão) nada é aplicado
+    (nem `set_volume`): é o comportamento de sempre. Abaixo de 100 o volume do `mixer.music` (que persiste entre
+    arquivos) é posto antes do play e SEMPRE volta a 1.0 no `finally`, para o aviso, o áudio agendado e o que vier
+    depois nunca herdarem o volume baixo.
     """
     pygame = None
     cortado = False
+    ajustou = volume < VOLUME_MAX
     try:
         for tentativa in (0, 1):
             try:
                 pygame = _garantir_mixer(reiniciar=tentativa == 1)
                 pygame.mixer.music.load(str(caminho))
+                if ajustou:
+                    pygame.mixer.music.set_volume(volume / 100.0)
                 pygame.mixer.music.play()
                 break
             except Exception:  # noqa: BLE001  (pygame.error, dispositivo sumiu...)
@@ -4349,13 +4370,20 @@ def _reproduzir_legado(caminho: Path, teto_s: float, parar: Any = None) -> bool:
             with contextlib.suppress(Exception):
                 pygame.mixer.music.stop()
                 pygame.mixer.music.unload()  # libera o arquivo (Windows trava a exclusão)
+            if ajustou:
+                with contextlib.suppress(Exception):
+                    pygame.mixer.music.set_volume(1.0)   # a fala baixa nunca vaza para o que toca depois
     return cortado
 
 
-def _tocar_mp3(caminho: Path, parar: Any = None) -> None:
-    """(Thread de áudio) Toca o mp3 do anúncio até o fim (teto de 80 s) e apaga o arquivo em seguida."""
+def _tocar_mp3(caminho: Path, parar: Any = None, volume: int = VOLUME_MAX) -> None:
+    """
+    (Thread de áudio) Toca o mp3 do anúncio até o fim (teto de 80 s) e apaga o arquivo em seguida.
+    v2.8.5: `volume` = `voz_volume` da loja (100 = sem ganho).
+    """
     try:
-        _reproduzir_legado(caminho, TIMEOUT_REPRODUCAO_S, parar)
+        # a 100% a chamada é a de sempre (sem o 4º argumento)
+        _reproduzir_legado(caminho, TIMEOUT_REPRODUCAO_S, parar, *(() if volume >= VOLUME_MAX else (volume,)))
     finally:
         apagar_audio(caminho)
 
@@ -4535,20 +4563,30 @@ def _listar_vozes_offline() -> dict:
     }
 
 
-def _falar_offline(texto: str, velocidade_wpm: int, voz_id: str | None) -> None:
-    """(Thread de áudio) Fala o texto com pyttsx3 e espera terminar."""
+def _falar_offline(texto: str, velocidade_wpm: int, voz_id: str | None, volume: int = VOLUME_MAX) -> None:
+    """
+    (Thread de áudio) Fala o texto com pyttsx3 e espera terminar.
+    v2.8.5: `volume` = `voz_volume` da loja. A 100 nada é aplicado. Abaixo, `setProperty("volume")` antes de falar e,
+    no `finally`, de volta a 1.0 (o pyttsx3 guarda o motor em cache por driver: sem isto o volume baixo ficaria).
+    """
     import pyttsx3
 
     engine = pyttsx3.init()
+    ajustou = volume < VOLUME_MAX
     try:
         engine.setProperty("rate", velocidade_wpm)
         if voz_id:
             engine.setProperty("voice", voz_id)
+        if ajustou:
+            engine.setProperty("volume", volume / 100.0)
         engine.say(texto_para_sapi(texto))   # sem XML/SSML do SAPI (<audio src>, <silence>)
         engine.runAndWait()
     finally:
         with contextlib.suppress(Exception):
             engine.stop()
+        if ajustou:
+            with contextlib.suppress(Exception):
+                engine.setProperty("volume", 1.0)
 
 
 _vozes_lock = threading.Lock()
@@ -6980,9 +7018,10 @@ def voz_ler() -> Response:
 @app.post("/api/voz")
 def voz_salvar() -> Response:
     """
-    Grava qualquer subconjunto de motor/voz/velocidade/aviso/aviso_volume; o resto fica como estava.
+    Grava qualquer subconjunto de motor/voz/velocidade/aviso/aviso_volume/voz_volume; o resto fica como estava.
     v2.8.4: `aviso_volume` exige a capacidade "aviso_volume" (só o ADM; no modo PIN, só o PC das caixas): sem ela o
     corpo INTEIRO é recusado com 403 (nada é gravado, nem as outras chaves).
+    v2.8.5: `voz_volume` (volume da fala) segue a mesma regra, com a capacidade "voz_volume".
     """
     corpo = corpo_json()
     exigir_chaves(corpo, VOZ_LOJA_PADRAO)
@@ -7110,6 +7149,16 @@ def _preparar_aviso(aviso: str, *, fim: bool = False, volume: int | None = None)
         return None
 
 
+def _args_fala(parar: Any, volume_voz: int) -> tuple:
+    """
+    v2.8.5: argumentos extras do `_tocar_mp3` (na thread de áudio). A 100% a chamada é a de sempre (só `parar`, se
+    houver); abaixo, `(parar, volume)` (parar pode ser None).
+    """
+    if volume_voz >= VOLUME_MAX:
+        return () if parar is None else (parar,)
+    return (parar, volume_voz)
+
+
 def _tocar_aviso_legado(caminho: Path | None, parar: Any) -> bool:
     """
     v2.8 (A3): toca o aviso (já com a música abaixada/pausada) na thread de áudio e devolve True se a fala
@@ -7194,27 +7243,30 @@ def _anunciar(texto: str, modo: str, voz_online: str, velocidade: int,
             # Fase 2 — reprodução: falha aqui NÃO repete o anúncio em voz offline
             # (o cliente poderia ouvir duas vezes); sobe como erro 500.
             if caminho is not None:
-                volume_aviso = voz_loja()["aviso_volume"]   # v2.8.4: lido uma vez por anúncio
+                loja = voz_loja()   # lido uma vez por anúncio (v2.8.4: aviso_volume; v2.8.5: voz_volume)
+                volume_aviso, volume_voz = loja["aviso_volume"], loja.get("voz_volume", VOLUME_MAX)
                 arquivo_aviso = _preparar_aviso(aviso, volume=volume_aviso)   # antes de abaixar a música
                 arquivo_fim = _preparar_aviso(aviso, fim=True, volume=volume_aviso)
                 with abaixar():
                     if _tocar_aviso_legado(arquivo_aviso, parar):
                         # apaga o mp3 ao terminar
-                        executar_no_audio(_tocar_mp3, caminho, *(() if parar is None else (parar,)))
+                        executar_no_audio(_tocar_mp3, caminho, *_args_fala(parar, volume_voz))
                         _marcar_fim_da_fala(parar)
                         _tocar_aviso_fim_legado(arquivo_fim, parar)
                 return "online", None
         finally:
             apagar_audio(caminho)  # no-op se já foi apagado
     voz_id = resolver_voz_offline(voz_offline_id)
-    volume_aviso = voz_loja()["aviso_volume"]   # v2.8.4: lido uma vez por anúncio
+    loja = voz_loja()   # lido uma vez por anúncio (v2.8.4: aviso_volume; v2.8.5: voz_volume)
+    volume_aviso, volume_voz = loja["aviso_volume"], loja.get("voz_volume", VOLUME_MAX)
     arquivo_aviso = _preparar_aviso(aviso, volume=volume_aviso)
     arquivo_fim = _preparar_aviso(aviso, fim=True, volume=volume_aviso)
     with abaixar():
         if _tocar_aviso_legado(arquivo_aviso, parar):
             if parar is not None:
                 parar.nao_interrompivel()   # pyttsx3.runAndWait não tem como ser interrompido de fora
-            executar_no_audio(_falar_offline, texto, VELOCIDADE_OFFLINE_WPM, voz_id)
+            executar_no_audio(_falar_offline, texto, VELOCIDADE_OFFLINE_WPM, voz_id,
+                              *(() if volume_voz >= VOLUME_MAX else (volume_voz,)))
             if parar is not None:
                 _marcar_fim_da_fala(parar)
                 parar.interrompivel_de_novo()   # I-1: a sineta do fim (pygame) pode ser cortada pelo "Parar"
@@ -7566,7 +7618,7 @@ def _som_tocar(caminhos: list[Path], duracoes: list[float | None] | None = None,
 
 
 def _som_tocar_anuncio(aviso: Path | None, fala: Path, duracoes: list[float | None],
-                       parar: Any = None, fim: Path | None = None) -> float:
+                       parar: Any = None, fim: Path | None = None, volume_voz: int = VOLUME_MAX) -> float:
     """
     (Thread de áudio) v2.8 (A3): o anúncio na saída fixada — aviso (opcional), a fala e a sineta do fim (opcional,
     só em AVISOS_COM_FIM), com UM prazo só (TIMEOUT_AUDIO_S - 5 = 85 s, sempre antes do teto de 90 s do executor).
@@ -7575,6 +7627,9 @@ def _som_tocar_anuncio(aviso: Path | None, fala: Path, duracoes: list[float | No
     Com sineta do fim, a FALA tem o prazo antecipado em AVISO_MAX_S (3 s): a sineta do fim tem sempre ao menos 3 s
     (>= a duração dela, 1,6-2,45 s) e o total continua dentro dos 85 s. Falha da sineta do fim (qualquer erro) só vai para
     o log com o tipo: a fala já saiu e o anúncio conta como ok.
+    v2.8.5: `volume_voz` (= `voz_volume` da loja) vale SÓ para a fala (`motor.tocar(volume=...)`, ganho do mixer por
+    item, sem reescrever o WAV/mp3); o aviso e a sineta do fim já vêm no volume deles. A 100% a chamada do motor é a
+    de sempre.
     """
     motor = SOM.motor
     prazo = motor.agora() + TIMEOUT_AUDIO_S - 5.0
@@ -7600,7 +7655,8 @@ def _som_tocar_anuncio(aviso: Path | None, fala: Path, duracoes: list[float | No
             log.warning("Falha ao tocar o aviso sonoro (%s); seguindo com a fala.", type(exc).__name__)
         if parar is not None and parar.is_set():
             return total   # "parar" durante o aviso: a fala nem começa
-    total += motor.tocar(fala, prazo=prazo_fala, duracao=next(medidas), **extra)
+    extra_fala = extra if volume_voz >= VOLUME_MAX else {**extra, "volume": volume_voz}
+    total += motor.tocar(fala, prazo=prazo_fala, duracao=next(medidas), **extra_fala)
     _marcar_fim_da_fala(parar)   # M-1: "parar" daqui em diante (na sineta do fim) não é "interrompido"
     if fim is None or (parar is not None and parar.is_set()):
         return total   # sem sineta do fim, ou "parar" durante a fala
@@ -7656,7 +7712,8 @@ def _anunciar_na_saida(texto: str, modo: str, voz_online: str, velocidade: int,
         if caminho is None:
             caminho = AUDIO_DIR / f"anuncio_{uuid.uuid4().hex}.wav"
             executar_no_audio(_som_sintetizar, texto, resolver_voz_offline(voz_offline_id), caminho)
-        volume_aviso = voz_loja()["aviso_volume"]   # v2.8.4: lido uma vez por anúncio
+        loja = voz_loja()   # lido uma vez por anúncio (v2.8.4: aviso_volume; v2.8.5: voz_volume)
+        volume_aviso, volume_voz = loja["aviso_volume"], loja.get("voz_volume", VOLUME_MAX)
         arquivo_aviso = _preparar_aviso(aviso, volume=volume_aviso)
         arquivo_fim = _preparar_aviso(aviso, fim=True, volume=volume_aviso)   # v2.8: só em AVISOS_COM_FIM (senão None)
         tocar = [p for p in (arquivo_aviso, caminho, arquivo_fim) if p is not None]
@@ -7665,7 +7722,7 @@ def _anunciar_na_saida(texto: str, modo: str, voz_online: str, velocidade: int,
         silenciar = contexto() if contexto is not None else _musica_abaixada_som(som)
         with SOM.medir_sinal(sid_medicao) as medida, silenciar:
             # aviso, fala e fim no MESMO silenciar e na mesma chamada (um prazo só); falha do aviso não leva a fala
-            executar_no_audio(_som_tocar_anuncio, arquivo_aviso, caminho, duracoes, parar, arquivo_fim)
+            executar_no_audio(_som_tocar_anuncio, arquivo_aviso, caminho, duracoes, parar, arquivo_fim, volume_voz)
         sinal = medida.resultado
     finally:
         apagar_audio(caminho)  # mp3 ou wav da fala; no-op se já foi (o aviso NÃO é apagado)

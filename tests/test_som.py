@@ -1142,6 +1142,9 @@ class MusicaFalsa:
             return self.c.pos_fixa
         return int((self.c.relogio.t - self.inicio) * 1000)
 
+    def set_volume(self, valor: float) -> None:   # v2.8.5: só chamado com volume da voz < 100%
+        self.c.eventos.append(("volume", valor))
+
     def stop(self) -> None:
         self.tocando = False
         self.c.eventos.append("stop")
