@@ -40,11 +40,11 @@ class TestRotaContas(tpm.BasePermissoes):
         tok = (self.local if local else self.rede)[perfil]
         return self.chamar("POST", "/api/voz", tok, local=local, corpo=corpo)
 
-    def test_padrao_100_e_get_devolve(self) -> None:
+    def test_padrao_50_e_get_devolve(self) -> None:
         r = self.chamar("GET", "/api/voz", self.rede["adm"], local=False)
-        self.assertEqual(r.get_json()["voz_loja"]["voz_volume"], 100)
-        self.assertEqual(server.voz_loja()["voz_volume"], 100)
-        self.assertEqual(server.VOZ_LOJA_PADRAO["voz_volume"], 100)
+        self.assertEqual(r.get_json()["voz_loja"]["voz_volume"], 50)
+        self.assertEqual(server.voz_loja()["voz_volume"], 50)
+        self.assertEqual(server.VOZ_LOJA_PADRAO["voz_volume"], 50)
 
     def test_adm_grava_200(self) -> None:
         for local in (False, True):
@@ -69,7 +69,7 @@ class TestRotaContas(tpm.BasePermissoes):
                 r = self.voz("adm", {"voz_volume": ruim})
                 self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
                 self.assertEqual(r.get_json()["campo"], "voz_volume")
-        self.assertEqual(server.voz_loja()["voz_volume"], 100)
+        self.assertEqual(server.voz_loja()["voz_volume"], 50)
 
     def test_gerente_e_funcionario_403_e_nada_e_gravado(self) -> None:
         for perfil in ("gerente", "funcionario"):
@@ -79,12 +79,12 @@ class TestRotaContas(tpm.BasePermissoes):
                     self.assertEqual(r.status_code, 403)
                     self.assertEqual(r.get_json()["codigo"], "sem_permissao")
                     v = server.voz_loja()
-                    self.assertEqual((v["voz_volume"], v["velocidade"], v["definida"]), (100, 0, False))
+                    self.assertEqual((v["voz_volume"], v["velocidade"], v["definida"]), (50, 0, False))
 
     def test_gerente_continua_mudando_as_outras_chaves(self) -> None:
         r = self.voz("gerente", {"velocidade": 7, "aviso": "aviao"})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(r.get_json()["voz_loja"]["voz_volume"], 100)
+        self.assertEqual(r.get_json()["voz_loja"]["voz_volume"], 50)
 
     def test_volume_ruim_com_gerente_nao_grava(self) -> None:
         r = self.voz("gerente", {"voz_volume": 5})
@@ -139,15 +139,15 @@ class TestRotaModoPin(BaseContas):
 
 
 class TestConfigTorto(unittest.TestCase):
-    def test_ausente_ou_invalido_vira_100(self) -> None:
+    def test_ausente_ou_invalido_vira_50(self) -> None:
         for bruto in ({}, {"voz_volume": 0}, {"voz_volume": 55}, {"voz_volume": "80"},
                       {"voz_volume": True}, {"voz_volume": 80.0}):
             with self.subTest(bruto=bruto), mock.patch.object(server, "load_config", lambda b=bruto: {"voz_loja": b}):
-                self.assertEqual(server.voz_loja()["voz_volume"], 100)
+                self.assertEqual(server.voz_loja()["voz_volume"], 50)
         with mock.patch.object(server, "load_config", lambda: {"voz_loja": {"voz_volume": 30}}):
             self.assertEqual(server.voz_loja()["voz_volume"], 30)
         with mock.patch.object(server, "load_config", side_effect=OSError):
-            self.assertEqual(server.voz_loja()["voz_volume"], 100)
+            self.assertEqual(server.voz_loja()["voz_volume"], 50)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -348,6 +348,11 @@ class BaseVoz(taa.BaseAviso):
 
     def setUp(self) -> None:
         super().setUp()
+        # v2.8.6: o padrão da loja é 50; aqui o padrão é fixado em 100 para os testes de "100% não aplica nada"
+        # (o padrão 50 de verdade está em TestPadrao50)
+        p100 = mock.patch.dict(server.VOZ_LOJA_PADRAO, {"voz_volume": 100})
+        p100.start()
+        self.addCleanup(p100.stop)
         ev = self.cen.eventos
         trocas = {
             "_falar_offline": lambda texto, wpm, voz, volume=100: ev.append(("fala_offline", volume)),
@@ -363,6 +368,32 @@ class BaseVoz(taa.BaseAviso):
 
     def nomes_dos_avisos(self) -> list[str]:
         return [e[1] for e in self.cen.eventos if isinstance(e, tuple) and e[0] == "aviso"]
+
+
+class TestPadrao50(BaseVoz):
+    """v2.8.6: sem nada gravado a fala sai a 50% (ganho 0,5); 100% gravado continua sem processamento."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        p = mock.patch.dict(server.VOZ_LOJA_PADRAO, {"voz_volume": 50})   # o padrão de verdade
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_fala_padrao_vai_a_50(self) -> None:
+        self.voz(motor="offline")
+        self.assertEqual(self.anunciar().status_code, 200)
+        self.assertEqual(self.volumes_da_fala(), [("fala_offline", 50)])
+
+    def test_config_antiga_com_voz_volume_100_e_rebaixada_uma_vez(self) -> None:
+        cfg = server.load_config()
+        cfg["voz_loja"] = {"motor": "offline", "voz_volume": 100}      # sem o marcador = instalação antiga
+        server.save_config(cfg)
+        self.assertEqual(self.anunciar().status_code, 200)
+        self.assertEqual(self.volumes_da_fala(), [("fala_offline", 50)])
+        self.voz(voz_volume=100)                                        # o ADM sobe de novo: vale
+        self.cen.eventos.clear()
+        self.assertEqual(self.anunciar().status_code, 200)
+        self.assertEqual(self.volumes_da_fala(), [("fala_offline", 100)])
 
 
 class TestAnuncioLegado(BaseVoz):
@@ -546,7 +577,7 @@ class TestProgramacaoAnuncio(tp.BaseProg):
 
     def test_anuncio_agendado_usa_o_volume_da_loja_mesmo_com_voz_propria(self) -> None:
         cfg = server.load_config()
-        cfg["voz_loja"] = {"aviso": "aeroporto", "aviso_volume": 100, "voz_volume": 40}
+        cfg["voz_loja"] = {"aviso": "aeroporto", "aviso_volume": 100, "voz_volume": 40, "aviso_som_v": 2}
         server.save_config(cfg)
         it = self.gravar([self.corpo_anuncio(motor="offline", voz="antonio", velocidade=20)])[0]
         self.assertEqual(self.tocar_agora(it["id"]).status_code, 202)

@@ -82,19 +82,19 @@ class TestAviso(unittest.TestCase):
         dados = aviso.wav_do_aviso("aviao")
         self.assertLessEqual(aviso.duracao_do_aviso("aviao"), aviso.AVISO_MAX_S)
         a = _amostras(dados)
-        self.assertLessEqual(max(abs(x) for x in a), 0.9 * 32767)
+        self.assertLessEqual(max(abs(x) for x in a), 0.5 * 32768)
         # primeira metade (só o 1º tom): lá5; depois do 1º tom ter sumido: fá5 (nada de lá5)
         j1 = a[int(0.1 * TAXA):int(0.6 * TAXA)]
         j2 = a[int(1.1 * TAXA):int(1.5 * TAXA)]
         self.assertGreater(_potencia(j1, 880.0) / len(j1), 20 * _potencia(j1, 698.46) / len(j1))
         self.assertGreater(_potencia(j2, 698.46), 20 * _potencia(j2, 880.0))
-        # fim: ordem inversa (bong-bing), fá5 e depois lá5; mesma duração, <= 3 s, pico <= 0,9
+        # fim: ordem inversa (bong-bing), fá5 e depois lá5; mesma duração, <= 3 s, pico <= 0,5
         fim = aviso.wav_do_aviso_fim("aviao")
         self.assertIsInstance(fim, bytes)
         self.assertNotEqual(fim, dados)
         self.assertLessEqual(aviso.duracao_do_aviso_fim("aviao"), aviso.AVISO_MAX_S)
         b = _amostras(fim)
-        self.assertLessEqual(max(abs(x) for x in b), 0.9 * 32767)
+        self.assertLessEqual(max(abs(x) for x in b), 0.5 * 32768)
         k1 = b[int(0.1 * TAXA):int(0.6 * TAXA)]
         k2 = b[int(1.1 * TAXA):int(1.5 * TAXA)]
         self.assertGreater(_potencia(k1, 698.46), 20 * _potencia(k1, 880.0))
@@ -128,8 +128,8 @@ class TestAviso(unittest.TestCase):
                 self.assertTrue(0.3 <= d <= aviso.AVISO_MAX_S, d)
                 a = _amostras(dados)
                 pico = max(abs(x) for x in a)
-                self.assertLessEqual(pico, 0.9 * 32767)
-                self.assertGreater(pico, 0.85 * 32767)                 # normalizado no pico da loja (0,9)
+                self.assertLessEqual(pico, 0.5 * 32768)
+                self.assertGreater(pico, 0.45 * 32767)                 # normalizado no pico da loja (0,5; v2.8.6)
                 self.assertNotIn(32767, a)
                 self.assertNotIn(-32768, a)
                 self.assertLess(abs(a[0]), 0.02 * 32767)
@@ -137,11 +137,12 @@ class TestAviso(unittest.TestCase):
                 fade = int(0.010 * TAXA)                               # ataque de pelo menos 10 ms
                 self.assertLess(max(abs(x) for x in a[:fade // 2]), 0.75 * pico)
 
-    def test_nivel_rms_alto(self):
-        # Saturação (tanh) + pico 0,9: bem acima das senoides puras a 0,4 de antes (RMS ~5600-5800 em int16).
+    def test_nivel_rms_suave(self):
+        # v2.8.6: sem saturação e com pico 0,5, o RMS de qualquer sineta fica abaixo do de uma senoide pura de pico 0,5
+        # (11585 em int16); a v2.8.0-5 chegava a ~18000-22000 nas janelas mais altas.
         for rotulo, dados in _todos_os_wavs():
             with self.subTest(aviso=rotulo):
-                self.assertGreater(_rms(_amostras(dados)), 2.0 * 5800)
+                self.assertLess(_rms(_amostras(dados)), 0.5 * 32768 * 0.7072)
 
     def test_duracoes(self):
         self.assertAlmostEqual(aviso.duracao_do_aviso("microfone"), 3 * 0.45 + 0.25, places=2)

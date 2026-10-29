@@ -66,7 +66,7 @@ class BaseAviso(ts.BaseSom):
 
     def voz(self, **campos: Any) -> None:
         cfg = server.load_config()
-        cfg["voz_loja"] = {**cfg.get("voz_loja", {}), **campos}
+        cfg["voz_loja"] = {**cfg.get("voz_loja", {}), **campos, "aviso_som_v": 2}   # v2.8.6: marcador = sem migração
         server.save_config(cfg)
 
     def falar_legado(self) -> Any:

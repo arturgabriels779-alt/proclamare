@@ -1,9 +1,10 @@
 """
 Testes da v2.8.4: volume do aviso sonoro (config.json["voz_loja"]["aviso_volume"], só o ADM muda).
 
-  * Síntese: o volume entra no WAV (pico = 0,9 x volume/100); 100% é bit a bit o WAV das versões anteriores
-    (impressões SHA-256 tiradas do commit 2aa24fd); início e fim usam o mesmo volume.
-  * Rota: padrão 80, validação (400), permissão (403 para gerente/funcionário sem gravar nada; ADM 200; modo PIN:
+  * Síntese: o volume entra no WAV (pico = 0,5 x volume/100); 100% é o WAV NOVO da v2.8.6 (sinetas suaves, pico 0,5,
+    sem saturação): as impressões SHA-256 abaixo foram refeitas de propósito (antes eram as do commit 2aa24fd, pico
+    0,9 + tanh); início e fim usam o mesmo volume.
+  * Rota: padrão 50 (v2.8.6; era 80), validação (400), permissão (403 para gerente/funcionário sem gravar nada; ADM 200; modo PIN:
     só o PC das caixas), `permissoes` do /api/auth/status.
   * Reprodução: legado, saída fixada, "Ouvir", anúncio e tipo `anuncio` da Programação tocam o arquivo no volume da loja.
 NUNCA há som real: `_tocar_aviso` é registrador (tests/__init__.py), a saída fixada usa o motor FALSO do BaseSom e a
@@ -35,13 +36,14 @@ from tests import test_programacao as tp  # noqa: E402
 from tests.test_auth import HOST_REMOTO, PIN, ip_remoto  # noqa: E402
 from tests.test_login_contas import BaseContas, cookie_da_resposta  # noqa: E402
 
-# SHA-256 (16 primeiros hex) do WAV de início e do de fim a 100% no commit 2aa24fd (antes do volume). "" = sem fim.
+# SHA-256 (16 primeiros hex) do WAV de início e do de fim a 100% na v2.8.6 (sinetas suaves). "" = sem fim.
+# Mudaram de propósito: o WAV antigo (pico 0,9 + tanh) era o que queimou o amplificador. Mudou a síntese? Refaça.
 HASH_100 = {
-    "microfone": ("dcab5d9ab13de333", "dffb58ce114e7689"),
-    "aviao": ("80adc67db34b1076", "6f60a53cfb92f2eb"),
-    "aeroporto": ("60036c5ff4bf97ed", ""),
-    "supermercado": ("99045d9ffeaf3823", "d75ff18eb984a173"),
-    "ding_dong_duplo": ("e5505e1cdeb97226", ""),
+    "microfone": ("4ea66db7524272aa", "cc8c48a688f491f3"),
+    "aviao": ("d7626c4a7353e61c", "276daae720a8274e"),
+    "aeroporto": ("03af3967c03b2480", ""),
+    "supermercado": ("e4ecc0e3b848a519", "669a0fe443f9e8a9"),
+    "ding_dong_duplo": ("4401a2236d560f2c", ""),
 }
 
 
@@ -56,7 +58,7 @@ def h(dados: bytes) -> str:
 
 
 class TestSintese(unittest.TestCase):
-    def test_100_e_bit_a_bit_o_wav_de_antes(self) -> None:
+    def test_100_e_o_wav_suave_fixado(self) -> None:
         for nome, (ini, fim) in HASH_100.items():
             with self.subTest(nome=nome):
                 self.assertEqual(h(aviso_mod.wav_do_aviso(nome)), ini)
@@ -94,7 +96,7 @@ class TestSintese(unittest.TestCase):
     def test_volume_valido(self) -> None:
         self.assertTrue(all(aviso_mod.volume_valido(v) for v in range(10, 101, 10)))
         self.assertFalse(any(aviso_mod.volume_valido(v) for v in (0, 5, 55, 105, "80", 80.0, True, None, -10)))
-        self.assertEqual(aviso_mod.VOLUME_PADRAO, 80)
+        self.assertEqual(aviso_mod.VOLUME_PADRAO, 50)
 
 
 class TestRotaContas(tpm.BasePermissoes):
@@ -104,10 +106,10 @@ class TestRotaContas(tpm.BasePermissoes):
         tok = (self.local if local else self.rede)[perfil]
         return self.chamar("POST", "/api/voz", tok, local=local, corpo=corpo)
 
-    def test_padrao_80_e_get_devolve(self) -> None:
+    def test_padrao_50_e_get_devolve(self) -> None:
         r = self.chamar("GET", "/api/voz", self.rede["adm"], local=False)
-        self.assertEqual(r.get_json()["voz_loja"]["aviso_volume"], 80)
-        self.assertEqual(server.voz_loja()["aviso_volume"], 80)
+        self.assertEqual(r.get_json()["voz_loja"]["aviso_volume"], 50)
+        self.assertEqual(server.voz_loja()["aviso_volume"], 50)
 
     def test_adm_grava_200(self) -> None:
         for local in (False, True):
@@ -125,7 +127,7 @@ class TestRotaContas(tpm.BasePermissoes):
                 r = self.voz("adm", {"aviso_volume": ruim})
                 self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
                 self.assertEqual(r.get_json()["campo"], "aviso_volume")
-        self.assertEqual(server.voz_loja()["aviso_volume"], 80)
+        self.assertEqual(server.voz_loja()["aviso_volume"], 50)
 
     def test_gerente_e_funcionario_403_e_nada_e_gravado(self) -> None:
         for perfil in ("gerente", "funcionario"):
@@ -135,13 +137,13 @@ class TestRotaContas(tpm.BasePermissoes):
                     self.assertEqual(r.status_code, 403)
                     self.assertEqual(r.get_json()["codigo"], "sem_permissao")
                     v = server.voz_loja()
-                    self.assertEqual((v["aviso_volume"], v["velocidade"], v["definida"]), (80, 0, False))
+                    self.assertEqual((v["aviso_volume"], v["velocidade"], v["definida"]), (50, 0, False))
 
     def test_gerente_continua_mudando_as_outras_chaves(self) -> None:
         r = self.voz("gerente", {"velocidade": 7, "aviso": "aviao"})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        self.assertEqual(r.get_json()["voz_loja"]["aviso_volume"], 80)
-        self.assertEqual(server.voz_loja()["aviso_volume"], 80)
+        self.assertEqual(r.get_json()["voz_loja"]["aviso_volume"], 50)
+        self.assertEqual(server.voz_loja()["aviso_volume"], 50)
 
     def test_volume_ruim_com_gerente_nao_grava(self) -> None:
         r = self.voz("gerente", {"aviso_volume": 5})
@@ -196,15 +198,15 @@ class TestRotaModoPin(BaseContas):
 
 
 class TestConfigTorto(unittest.TestCase):
-    def test_ausente_ou_invalido_vira_80(self) -> None:
+    def test_ausente_ou_invalido_vira_50(self) -> None:
         for bruto in ({}, {"aviso_volume": 0}, {"aviso_volume": 55}, {"aviso_volume": "100"},
                       {"aviso_volume": True}, {"aviso_volume": 80.0}):
             with self.subTest(bruto=bruto), mock.patch.object(server, "load_config", lambda b=bruto: {"voz_loja": b}):
-                self.assertEqual(server.voz_loja()["aviso_volume"], 80)
+                self.assertEqual(server.voz_loja()["aviso_volume"], 50)
         with mock.patch.object(server, "load_config", lambda: {"voz_loja": {"aviso_volume": 30}}):
             self.assertEqual(server.voz_loja()["aviso_volume"], 30)
         with mock.patch.object(server, "load_config", side_effect=OSError):
-            self.assertEqual(server.voz_loja()["aviso_volume"], 80)
+            self.assertEqual(server.voz_loja()["aviso_volume"], 50)
 
 
 class TestArquivoNoVolume(taa.BaseAviso):
@@ -277,12 +279,12 @@ class TestToqueNoVolumeDaLoja(taa.BaseAviso):
         self.assertAlmostEqual(pico((self.audio / avisos[0][1]).read_bytes()) / cheio_i, 0.5, delta=0.002)
         self.assertAlmostEqual(pico((self.audio / avisos[1][1]).read_bytes()) / cheio_f, 0.5, delta=0.002)
 
-    def test_padrao_80_sem_a_chave(self) -> None:
-        with mock.patch.dict(server.VOZ_LOJA_PADRAO, {"aviso_volume": 80}), self.falar_legado():   # padrão de verdade
+    def test_padrao_50_sem_a_chave(self) -> None:
+        with mock.patch.dict(server.VOZ_LOJA_PADRAO, {"aviso_volume": 50}), self.falar_legado():   # padrão de verdade
             r = self.anunciar()
         self.assertEqual(r.status_code, 200)
-        self.assertIn(("aviso", "aviso_microfone.v80.wav"), self.cen.eventos)
-        self.assertIn(("aviso", "aviso_microfone.fim.v80.wav"), self.cen.eventos)
+        self.assertIn(("aviso", "aviso_microfone.v50.wav"), self.cen.eventos)
+        self.assertIn(("aviso", "aviso_microfone.fim.v50.wav"), self.cen.eventos)
 
     def test_volume_100_usa_os_nomes_antigos(self) -> None:
         self.voz(aviso_volume=100)
