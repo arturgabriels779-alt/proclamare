@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.8.5 "Volume da voz"; v2.8.4 "Volume do aviso"; v2.8.3 "Atualizador: ignora ZIP antigo"; v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.8.6 "Sinetas suaves"; v2.8.5 "Volume da voz"; v2.8.4 "Volume do aviso"; v2.8.3 "Atualizador: ignora ZIP antigo"; v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -374,21 +374,31 @@ Contrato v2.8 (Parte A: voz da loja)
 ------------------------------------
   A voz dos anúncios é da LOJA, não de cada aparelho: mora em config.json["voz_loja"] =
   {"motor": auto|online|offline, "voz": francisca|antonio, "velocidade": -50..50, "aviso": nenhum|microfone|
-  aviao|aeroporto|supermercado|ding_dong_duplo, "aviso_volume": 10..100}. Padrão (VOZ_LOJA_PADRAO): auto / francisca / 0 / microfone / 80. voz_loja() nunca levanta:
+  aviao|aeroporto|supermercado|ding_dong_duplo, "aviso_volume": 10..100}. Padrão (VOZ_LOJA_PADRAO): auto / francisca / 0 / microfone / 50 / 50 (v2.8.6: os dois volumes). voz_loja() nunca levanta:
   chave ausente ou campo torto cai no padrão campo a campo; "definida" = a chave existe no config. Os avisos que saíram
   da lista na v2.8 (ding_dong, suave, sino, comissario, aeroporto_inicio_fim) são "campo torto": guardados no
   config.json, viram o padrão (microfone) na leitura; no POST /api/voz e no /api/voz/ouvir, 400 com "campo":"aviso".
   v2.8.4 "aviso_volume": volume das sinetas (início E fim) em % — inteiro de 10 a 100, múltiplo de 10 (bool, float, texto,
-  0, 5, 55, 105 = 400 com "campo":"aviso_volume"); ausente/torto no config = 80. Só o ADM muda: mandar a chave no POST /api/voz
+  0, 5, 55, 105 = 400 com "campo":"aviso_volume"); ausente/torto no config = 50 (v2.8.6; era 80). Só o ADM muda: mandar a chave no POST /api/voz
   exige a capacidade "aviso_volume" (contas.PODE: só "adm"; gerente/funcionário = 403 "sem_permissao" e NADA do corpo é gravado,
   nem as outras chaves; modo PIN: só o PC das caixas, aparelho remoto com PIN = 403). O volume entra na SÍNTESE do WAV (pico =
-  0,9 x volume/100; 100% = o WAV antigo, bit a bit) e o cache tem o volume no nome (audios_temp/aviso_<nome>.v80.wav e
+  0,5 x volume/100 na v2.8.6; era 0,9; 100% = o WAV suave novo) e o cache tem o volume no nome (audios_temp/aviso_<nome>.v80.wav e
   aviso_<nome>.fim.v80.wav; 100% mantém os nomes antigos): vale no legado (pygame), na saída fixada, no "Ouvir" (toca o volume
   GRAVADO), no anúncio digitado, nas Mensagens prontas e no tipo `anuncio` da Programação. A fala não muda. GET /api/voz devolve
   o campo; /api/auth/status -> permissoes traz "aviso_volume" para o ADM (e no modo PIN para o PC local). Auditoria: voz_salvar
   com campos=N e aviso_volume=<número>.
+  v2.8.6 "Sinetas suaves" (um amplificador da loja queimou; o Proclamare nunca mexe no volume do Windows nem no ganho da
+  mesa/amplificador, só controla a energia do que toca): as sinetas perderam a saturação (tanh) e os harmônicos agudos
+  (no máximo fundamental + 2º fraco, fade >= 25 ms), as mesmas notas/durações; o 100% novo tem pico 0,5 da escala
+  (-6 dBFS, `som.aviso._PICO`, TETO RÍGIDO de qualquer volume) e RMS (janela mais alta de 400 ms) >= 9 dB abaixo do antigo.
+  PADRÃO dos DOIS volumes = 50 (`aviso_volume` e `voz_volume`; a fala a 50 aplica ganho 0,5; 100 gravado segue sem
+  processamento). Migração ÚNICA (marcador `config.json["voz_loja"]["aviso_som_v"]` = 2, um só para as duas chaves): na
+  leitura (`voz_loja()`), sem o marcador, `aviso_volume`/`voz_volume` válidos já gravados viram min(gravado, 50) e o marcador é
+  gravado sob o _config_lock (só a chave `voz_loja`; sem `voz_loja` nada é gravado; falha de gravação = a leitura já vem
+  rebaixada); todo POST /api/voz grava o marcador (o ADM sobe até 100 depois). O marcador nunca aparece no GET /api/voz e o
+  POST o recusa (400, chave fora da lista). Os WAV em audios_temp mudam de conteúdo: a conferência por conteúdo os regrava.
   v2.8.5 "voz_volume": volume da FALA dos anúncios em % — mesma regra do aviso_volume (inteiro 10..100, múltiplo de 10; 400 com
-  "campo":"voz_volume"); ausente/torto no config = 100 (VOZ_LOJA_PADRAO["voz_volume"] = como sempre). Capacidade NOVA
+  "campo":"voz_volume"); ausente/torto no config = 50 (v2.8.6; era 100; 100 gravado continua sem processamento). Capacidade NOVA
   "voz_volume" (contas.PODE: só "adm"; gerente/funcionário = 403 "sem_permissao" e nada do corpo é gravado; modo PIN: só o PC
   das caixas; /api/auth/status -> permissoes traz "voz_volume" nos mesmos casos do aviso_volume). Vale para TODA fala: anúncio
   digitado, Mensagens prontas, tipo `anuncio` da Programação (o volume é o da LOJA, mesmo com motor/voz/velocidade próprios do
