@@ -44,11 +44,11 @@ _ITER_MAX_ACEITA = 5_000_000  # mesmo teto do PIN: um valor armazenado absurdo n
 # --- Matriz de permissões ---------------------------------------------------------------------------------
 CAPACIDADES = frozenset({
     "anunciar", "mensagens_editar", "voz", "musica", "programacao", "historico_todos",
-    "contas", "som", "seguranca", "spotify_config", "desligar", "aviso_volume",
+    "contas", "som", "seguranca", "spotify_config", "desligar", "aviso_volume", "voz_volume",
 })
 PODE: dict[str, frozenset[str]] = {
     "funcionario": frozenset({"anunciar"}),
-    "gerente": CAPACIDADES - {"som", "seguranca", "spotify_config", "aviso_volume"},   # v2.8.4: aviso_volume só ADM
+    "gerente": CAPACIDADES - {"som", "seguranca", "spotify_config", "aviso_volume", "voz_volume"},   # v2.8.4/5: volumes só ADM
     "adm": CAPACIDADES,
 }
 

@@ -4601,10 +4601,12 @@ VOZES_ONLINE = {
 }
 MOTORES = frozenset({"auto", "online", "offline"})
 VELOCIDADE_OFFLINE_WPM = 165
+# v2.8.5: `voz_volume` = volume da FALA em % (10..100, múltiplo de 10; padrão 100 = como sempre, só o ADM muda).
+VOZ_VOLUME_PADRAO = 100
 # v2.8 (A2): voz da LOJA, guardada no config.json["voz_loja"]. Campo ausente ou torto cai no padrão, campo a campo.
 # v2.8.4: `aviso_volume` = volume do aviso sonoro em % (10..100, múltiplo de 10; padrão 80, só o ADM muda).
 VOZ_LOJA_PADRAO: dict[str, Any] = {"motor": "auto", "voz": "francisca", "velocidade": 0, "aviso": AVISO_PADRAO,
-                                   "aviso_volume": VOLUME_PADRAO}
+                                   "aviso_volume": VOLUME_PADRAO, "voz_volume": VOZ_VOLUME_PADRAO}
 VOZES_LOJA_NOMES = (("francisca", "Francisca (feminina)"), ("antonio", "Antônio (masculina)"))
 VOZ_LOJA_ESCRITA_MAX_POR_MIN = 20   # POST /api/voz, por IP
 
@@ -4619,7 +4621,7 @@ def _voz_loja_campo_ok(campo: str, valor: Any) -> bool:
         return isinstance(valor, int) and not isinstance(valor, bool) and -50 <= valor <= 50
     if campo == "aviso":
         return isinstance(valor, str) and valor in AVISOS
-    if campo == "aviso_volume":
+    if campo in ("aviso_volume", "voz_volume"):   # mesma regra (10..100, múltiplo de 10)
         return volume_valido(valor)
     return False
 
@@ -6992,9 +6994,10 @@ def voz_salvar() -> Response:
     if _excedeu_limite_ip_e_conta("voz:", VOZ_LOJA_ESCRITA_MAX_POR_MIN, 60.0):   # v2.8: IP e conta
         raise ErroApi("Muitas alterações seguidas. Aguarde um minuto.", 429)
     # v2.8.4: o teto vem ANTES do 403, então um 403 repetido gasta a cota (e não enche o auditoria.log)
-    if "aviso_volume" in corpo and not _perfil_pode("aviso_volume"):
-        auditar("voz_salvar", resultado="sem_permissao", conta=_conta_auditoria())
-        return _resp_sem_permissao("aviso_volume")
+    for volume_campo in ("aviso_volume", "voz_volume"):   # v2.8.5: cada volume tem a sua capacidade (as duas só do ADM)
+        if volume_campo in corpo and not _perfil_pode(volume_campo):
+            auditar("voz_salvar", resultado="sem_permissao", conta=_conta_auditoria())
+            return _resp_sem_permissao(volume_campo)
     with _config_lock:
         cfg = load_config()
         atual = voz_loja()
@@ -7004,7 +7007,7 @@ def voz_salvar() -> Response:
         _gravar_config_atomico(cfg)
     # só quantos campos (+ o volume do aviso, um número sem texto de ninguém)
     auditar("voz_salvar", campos=len(corpo), conta=_conta_auditoria(),
-            **({"aviso_volume": corpo["aviso_volume"]} if "aviso_volume" in corpo else {}))
+            **{c: corpo[c] for c in ("aviso_volume", "voz_volume") if c in corpo})
     return _resposta_voz_loja()
 
 
