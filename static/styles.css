@@ -310,6 +310,22 @@ b { font-weight: 600; }
   vertical-align: 1px;
 }
 .hint--kbd { text-align: center; }
+
+/* v2.8.6: aviso de volume (Voz da loja). Cor + ícone textual: não depende só da cor. */
+.vol-aviso {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 10px);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+  text-wrap: pretty;
+}
+.vol-aviso[hidden] { display: none; }
+.vol-aviso--atencao { background: var(--warn-soft); color: var(--warn); }
+.vol-aviso--atencao::before { content: "Atenção: "; font-weight: 700; }
+.vol-aviso--perigo { background: var(--live-soft); color: var(--live); }
+.vol-aviso--perigo::before { content: "Perigo: "; font-weight: 700; }
 kbd {
   display: inline-block;
   padding: 1px 6px;

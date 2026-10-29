@@ -1137,7 +1137,7 @@
   const VOZ_OUVIR_TIMEOUT_MS = 45000; // > espera do servidor pela thread de áudio: até 2 x 3 s + 0,6 s + 15 s = 21,6 s
   const VOZ_CAMPOS = ["motor", "voz", "velocidade", "aviso"];
   // aviso: o padrão de fábrica do servidor (AVISO_PADRAO, "microfone"); vale só até a 1ª leitura de /api/voz
-  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "microfone", aviso_volume: 80, voz_volume: 100, definida: true, carregada: false };
+  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "microfone", aviso_volume: 50, voz_volume: 50, definida: true, carregada: false };
   // v2.8.4: volume da sineta (10..100, passo 10); só o ADM (capacidade aviso_volume; em modo PIN, só o PC das caixas)
   const avisoVolRange = $("aviso-volume-range");
   const avisoVolValue = $("aviso-volume-value");
@@ -1241,10 +1241,12 @@
     if (volumeValido(v.aviso_volume) && !vozCampoPendente("aviso_volume")) {
       voz.aviso_volume = v.aviso_volume;
       if (avisoVolRange.value !== String(v.aviso_volume)) avisoVolRange.value = String(v.aviso_volume);
+      if (v.aviso_volume > 50) { avisoVolTrava.liberado = true; avisoVolTrava.msg = false; } // valor que já veio acima de 50: como está
     }
     if (volumeValido(v.voz_volume) && !vozCampoPendente("voz_volume")) {
       voz.voz_volume = v.voz_volume;
       if (vozVolRange.value !== String(v.voz_volume)) vozVolRange.value = String(v.voz_volume);
+      if (v.voz_volume > 50) { vozVolTrava.liberado = true; vozVolTrava.msg = false; } // valor que já veio acima de 50: como está
     }
     voz.definida = v.definida !== false;
     voz.carregada = true;
@@ -1362,10 +1364,12 @@
     // v2.8.4: o controle do volume volta ao último valor CONFIRMADO pelo servidor (vale também no 403, que não relê)
     if ("aviso_volume" in corpo && !vozCampoPendente("aviso_volume")) {
       avisoVolRange.value = String(voz.aviso_volume);
+      if (voz.aviso_volume > 50) { avisoVolTrava.liberado = true; avisoVolTrava.msg = false; }
       updateAvisoVolLabel();
     }
     if ("voz_volume" in corpo && !vozCampoPendente("voz_volume")) {
       vozVolRange.value = String(voz.voz_volume);
+      if (voz.voz_volume > 50) { vozVolTrava.liberado = true; vozVolTrava.msg = false; }
       updateVozVolLabel();
     }
     return false;
@@ -1379,11 +1383,65 @@
     vozAgendar({ aviso: avisoSelect.value });
   });
 
+  /** v2.8.6: aviso de recomendação/limite sob o controle (> 50 amarelo, >= 80 vermelho). Não bloqueia nada. */
+  const VOL_TRAVA_MSG = "Acima de 50% pode forçar os amplificadores. Para subir mesmo assim, arraste de novo.";
+  const VOL_TRAVA_JANELA_MS = 10000;
+  /** Estado da "leve trava" de cada controle (só em memória: recarregar a página trava de novo). */
+  function volTravaNova() { return { liberado: false, avisoEm: 0, msg: false, gesto: true }; }
+  function volAvisoAtualizar(range, el, trava) {
+    const n = Number(range.value);
+    let msg = "";
+    let nivel = "";
+    if (trava.msg) {
+      msg = VOL_TRAVA_MSG;
+      nivel = "atencao";
+    } else if (n >= 80) {
+      msg = "Volume alto: risco para os amplificadores. Confira a luz de \"clip\" e o ganho da mesa antes de usar.";
+      nivel = "perigo";
+    } else if (n > 50) {
+      msg = "Acima do recomendado. Confira se os amplificadores não distorcem.";
+      nivel = "atencao";
+    }
+    el.classList.toggle("vol-aviso--atencao", nivel === "atencao");
+    el.classList.toggle("vol-aviso--perigo", nivel === "perigo");
+    if (el.textContent !== msg) setText(el, msg); // só mexe no DOM se mudou (leitor de tela não repete)
+    el.hidden = msg === "";
+  }
+  /** Chamado no `input`: segura em 50 a 1ª tentativa de passar; a 2ª (novo gesto, até 10 s) libera. */
+  function volTravaInput(range, trava) {
+    const n = Number(range.value);
+    if (n <= 50 || trava.liberado) { trava.msg = false; return; }
+    const agora = Date.now();
+    const novoGesto = trava.gesto;
+    trava.gesto = false; // o resto do mesmo arrasto não conta como "empurrar de novo"
+    if (novoGesto && trava.avisoEm && agora - trava.avisoEm <= VOL_TRAVA_JANELA_MS) {
+      trava.liberado = true;
+      trava.msg = false;
+      return;
+    }
+    range.value = "50";
+    trava.msg = true;
+    if (novoGesto || !trava.avisoEm) trava.avisoEm = agora;
+  }
+  /** Cada toque/tecla novo é um gesto novo. */
+  function volTravaGestos(range, trava) {
+    const novo = () => { trava.gesto = true; };
+    range.addEventListener("pointerdown", novo);
+    range.addEventListener("keydown", novo);
+  }
+  const avisoVolAviso = $("aviso-volume-aviso");
+  const vozVolAviso = $("voz-volume-aviso");
+  const avisoVolTrava = volTravaNova();
+  const vozVolTrava = volTravaNova();
+  volTravaGestos(avisoVolRange, avisoVolTrava);
+  volTravaGestos(vozVolRange, vozVolTrava);
+
   function updateAvisoVolLabel() {
     setText(avisoVolValue, avisoVolRange.value + "%");
     paintRange(avisoVolRange, false);
+    volAvisoAtualizar(avisoVolRange, avisoVolAviso, avisoVolTrava);
   }
-  avisoVolRange.addEventListener("input", updateAvisoVolLabel);
+  avisoVolRange.addEventListener("input", () => { volTravaInput(avisoVolRange, avisoVolTrava); updateAvisoVolLabel(); });
   avisoVolRange.addEventListener("change", () => {
     const n = Number(avisoVolRange.value);
     if (volumeValido(n)) vozAgendar({ aviso_volume: n });
@@ -1393,8 +1451,9 @@
   function updateVozVolLabel() {
     setText(vozVolValue, vozVolRange.value + "%");
     paintRange(vozVolRange, false);
+    volAvisoAtualizar(vozVolRange, vozVolAviso, vozVolTrava);
   }
-  vozVolRange.addEventListener("input", updateVozVolLabel);
+  vozVolRange.addEventListener("input", () => { volTravaInput(vozVolRange, vozVolTrava); updateVozVolLabel(); });
   vozVolRange.addEventListener("change", () => {
     const n = Number(vozVolRange.value);
     if (volumeValido(n)) vozAgendar({ voz_volume: n });
