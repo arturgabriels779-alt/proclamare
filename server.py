@@ -4665,10 +4665,14 @@ VOZES_ONLINE = {
 }
 MOTORES = frozenset({"auto", "online", "offline"})
 VELOCIDADE_OFFLINE_WPM = 165
-# v2.8.5: `voz_volume` = volume da FALA em % (10..100, múltiplo de 10; padrão 100 = como sempre, só o ADM muda).
-VOZ_VOLUME_PADRAO = 100
+# v2.8.5: `voz_volume` = volume da FALA em % (10..100, múltiplo de 10, só o ADM muda). v2.8.6: padrão 50 (segurança).
+VOZ_VOLUME_PADRAO = 50
+# v2.8.6: marcador ÚNICO da migração dos dois volumes (config.json["voz_loja"]["aviso_som_v"] = 2): sem ele, o
+# aviso_volume/voz_volume já gravados viram min(gravado, 50) uma vez. Nunca vai ao GET e o POST o recusa (400).
+AVISO_SOM_V_CHAVE, AVISO_SOM_V = "aviso_som_v", 2
+VOLUMES_MIGRADOS_TETO = 50
 # v2.8 (A2): voz da LOJA, guardada no config.json["voz_loja"]. Campo ausente ou torto cai no padrão, campo a campo.
-# v2.8.4: `aviso_volume` = volume do aviso sonoro em % (10..100, múltiplo de 10; padrão 80, só o ADM muda).
+# v2.8.4: `aviso_volume` = volume do aviso sonoro em % (10..100, múltiplo de 10; padrão 50 desde a v2.8.6, só o ADM muda).
 VOZ_LOJA_PADRAO: dict[str, Any] = {"motor": "auto", "voz": "francisca", "velocidade": 0, "aviso": AVISO_PADRAO,
                                    "aviso_volume": VOLUME_PADRAO, "voz_volume": VOZ_VOLUME_PADRAO}
 VOZES_LOJA_NOMES = (("francisca", "Francisca (feminina)"), ("antonio", "Antônio (masculina)"))
@@ -4690,14 +4694,44 @@ def _voz_loja_campo_ok(campo: str, valor: Any) -> bool:
     return False
 
 
+def _rebaixar_volumes(bruto: dict) -> bool:
+    """v2.8.6: aplica EM `bruto` a migração única (sem o marcador: volume válido gravado vira min(gravado, 50)) e
+    põe o marcador. Devolve True se mudou algo."""
+    if bruto.get(AVISO_SOM_V_CHAVE) == AVISO_SOM_V:
+        return False
+    for campo in ("aviso_volume", "voz_volume"):
+        if campo in bruto and volume_valido(bruto[campo]):
+            bruto[campo] = min(bruto[campo], VOLUMES_MIGRADOS_TETO)
+    bruto[AVISO_SOM_V_CHAVE] = AVISO_SOM_V
+    return True
+
+
+def _migrar_volumes_gravados() -> None:
+    """Grava a migração (uma vez, sob o _config_lock, só a chave voz_loja; nunca levanta)."""
+    try:
+        with _config_lock:
+            cfg = load_config()   # cópia rasa: o dict de dentro é do cache, então copia antes de mexer
+            bruto = dict(cfg.get("voz_loja")) if isinstance(cfg.get("voz_loja"), dict) else None
+            if bruto is not None and _rebaixar_volumes(bruto):
+                cfg["voz_loja"] = bruto
+                _gravar_config_atomico(cfg)
+    except Exception as exc:  # noqa: BLE001  (disco cheio etc.: a leitura já devolve o valor rebaixado)
+        log.warning("Não foi possível gravar a migração dos volumes (%s).", type(exc).__name__)
+
+
 def voz_loja() -> dict[str, Any]:
-    """Voz da loja (motor, voz, velocidade, aviso, aviso_volume, voz_volume) + `definida`. Nunca levanta: o que estiver torto vira padrão."""
+    """Voz da loja (motor, voz, velocidade, aviso, aviso_volume, voz_volume) + `definida`. Nunca levanta: o que estiver torto vira padrão.
+    v2.8.6: sem o marcador `aviso_som_v`, os volumes gravados são rebaixados a no máximo 50 (e a migração é gravada)."""
     try:
         cfg = load_config()
     except Exception:   # config ilegível: a loja segue com o padrão
         cfg = {}
     existe = "voz_loja" in cfg
     bruto = cfg.get("voz_loja") if isinstance(cfg.get("voz_loja"), dict) else {}
+    if bruto and bruto.get(AVISO_SOM_V_CHAVE) != AVISO_SOM_V:
+        bruto = dict(bruto)
+        _rebaixar_volumes(bruto)       # a leitura já vem rebaixada, mesmo que a gravação falhe
+        _migrar_volumes_gravados()
     saida = {c: (bruto[c] if c in bruto and _voz_loja_campo_ok(c, bruto[c]) else padrao)
              for c, padrao in VOZ_LOJA_PADRAO.items()}
     saida["definida"] = existe
@@ -7068,6 +7102,7 @@ def voz_salvar() -> Response:
         atual = voz_loja()
         atual.pop("definida")
         atual.update(corpo)
+        atual[AVISO_SOM_V_CHAVE] = AVISO_SOM_V   # v2.8.6: o que o ADM grava agora nunca é rebaixado de novo
         cfg["voz_loja"] = atual
         _gravar_config_atomico(cfg)
     # só quantos campos (+ o volume do aviso, um número sem texto de ninguém)
