@@ -1142,7 +1142,13 @@ class MusicaFalsa:
             return self.c.pos_fixa
         return int((self.c.relogio.t - self.inicio) * 1000)
 
-    def set_volume(self, valor: float) -> None:   # v2.8.5: só chamado com volume da voz < 100%
+    volume = 1.0
+
+    def get_volume(self) -> float:
+        return self.volume
+
+    def set_volume(self, valor: float) -> None:   # v2.8.5: chamado com volume da voz < 100% (ou para soltar um preso)
+        self.volume = valor
         self.c.eventos.append(("volume", valor))
 
     def stop(self) -> None:
@@ -2391,7 +2397,7 @@ class TestAnnounceSom(BaseSom):
 
     def falar_legado(self) -> Any:
         return mock.patch.object(
-            server, "_falar_offline", lambda texto, wpm, voz: self.cen.eventos.append("falar_legacy"))
+            server, "_falar_offline", lambda texto, wpm, voz, volume=100: self.cen.eventos.append("falar_legacy"))
 
     def motor_da_loja(self, motor: str) -> None:
         """Grava o motor na voz da loja do config temporário (o /api/announce não lê mais "engine")."""
@@ -2413,7 +2419,7 @@ class TestAnnounceSom(BaseSom):
     def test_sem_a_chave_som_o_caminho_online_e_o_antigo(self) -> None:
         self.internet = True
         self.motor_da_loja("online")
-        with mock.patch.object(server, "_tocar_mp3", lambda c: self.cen.eventos.append("tocar_legacy")):
+        with mock.patch.object(server, "_tocar_mp3", lambda c, parar=None, volume=100: self.cen.eventos.append("tocar_legacy")):
             r = self.anunciar()
         self.assertEqual(r.get_json(), {"ok": True, "engine_used": "online"})
         self.assertEqual(self.cen.eventos, ["duck_spotify", ("yt", "duck"), "tocar_legacy",
@@ -2717,7 +2723,7 @@ class TestCorrecoesFinaisF1(BaseSom):
         self.internet = True
         server.save_config({**server.load_config(), "voz_loja": {"motor": "online"}})   # o motor é o da loja
         with self.pygame_falso(), mock.patch.object(
-                server, "_tocar_mp3", lambda c: (server._garantir_mixer(), server.apagar_audio(c))):
+                server, "_tocar_mp3", lambda c, parar=None, volume=100: (server._garantir_mixer(), server.apagar_audio(c))):
             r = self.anunciar()
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self.inits()[-1], ("init", None))       # dispositivo padrão, como na v2.2.1
@@ -2810,7 +2816,7 @@ class TestCorrecoesFinaisF1(BaseSom):
         falso = mock.MagicMock(init=lambda: Engine())
         destino = Path(self._tmp.name) / "x.wav"
         with mock.patch.dict(sys.modules, {"pyttsx3": falso}):
-            server._falar_offline("oi <silence msec='9'/>", 165, None)
+            server._falar_offline_original("oi <silence msec='9'/>", 165, None)
             with self.assertRaises(motor_mod.ErroReproducao):      # o falso não escreve WAV
                 motor_mod.sintetizar_wav_pyttsx3("<audio src='x'/> oi", 165, None, destino)
         self.assertEqual(len(recebidos), 2)

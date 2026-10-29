@@ -71,11 +71,11 @@ class BaseAviso(ts.BaseSom):
 
     def falar_legado(self) -> Any:
         return mock.patch.object(server, "_falar_offline",
-                                 lambda texto, wpm, voz: self.cen.eventos.append("falar_legacy"))
+                                 lambda texto, wpm, voz, volume=100: self.cen.eventos.append("falar_legacy"))
 
     def tocar_mp3_legado(self) -> Any:
         return mock.patch.object(server, "_tocar_mp3",
-                                 lambda c, parar=None: self.cen.eventos.append("tocar_legacy"))
+                                 lambda c, parar=None, volume=100: self.cen.eventos.append("tocar_legacy"))
 
     def nomes_na_pasta(self) -> list[str]:
         return sorted(p.name for p in self.audio.iterdir())
@@ -199,7 +199,7 @@ class TestAvisoNoAnuncio(BaseAviso):
         vozes = {"voices": [{"id": "voz-br", "name": "BR"}], "default": "voz-br"}
         recebidas: list[Any] = []
         with mock.patch.object(server, "obter_vozes_offline", lambda: vozes), \
-                mock.patch.object(server, "_falar_offline", lambda t, w, v: recebidas.append(v)):
+                mock.patch.object(server, "_falar_offline", lambda t, w, v, vol=100: recebidas.append(v)):
             r = self.anunciar(offline_voice_id="outra")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(recebidas, ["voz-br"])
@@ -571,7 +571,7 @@ class TestSinetaDoFim(BaseAviso):
         # (A voz do Windows, que não é cortável, tem o teste com o "Parar" de verdade em TestAvisoNaProgramacao.)
         sinal = programacao.SinalParada()
 
-        def tocar_mp3(c: Path, parar: Any = None) -> None:
+        def tocar_mp3(c: Path, parar: Any = None, volume: int = 100) -> None:
             self.cen.eventos.append("fala")
             parar.parar()
 
@@ -585,7 +585,7 @@ class TestSinetaDoFim(BaseAviso):
         sinal = programacao.SinalParada()
         vistos: list[tuple] = []
 
-        def falar(texto: str, wpm: int, voz: Any) -> None:
+        def falar(texto: str, wpm: int, voz: Any, volume: int = 100) -> None:
             vistos.append(("fala", sinal.interrompivel))
 
         def tocar(caminho: Path, parar: Any = None) -> None:
@@ -887,7 +887,7 @@ class TestAvisoNaProgramacao(tp.BaseProg):
         self.addCleanup(p.stop)
         trocas = {
             "_tocar_aviso": lambda caminho, parar=None: self.ordem.append(("aviso", caminho.name)),
-            "_falar_offline": lambda texto, wpm, voz: self.ordem.append("fala"),
+            "_falar_offline": lambda texto, wpm, voz, volume=100: self.ordem.append("fala"),
             "tem_internet": lambda timeout=1.5: False,
             "obter_vozes_offline": lambda: None,
         }
@@ -915,7 +915,7 @@ class TestAvisoNaProgramacao(tp.BaseProg):
         server.save_config(cfg)
         respostas: list[str] = []
 
-        def falar(texto: str, wpm: int, voz: Any) -> None:
+        def falar(texto: str, wpm: int, voz: Any, volume: int = 100) -> None:
             respostas.append(self.servico.parar_execucao())
             self.ordem.append("fala")
 
@@ -948,7 +948,7 @@ class TestAvisoNaProgramacao(tp.BaseProg):
             c.write_bytes(b"ID3falso")
             return c
 
-        def tocar_mp3(c: Path, parar: Any = None) -> None:
+        def tocar_mp3(c: Path, parar: Any = None, volume: int = 100) -> None:
             respostas.append(self.servico.parar_execucao())
             self.ordem.append("fala")
 

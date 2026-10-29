@@ -321,7 +321,7 @@ class TestProgramacaoAnuncio(tp.BaseProg):
         self.ordem: list[Any] = []
         trocas = {
             "_tocar_aviso": lambda caminho, parar=None: self.ordem.append(("aviso", caminho.name)),
-            "_falar_offline": lambda texto, wpm, voz: self.ordem.append("fala"),
+            "_falar_offline": lambda texto, wpm, voz, volume=100: self.ordem.append("fala"),
             "tem_internet": lambda timeout=1.5: False,
             "obter_vozes_offline": lambda: None,
         }

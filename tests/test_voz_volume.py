@@ -156,8 +156,13 @@ class TestConfigTorto(unittest.TestCase):
 class _MusicaDeMentira:
     """pygame.mixer.music falso para `_reproduzir_legado`: anota as chamadas e nunca está "tocando"."""
 
-    def __init__(self, eventos: list[Any]) -> None:
+    def __init__(self, eventos: list[Any], volume: float = 1.0, ocupada: bool = False) -> None:
         self.e = eventos
+        self.volume = volume
+        self.ocupada = ocupada   # True: get_busy nunca acaba (para "parar" e teto)
+
+    def get_volume(self) -> float:
+        return self.volume
 
     def load(self, caminho: str) -> None:
         self.e.append("load")
@@ -166,10 +171,11 @@ class _MusicaDeMentira:
         self.e.append("play")
 
     def set_volume(self, v: float) -> None:
+        self.volume = v
         self.e.append(("volume", v))
 
     def get_busy(self) -> bool:
-        return False
+        return self.ocupada
 
     def stop(self) -> None:
         self.e.append("stop")
@@ -183,10 +189,14 @@ class TestLegadoOnlinePygame(unittest.TestCase):
 
     def setUp(self) -> None:
         self.ev: list[Any] = []
-        pg = types.SimpleNamespace(mixer=types.SimpleNamespace(music=_MusicaDeMentira(self.ev)))
+        self.musica = _MusicaDeMentira(self.ev)
+        pg = types.SimpleNamespace(mixer=types.SimpleNamespace(music=self.musica))
         p = mock.patch.object(server, "_garantir_mixer", lambda reiniciar=False: pg)
         p.start()
         self.addCleanup(p.stop)
+
+    def volumes(self) -> list[Any]:
+        return [e for e in self.ev if isinstance(e, tuple)]
 
     def test_volume_entra_antes_do_play_e_volta_a_1_depois(self) -> None:
         server._reproduzir_legado(Path("x.mp3"), 5.0, None, 40)
@@ -214,7 +224,7 @@ class TestLegadoOnlinePygame(unittest.TestCase):
         mp3 = Path(server.AUDIO_DIR) / "anuncio_vol.mp3"
         mp3.write_bytes(b"x")
         self.addCleanup(lambda: mp3.unlink(missing_ok=True))
-        server._tocar_mp3(mp3, None, 60)
+        server._tocar_mp3_original(mp3, None, 60)
         self.assertIn(("volume", 0.6), self.ev)
         self.assertFalse(mp3.exists())
 
@@ -225,6 +235,46 @@ class TestLegadoOnlinePygame(unittest.TestCase):
         server._tocar_aviso_original(Path("aviso.wav"))
         server._reproduzir_legado(Path("musica.mp3"), 5.0, None)
         self.assertFalse([e for e in self.ev if isinstance(e, tuple)])
+
+
+class TestLegadoOnlineRodada1(TestLegadoOnlinePygame):
+    """Rodada 1: mixer preso, volume torto, parar e teto devolvem o volume. (Herda o setUp; os testes de cima rodam de novo.)"""
+
+    def test_mixer_preso_em_volume_baixo_volta_a_1_antes_do_play(self) -> None:
+        self.musica.volume = 0.3   # uma fala anterior ficou presa (thread órfã) e nunca chegou ao finally
+        server._reproduzir_legado(Path("x.mp3"), 5.0, None, 100)
+        self.assertEqual(self.ev, ["load", ("volume", 1.0), "play", "stop", "unload"])
+
+    def test_mixer_normal_a_100_nao_chama_set_volume(self) -> None:
+        server._reproduzir_legado(Path("x.mp3"), 5.0, None, 100)
+        self.assertEqual(self.volumes(), [])
+
+    def test_mixer_sem_get_volume_nao_quebra(self) -> None:
+        musica = _MusicaDeMentira(self.ev)
+        musica.get_volume = None   # type: ignore[assignment]
+        pg = types.SimpleNamespace(mixer=types.SimpleNamespace(music=musica))
+        with mock.patch.object(server, "_garantir_mixer", lambda reiniciar=False: pg):
+            server._reproduzir_legado(Path("x.mp3"), 5.0, None, 100)
+        self.assertEqual(self.volumes(), [])
+
+    def test_volume_torto_vale_100(self) -> None:
+        for ruim in (True, False, 0, -10, 5, 55, 105, 200, 40.0, "40", None):
+            with self.subTest(v=ruim):
+                self.ev.clear()
+                server._reproduzir_legado(Path("x.mp3"), 5.0, None, ruim)
+                self.assertEqual(self.volumes(), [])
+
+    def test_parar_volta_a_1(self) -> None:
+        self.musica.ocupada = True
+        parar = types.SimpleNamespace(is_set=lambda: True)
+        cortado = server._reproduzir_legado(Path("x.mp3"), 5.0, parar, 40)
+        self.assertTrue(cortado)
+        self.assertEqual(self.volumes(), [("volume", 0.4), ("volume", 1.0)])
+
+    def test_teto_volta_a_1(self) -> None:
+        self.musica.ocupada = True
+        server._reproduzir_legado(Path("x.mp3"), 0.12, None, 40)   # o laço sai pelo teto
+        self.assertEqual(self.volumes(), [("volume", 0.4), ("volume", 1.0)])
 
 
 class TestLegadoOfflinePyttsx3(unittest.TestCase):
@@ -254,13 +304,42 @@ class TestLegadoOfflinePyttsx3(unittest.TestCase):
 
     def test_volume_antes_de_falar_e_volta_a_1(self) -> None:
         ev = self.motor_falso()
-        server._falar_offline("oi", 165, None, 40)
+        server._falar_offline_original("oi", 165, None, 40)
         self.assertEqual(ev, [("rate", 165), ("volume", 0.4), "say", "run", "stop", ("volume", 1.0)])
+
+    def test_erro_na_fala_volta_a_1(self) -> None:
+        ev: list[Any] = []
+
+        class Motor:
+            def setProperty(self, k: str, v: Any) -> None:   # noqa: N802
+                ev.append((k, v))
+
+            def say(self, t: str) -> None:
+                ev.append("say")
+
+            def runAndWait(self) -> None:   # noqa: N802
+                raise RuntimeError("sem voz")
+
+            def stop(self) -> None:
+                ev.append("stop")
+
+        with mock.patch.dict(sys.modules, {"pyttsx3": types.SimpleNamespace(init=lambda: Motor())}):
+            with self.assertRaises(RuntimeError):
+                server._falar_offline_original("oi", 165, None, 40)
+        self.assertEqual(ev[-1], ("volume", 1.0))
+        self.assertIn(("volume", 0.4), ev)
+
+    def test_volume_torto_vale_100(self) -> None:
+        for ruim in (True, 0, -10, 105, 40.0, "40", None):
+            with self.subTest(v=ruim):
+                ev = self.motor_falso()
+                server._falar_offline_original("oi", 165, None, ruim)
+                self.assertFalse([e for e in ev if isinstance(e, tuple) and e[0] == "volume"])
 
     def test_100_nao_mexe_no_volume(self) -> None:
         ev = self.motor_falso()
-        server._falar_offline("oi", 165, None)
-        server._falar_offline("oi", 165, None, 100)
+        server._falar_offline_original("oi", 165, None)
+        server._falar_offline_original("oi", 165, None, 100)
         self.assertFalse([e for e in ev if isinstance(e, tuple) and e[0] == "volume"])
 
 
@@ -300,16 +379,13 @@ class TestAnuncioLegado(BaseVoz):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(self.volumes_da_fala(), [("fala_mp3", 70)])
 
-    def test_padrao_e_100_e_chama_do_jeito_de_antes(self) -> None:
-        chamadas: list[tuple] = []
+    def test_padrao_e_100_e_o_volume_sempre_vai_junto(self) -> None:
         self.internet = True
         self.voz(motor="online")
-        with mock.patch.object(server, "_tocar_mp3", lambda c, *a: chamadas.append(a)):   # sem parâmetro de volume
-            self.assertEqual(self.anunciar().status_code, 200)
+        self.assertEqual(self.anunciar().status_code, 200)
         self.voz(motor="offline", voz_volume=100)
-        with mock.patch.object(server, "_falar_offline", lambda t, w, v: chamadas.append(("off",))):
-            self.assertEqual(self.anunciar().status_code, 200)
-        self.assertEqual(chamadas, [(), ("off",)])
+        self.assertEqual(self.anunciar().status_code, 200)
+        self.assertEqual(self.volumes_da_fala(), [("fala_mp3", 100), ("fala_offline", 100)])
 
     def test_teste_true_testar_caixas_usa_o_volume_e_nao_toca_aviso(self) -> None:
         self.voz(motor="offline", voz_volume=30)
@@ -393,6 +469,56 @@ class TestAnuncioSaidaFixada(BaseVoz):
         self.cen.pos_fixa = 5        # e a posição não anda: o vigia de progresso encerra com erro
         r = self.anunciar()
         self.assertNotEqual(r.status_code, 200)
+        self.assertEqual(self.so_volumes(), [("volume", 0.4), ("volume", 1.0)])
+
+    def test_volume_torto_vale_100_no_motor_e_no_servidor(self) -> None:
+        self.configurar()
+        for ruim in (True, 0, 105, 40.0, "40"):
+            with self.subTest(v=ruim):
+                self.cen.eventos.clear()
+                wav = self.audio / "fala_torta.wav"
+                from som import motor as motor_mod
+                motor_mod.gerar_bipe(wav, duracao_s=0.2)
+                self.assertEqual(self.anunciar().status_code, 200)   # abre a saída
+                self.cen.eventos.clear()
+                server.SOM.motor.tocar(wav, volume=ruim)
+                self.assertEqual(self.so_volumes(), [])
+                self.cen.eventos.clear()
+                server._som_tocar_anuncio(None, wav, [None], None, None, ruim)
+                self.assertEqual(self.so_volumes(), [])
+
+    def test_mixer_preso_volta_a_1_no_motor(self) -> None:
+        self.configurar()
+        from som import motor as motor_mod
+        wav = self.audio / "fala_presa.wav"
+        motor_mod.gerar_bipe(wav, duracao_s=0.2)
+        self.assertEqual(self.anunciar().status_code, 200)   # abre a saída
+        self.cen.pygame.mixer.music.volume = 0.3
+        self.cen.eventos.clear()
+        server.SOM.motor.tocar(wav)
+        self.assertEqual(self.volumes(), [("volume", 1.0), "play"])
+
+    def test_parar_volta_a_1(self) -> None:
+        self.configurar()
+        from som import motor as motor_mod
+        wav = self.audio / "fala_parar.wav"
+        motor_mod.gerar_bipe(wav, duracao_s=0.5)
+        self.assertEqual(self.anunciar().status_code, 200)
+        self.cen.eventos.clear()
+        server.SOM.motor.tocar(wav, volume=40, parar=types.SimpleNamespace(is_set=lambda: True))
+        self.assertEqual(self.so_volumes(), [("volume", 0.4), ("volume", 1.0)])
+
+    def test_teto_volta_a_1(self) -> None:
+        self.configurar()
+        from som import motor as motor_mod
+        wav = self.audio / "fala_teto.wav"
+        motor_mod.gerar_bipe(wav, duracao_s=0.5)
+        self.assertEqual(self.anunciar().status_code, 200)
+        self.cen.eventos.clear()
+        self.cen.busy_preso = True
+        self.cen.pos_fixa = None
+        with self.assertRaises(Exception):
+            server.SOM.motor.tocar(wav, volume=40, teto_s=1.0)   # estoura o teto (relógio simulado)
         self.assertEqual(self.so_volumes(), [("volume", 0.4), ("volume", 1.0)])
 
     def test_teste_true_na_saida_fixada(self) -> None:

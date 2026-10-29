@@ -777,6 +777,7 @@ class BaseProg(tl.Base):
         self.pygame = PygameFalso(self.cen)
         self._patches = [
             mock.patch.dict(sys.modules, {"pygame": self.pygame}),
+            mock.patch.object(server, "_tocar_mp3", server._tocar_mp3_original),   # v2.8.5: com o pygame FALSO acima
             mock.patch.object(server, "spotify_active_device_id", self.spotify.device_id),
             mock.patch.object(server, "spotify_player_state", self.spotify.estado),
             mock.patch.object(server, "spotify_comando", self.spotify.comando),
@@ -1492,12 +1493,12 @@ class TesteTetos(BaseProg):
         chamado: dict[str, Any] = {}
         real = server._reproduzir_legado
 
-        def espia(caminho: Path, teto: float, parar: Any = None) -> bool:
+        def espia(caminho: Path, teto: float, parar: Any = None, volume: int = 100) -> bool:
             chamado["teto"] = teto
-            return real(caminho, teto, parar)
+            return real(caminho, teto, parar, volume)
 
         with mock.patch.object(server, "_reproduzir_legado", espia):
-            server._tocar_mp3(arquivo)
+            server._tocar_mp3_original(arquivo)
         self.assertEqual(chamado["teto"], 80.0)
         self.assertFalse(arquivo.exists())                   # o anúncio apaga o mp3 temporário
 
@@ -1692,7 +1693,7 @@ class TesteExecucaoAnuncio(BaseProg):
             self.mp3s.append(p)
             return p
 
-        def falar(texto: str, wpm: int, voz_id: str | None) -> None:
+        def falar(texto: str, wpm: int, voz_id: str | None, volume: int = 100) -> None:
             self.chamadas_voz.append(("offline", texto, voz_id, wpm))
             self.cen.eventos.append("fala-offline")
 
@@ -1839,7 +1840,7 @@ class TesteConcorrencia(BaseProg):
         server.PROGRAMACAO = self.servico
         falando, soltar = threading.Event(), threading.Event()
 
-        def falar(texto: str, wpm: int, voz_id: Any) -> None:
+        def falar(texto: str, wpm: int, voz_id: Any, volume: int = 100) -> None:
             falando.set()
             soltar.wait(5)
 
