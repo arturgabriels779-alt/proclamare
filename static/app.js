@@ -1142,7 +1142,7 @@
   const avisoVolRange = $("aviso-volume-range");
   const avisoVolValue = $("aviso-volume-value");
   const avisoVolField = $("aviso-volume-field");
-  const avisoVolValido = (n) => Number.isInteger(n) && n >= 10 && n <= 100 && n % 10 === 0;
+  const volumeValido = (n) => Number.isInteger(n) && n >= 10 && n <= 100 && n % 10 === 0;
   /** Quem vê e usa o controle: com contas, só quem tem a capacidade; em modo PIN, só o PC das caixas. */
   const podeAvisoVolume = () => (auth.modoContas ? auth.permissoes.includes("aviso_volume") : auth.supported && auth.local);
   // v2.8.5: volume da VOZ dos anúncios (10..100, passo 10, padrão 100); só o ADM (capacidade voz_volume; modo PIN: só o PC das caixas)
@@ -1238,11 +1238,11 @@
       voz.aviso = v.aviso;
       if (avisoSelect.value !== v.aviso) avisoSelect.value = v.aviso;
     }
-    if (avisoVolValido(v.aviso_volume) && !vozCampoPendente("aviso_volume")) {
+    if (volumeValido(v.aviso_volume) && !vozCampoPendente("aviso_volume")) {
       voz.aviso_volume = v.aviso_volume;
       if (avisoVolRange.value !== String(v.aviso_volume)) avisoVolRange.value = String(v.aviso_volume);
     }
-    if (avisoVolValido(v.voz_volume) && !vozCampoPendente("voz_volume")) {
+    if (volumeValido(v.voz_volume) && !vozCampoPendente("voz_volume")) {
       voz.voz_volume = v.voz_volume;
       if (vozVolRange.value !== String(v.voz_volume)) vozVolRange.value = String(v.voz_volume);
     }
@@ -1386,7 +1386,7 @@
   avisoVolRange.addEventListener("input", updateAvisoVolLabel);
   avisoVolRange.addEventListener("change", () => {
     const n = Number(avisoVolRange.value);
-    if (avisoVolValido(n)) vozAgendar({ aviso_volume: n });
+    if (volumeValido(n)) vozAgendar({ aviso_volume: n });
   });
   updateAvisoVolLabel();
 
@@ -1397,7 +1397,7 @@
   vozVolRange.addEventListener("input", updateVozVolLabel);
   vozVolRange.addEventListener("change", () => {
     const n = Number(vozVolRange.value);
-    if (avisoVolValido(n)) vozAgendar({ voz_volume: n });
+    if (volumeValido(n)) vozAgendar({ voz_volume: n });
   });
   updateVozVolLabel();
 
