@@ -2,7 +2,8 @@
 Avisos sonoros (v2.8 A1): sinetas curtas tocadas ANTES de um anúncio, sintetizadas em memória.
 
 Só stdlib (wave/struct/math), determinístico e sem tocar nada: quem reproduz é o motor de áudio.
-Mono, 16 bits, pico <= 0,9 da escala (a pedido da loja: soar acima do barulho; antes era 0,5) e ataque/fade de pelo menos 10 ms (sem estalo).
+Mono, 16 bits, pico <= 0,5 da escala (-6 dBFS; v2.8.6: um amplificador da loja queimou, então as sinetas ficaram
+suaves e mais baixas), SEM saturação e com ataque/fade de pelo menos 20 ms (sem estalo).
 
 Os sons são ORIGINAIS, só no estilo das referências que a loja mandou (nada baixado nem copiado):
   * "microfone": a sineta de microfone do sistema de som, que sobe ANTES da fala (lá-dó#-mi) e volta DEPOIS dela
@@ -47,14 +48,15 @@ NOMES_AVISO: dict[str, str] = {
     "ding_dong_duplo": "Ding-dong (2 vezes)",
 }
 
-_PICO = 0.9               # pico final de cada sineta (fração da escala; teto 0,9, nunca no limite do int16)
-_SATURACAO = 2.0          # tanh(d*x)/tanh(d): sobe o RMS e dá "mordida" sem cortar (clip) a onda
-_HARMONICOS = ((1, 1.0), (2, 0.6), (3, 0.35), (4, 0.2))   # timbre brilhante (vibrafone/sineta de aeroporto)
-# "microfone": timbre mais limpo/eletrônico (quase senoidal; a saturação tanh já acrescenta um pouco de ímpares)
-_HARMONICOS_MICROFONE = ((1, 1.0), (2, 0.25), (3, 0.08))
-_DECAIMENTO = 1.2             # decaimento lento: a nota "enche" o tempo
-_DECAIMENTO_MICROFONE = 1.0   # som eletrônico: sustenta um pouco mais
-_FADE_S = 0.015           # ataque e saída de cada nota (>= 10 ms)
+# v2.8.6 "Sinetas suaves": pico 0,5 da escala (-6 dBFS; era 0,9) é TETO RÍGIDO de qualquer volume; sem saturação (tanh)
+# e sem harmônicos agudos (no máximo fundamental + 2º fraco). RMS da janela mais alta de 400 ms a 100%
+# (int16; antigo -> novo): ver docs/ e tests/test_aviso_suave.py (todos >= 9 dB abaixo do antigo).
+_PICO = 0.5
+_HARMONICOS = ((1, 1.0), (2, 0.15))                  # timbre suave (aeroporto/supermercado)
+_HARMONICOS_MICROFONE = ((1, 1.0), (2, 0.10))        # microfone: quase senoidal
+_DECAIMENTO = 4.5             # a nota morre logo (menos energia sustentada que os 1,2 antigos)
+_DECAIMENTO_MICROFONE = 3.0
+_FADE_S = 0.025           # ataque e saída de cada nota (>= 20 ms)
 _NOTA_S = 0.45            # duração de cada nota das sinetas em sequência
 _NOTA_SUPERMERCADO_S = 0.55   # "um pouquinho só mais lento" que as outras
 _CAUDA_S = 0.25           # a última nota da sequência soa mais um pouco
@@ -77,15 +79,15 @@ _A5, _F5_AVIAO = 880.00, 698.46
 _AVIAO_NOTAS = (_A5, _F5_AVIAO)
 _AVIAO_TOM_S = 0.9
 _AVIAO_ENTRADA_2_S = 0.7
-_AVIAO_HARMONICOS = ((1, 1.0), (2, 0.12), (3, 0.05))
-_AVIAO_DECAIMENTO = 3.0
+_AVIAO_HARMONICOS = ((1, 1.0), (2, 0.10))
+_AVIAO_DECAIMENTO = 4.0
 
 # "ding_dong_duplo": ding (mi5) -> dong (dó5) de vibrafone, 2 vezes, com uma pausa de silêncio entre os pares.
 # Cada parcial = (razão da frequência, peso, decaimento por s): o vibrafone tem um parcial forte 2 oitavas acima
 # (4x), que some antes da fundamental. 2 x (0,5 + 0,75) + 0,25 = 2,75 s (cabe no AVISO_MAX_S).
 _DING_DONG_NOTAS = ((_E5, 0.5), (_C5, 0.75))
 _DING_DONG_PAUSA_S = 0.25
-_VIBRAFONE_PARCIAIS = ((1.0, 1.0, 2.2), (2.0, 0.25, 4.0), (4.0, 0.30, 6.0))
+_VIBRAFONE_PARCIAIS = ((1.0, 1.0, 3.2), (2.0, 0.15, 5.0))   # v2.8.6: sem o parcial agudo de 4x
 
 
 def _nota(freq: float, duracao_s: float, taxa: int, decaimento: float, harmonicos=((1, 1.0),)) -> list[float]:
@@ -145,7 +147,7 @@ def _sintetizar(nome: str, taxa: int, fim: bool = False) -> list[float]:
 
 
 VOLUME_MIN, VOLUME_MAX, VOLUME_PASSO = 10, 100, 10   # v2.8.4: volume do aviso, em % (múltiplos de 10)
-VOLUME_PADRAO = 80                                    # padrão da LOJA (decisão do dono); 100 = o som das versões antigas
+VOLUME_PADRAO = 50                                    # padrão da LOJA (v2.8.6, decisão do dono: segurança dos amplificadores)
 
 
 def volume_valido(valor: object) -> bool:
@@ -156,14 +158,11 @@ def volume_valido(valor: object) -> bool:
 
 def _finalizar(amostras: list[float], volume: int = VOLUME_MAX) -> list[float]:
     """
-    Saturação suave (tanh, sem clip) e normalização do pico em _PICO x volume/100; amostras em [-1, 1].
-    v2.8.4: o volume entra AQUI (na síntese), então o WAV já nasce no volume pedido; 100% é bit a bit o de sempre.
+    Normaliza o pico para _PICO x volume/100 (v2.8.6: sem saturação; _PICO é o teto de qualquer volume); amostras em [-1, 1].
+    O volume entra AQUI (na síntese), então o WAV já nasce no volume pedido.
     """
-    norm = math.tanh(_SATURACAO)
-    pico_in = max(abs(x) for x in amostras) or 1.0
-    amostras = [math.tanh(_SATURACAO * x / pico_in) / norm for x in amostras]
     pico = max(abs(x) for x in amostras) or 1.0
-    alvo = _PICO if volume == VOLUME_MAX else _PICO * volume / 100.0
+    alvo = _PICO * volume / 100.0
     return [x * alvo / pico for x in amostras]
 
 
