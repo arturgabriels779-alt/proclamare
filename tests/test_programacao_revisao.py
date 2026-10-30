@@ -451,7 +451,7 @@ class TesteTetoProporcional(tp.BaseProg):
                 self.ini, self.tocando = 0.0, False
 
             def load(self, _c: str) -> None: ...
-            def play(self) -> None:
+            def play(self, *_a, **_k) -> None:
                 self.ini, self.tocando = t["v"], True
             def get_busy(self) -> bool:
                 return self.tocando and t["v"] - self.ini < 112.0

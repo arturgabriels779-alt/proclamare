@@ -48,6 +48,7 @@ INICIO_TOLERANCIA_S = 3.0      # folga extra antes de a 1ª posição andar (Blu
 PASSO_S = 0.05
 VOLUME_CHEIO = 100             # v2.8.5: volume da fala sem ganho (som/ não importa o server)
 VOLUME_SEGURO = 50             # v2.8.6: volume torto vale 50 (= server.VOZ_VOLUME_PADRAO; som/ não importa o server)
+FADE_ENTRADA_MS = 120          # v2.8.7: entrada suave (fade-in) de tudo que o motor toca; sem estalo/pico no começo
 VOLUME_TESTE = 0.5             # amplitude fixa do bipe de teste (nunca vem do cliente)
 CODIGOS_503 = ("ausente", "em_uso_exclusivo", "motor_contaminado")
 
@@ -385,7 +386,7 @@ class MotorAudio:
                             musica.set_volume(1.0)
                     except Exception:  # noqa: BLE001
                         pass
-                musica.play()
+                musica.play(fade_ms=FADE_ENTRADA_MS)   # v2.8.7: entrada suave
             except Exception as exc:  # noqa: BLE001
                 self.invalidar()
                 raise ErroReproducao("Não foi possível iniciar a reprodução.") from exc

@@ -1119,7 +1119,7 @@ class MusicaFalsa:
             raise RuntimeError("load falhou")
         self.arquivo = Path(caminho)
 
-    def play(self) -> None:
+    def play(self, *_a, **_k) -> None:
         self.inicio = self.c.relogio.t
         self.tocando = True
         self.c.eventos.append("play")

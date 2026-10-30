@@ -661,7 +661,7 @@ class MusicaFalsa:
             raise RuntimeError("load falhou")
         self.c.carregados.append(caminho)
 
-    def play(self) -> None:
+    def play(self, *_a, **_k) -> None:
         self.fim = time.monotonic() + self.c.duracao
         self.tocando = True
         self.c.eventos.append("audio-play")
@@ -1581,7 +1581,7 @@ class TesteTetos(BaseProg):
                 self.tocando = False
 
             def load(self, _c: str) -> None: ...
-            def play(self) -> None:
+            def play(self, *_a, **_k) -> None:
                 self.ini, self.tocando = t["v"], True
             def get_busy(self) -> bool:
                 return self.tocando and t["v"] - self.ini < 100.0       # o arquivo dura 100 s
@@ -1610,7 +1610,7 @@ class TesteTetos(BaseProg):
         class Musica:
             tocando = False
             def load(self, _c: str) -> None: ...
-            def play(self) -> None:
+            def play(self, *_a, **_k) -> None:
                 self.tocando = True
             def get_busy(self) -> bool:
                 return self.tocando

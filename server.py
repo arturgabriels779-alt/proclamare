@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.8.6 "Sinetas suaves"; v2.8.5 "Volume da voz"; v2.8.4 "Volume do aviso"; v2.8.3 "Atualizador: ignora ZIP antigo"; v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.8.7 "Segurança do som"; v2.8.6 "Sinetas suaves"; v2.8.5 "Volume da voz"; v2.8.4 "Volume do aviso"; v2.8.3 "Atualizador: ignora ZIP antigo"; v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -369,6 +369,38 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
                      delas). Os GETs mostram só "autor_nome" (horários, resumo/detalhe de lista, atalho, mensagem) e
                      só quando existe: sem ele = "antes das contas" (itens de antes da atualização continuam
                      funcionando; quem salvar de novo vira o autor). Carimbo torto no disco é descartado.
+
+Contrato v2.8.7 (Segurança do som; um amplificador da loja queimou)
+------------------------------------------------------------------
+  Nunca muda o volume/mudo/saída padrão do Windows nem Bluetooth (continua valendo). DECISÃO DO DONO: o 70 NÃO é teto
+  rígido, é a SEGUNDA trava (a 1ª é a leve trava em 50 do painel): quem pode mexer no volume pode passar de 70, com aviso
+  vermelho no painel sobre as luzes de clip. O servidor não corta nada; só registra e limita o que escapa do painel.
+  * VOLUME_TETO_SEGURO = 70 (som/aviso.py; MUSICA_TETO no server): o limiar da 2ª trava. `voz_volume`, `aviso_volume` e
+    `agendado_volume` aceitam 10..100, múltiplo de 10, SÓ O ADM (modo PIN: só o PC das caixas); voz_loja() devolve o gravado
+    (sem min). Gravar qualquer um acima de 70 deixa a auditoria `volume_alto` (onde=<campo>, valor=<número>; só números).
+  * `agendado_volume` (10..100, padrão 50, AGENDADO_VOLUME_PADRAO) em config.json["voz_loja"], no MESMO GET/POST /api/voz
+    (dentro de "voz_loja", como voz_volume/aviso_volume). Reaproveita a capacidade "voz_volume" (sem capacidade nova; 403
+    sem gravar nada do corpo). Vale SÓ para o tipo `audio` da Programação (arquivo do usuário, até 10 min), nos dois
+    caminhos (legado: `_reproduzir_legado(volume=)` = set_volume antes do play; saída fixada: `MotorAudio.tocar(volume=)`),
+    lido uma vez por áudio, de volta a 1.0 no `finally` (erro, "parar", teto). NÃO vale para listas, músicas nem Spotify.
+  * Música (aba Tocador e Spotify): quem já pode mexer (gerente/ADM) pode passar de 70. Aba Tocador: o comando `volume` e o
+    `volume` do POST /api/youtube/state (0..100) passam sem corte; o padrão do estado passou de 70 para 50; acima de 70 o
+    comando deixa a auditoria agregada `volume_alto_tocador`. Spotify: POST /api/spotify/volume acima de 70 vira a
+    "liberação" (`_spotify_liberado`, em memória: some ao reiniciar ou ao gravar <= 70 pelo painel) e deixa a auditoria
+    `volume_alto` (onde=spotify, valor). O LIMITE do Spotify é `max(70, liberação)` (`_limite_spotify`): a restauração depois
+    do anúncio, o volume pendente e a correção automática nunca passam dele.
+  * Correção automática (item 6): se alguém subir o volume pelo APP do Spotify, o servidor, ao LER um estado novo do player
+    (spotify_player_state, não do cache) e ver `is_playing` com volume acima do limite, faz UM PUT /me/player/volume para o
+    limite no aparelho ativo: no máximo 1 vez por minuto, nunca durante um anúncio (`_anuncio_lock`), falha só vira log,
+    auditoria `spotify_teto` (de, para; só números). GET /api/spotify/status traz `volume_corrigido_de` e
+    `volume_corrigido_para` (N / o limite aplicado; null passado ~1 min).
+  * Entrada suave: todo som que o Proclamare toca pelo pygame (aviso, sineta do fim, fala em mp3, áudio agendado) começa com
+    fade-in de FADE_ENTRADA_MS = 120 ms (`music.play(fade_ms=)`, no legado e no MotorAudio). A fala do pyttsx3 (voz do
+    Windows falando direto) não passa pelo pygame e NÃO tem fade.
+  * Limitador da fala: NÃO implementado. Medir o pico exigiria decodificar o mp3 inteiro em Python puro na thread de áudio
+    (o `audioop` saiu do Python 3.13, que o instalador suporta) ou uma dependência nova, e o pyttsx3 fala direto, sem
+    arquivo. O que o Proclamare NÃO controla: o volume do Windows (nunca mexe), o ganho da mesa e dos amplificadores e o
+    botão de volume do app do Spotify (que ele só corrige, como acima).
 
 Contrato v2.8 (Parte A: voz da loja)
 ------------------------------------
@@ -1216,9 +1248,9 @@ from werkzeug.http import parse_cookie
 import som as som_pkg
 from som import modelo as som_modelo
 from som.aviso import (AVISO_MAX_S, AVISO_PADRAO, AVISO_PIOR_CASO_S, AVISOS, AVISOS_COM_FIM,
-                       NOMES_AVISO, VOLUME_MAX, VOLUME_MIN, VOLUME_PADRAO, VOLUME_PASSO, volume_valido, wav_do_aviso,
+                       NOMES_AVISO, VOLUME_MAX, VOLUME_MIN, VOLUME_PADRAO, VOLUME_PASSO, VOLUME_TETO_SEGURO, volume_valido, wav_do_aviso,
                        wav_do_aviso_fim)
-from som.motor import frase_de_teste, gerar_bipe, texto_para_sapi
+from som.motor import FADE_ENTRADA_MS, frase_de_teste, gerar_bipe, texto_para_sapi
 
 # Acervo "Minhas músicas" (contrato v2.4). O módulo só usa stdlib na carga (mutagen entra
 # de forma tardia); nada toca o disco até a primeira consulta ou o main().
@@ -4390,7 +4422,7 @@ def _reproduzir_legado(caminho: Path, teto_s: float, parar: Any = None, volume: 
                     pygame.mixer.music.set_volume(volume / 100.0)
                 else:
                     _soltar_volume_preso(pygame.mixer.music)
-                pygame.mixer.music.play()
+                pygame.mixer.music.play(fade_ms=FADE_ENTRADA_MS)   # v2.8.7: entrada suave
                 break
             except Exception:  # noqa: BLE001  (pygame.error, dispositivo sumiu...)
                 if tentativa == 1:
@@ -4684,8 +4716,16 @@ AVISO_SOM_V_CHAVE, AVISO_SOM_V = "aviso_som_v", 2
 VOLUMES_MIGRADOS_TETO = {"aviso_volume": 30, "voz_volume": 50}   # teto de cada volume na migração única
 # v2.8 (A2): voz da LOJA, guardada no config.json["voz_loja"]. Campo ausente ou torto cai no padrão, campo a campo.
 # v2.8.4: `aviso_volume` = volume do aviso sonoro em % (10..100, múltiplo de 10; padrão 30 desde a v2.8.6, só o ADM muda).
+# v2.8.7: `agendado_volume` = volume dos ÁUDIOS AGENDADOS (tipo `audio` da Programação) em %, 10..100, padrão 50, só o ADM muda
+# (mesma capacidade `voz_volume`). VOLUME_TETO_SEGURO (70) NÃO é teto: é a segunda trava; o ADM pode passar (decisão do dono),
+# e quem grava um volume > 70 deixa a auditoria `volume_alto` (só números).
+AGENDADO_VOLUME_PADRAO = 50
 VOZ_LOJA_PADRAO: dict[str, Any] = {"motor": "auto", "voz": "francisca", "velocidade": 0, "aviso": AVISO_PADRAO,
-                                   "aviso_volume": VOLUME_PADRAO, "voz_volume": VOZ_VOLUME_PADRAO}
+                                   "aviso_volume": VOLUME_PADRAO, "voz_volume": VOZ_VOLUME_PADRAO,
+                                   "agendado_volume": AGENDADO_VOLUME_PADRAO}
+CAMPOS_VOLUME_LOJA = ("aviso_volume", "voz_volume", "agendado_volume")
+# capacidade exigida para gravar cada volume (v2.8.7: o do agendado reaproveita `voz_volume`; volumes são só do ADM)
+CAPACIDADE_DO_VOLUME = {"aviso_volume": "aviso_volume", "voz_volume": "voz_volume", "agendado_volume": "voz_volume"}
 VOZES_LOJA_NOMES = (("francisca", "Francisca (feminina)"), ("antonio", "Antônio (masculina)"))
 VOZ_LOJA_ESCRITA_MAX_POR_MIN = 20   # POST /api/voz, por IP
 
@@ -4700,7 +4740,7 @@ def _voz_loja_campo_ok(campo: str, valor: Any) -> bool:
         return isinstance(valor, int) and not isinstance(valor, bool) and -50 <= valor <= 50
     if campo == "aviso":
         return isinstance(valor, str) and valor in AVISOS
-    if campo in ("aviso_volume", "voz_volume"):   # mesma regra (10..100, múltiplo de 10)
+    if campo in CAMPOS_VOLUME_LOJA:   # mesma regra (10..100, múltiplo de 10); o teto de 70 vale na ESCRITA (voz_salvar) e na leitura (min)
         return volume_valido(valor)
     return False
 
@@ -4789,6 +4829,27 @@ SPOTIFY_SCOPES = (
 )
 SPOTIFY_TIMEOUT = (3.05, 8.0)  # (conexão, leitura) em segundos
 SPOTIFY_DUCK_VOLUME = 12  # volume (%) da música durante o anúncio
+# v2.8.7: teto rígido da MÚSICA (Spotify e aba Tocador), em %. Decisão do dono (um amplificador queimou); mude só aqui.
+# v2.8.7 (decisão do dono): o 70 é a SEGUNDA trava, não um teto rígido. Quem pode mexer na música (gerente/ADM) pode passar de 70
+# pelo painel; o valor gravado acima de 70 vira a "liberação" do Spotify (em memória) e o limite passa a max(70, liberação).
+MUSICA_TETO = 70
+_spotify_liberado_lock = threading.Lock()
+_spotify_liberado: int | None = None
+
+
+def _limite_spotify() -> int:
+    """Limite de volume do Spotify: MUSICA_TETO (70) ou a liberação gravada pelo painel (> 70), a maior."""
+    with _spotify_liberado_lock:
+        return max(MUSICA_TETO, _spotify_liberado or 0)
+
+
+def _definir_liberacao_spotify(valor: int) -> None:
+    """Gravou > 70 pelo painel = liberação com esse valor; gravou <= 70 = a liberação some. Audita só números."""
+    global _spotify_liberado
+    with _spotify_liberado_lock:
+        _spotify_liberado = valor if valor > MUSICA_TETO else None
+    if valor > MUSICA_TETO:
+        auditar("volume_alto", onde="spotify", valor=valor)
 PLAYER_CACHE_TTL_S = 2.0
 BACKOFF_MAX_S = 120.0  # teto para respeitar Retry-After (429)
 
@@ -5303,31 +5364,95 @@ def _cache_player_fresco() -> bool:
     return ts is not None and (time.monotonic() - ts) < PLAYER_CACHE_TTL_S
 
 
+# v2.8.7 (item 6): se o Spotify for LIDO tocando acima do limite (`_limite_spotify`: 70 ou a liberação do painel; alguém
+# subiu pelo app dele), o servidor baixa para o limite, no máximo 1 vez por minuto e nunca durante um anúncio; o status traz `volume_corrigido_de` por ~1 min.
+SPOTIFY_TETO_INTERVALO_S = 60.0
+SPOTIFY_TETO_AVISO_S = 60.0
+_teto_spotify_lock = threading.Lock()
+_teto_spotify: dict[str, Any] = {"proxima": 0.0, "de": None, "para": None, "ate": 0.0}   # instantes `time.monotonic()`
+
+
+def _volume_corrigido() -> tuple[int | None, int | None]:
+    """(de, para): o volume que o Spotify tinha antes da correção e o valor para o qual baixou (70 ou a liberação);
+    (None, None) passado ~1 min ou se não houve."""
+    with _teto_spotify_lock:
+        if _teto_spotify["de"] is not None and time.monotonic() < _teto_spotify["ate"]:
+            return _teto_spotify["de"], _teto_spotify["para"]
+        return None, None
+
+
+def _corrigir_teto_spotify(dados: Any) -> None:
+    """
+    Lido o estado do player: tocando com `volume_percent` > limite (`_limite_spotify`) = UM PUT para o limite no aparelho ativo
+    (1 vez por minuto; nunca durante um anúncio, onde o duck/restore já cuidam). Falha = só log; NUNCA levanta.
+    Roda FORA do `_player_lock`. Auditoria só com números (de/para).
+    """
+    try:
+        if not isinstance(dados, dict) or not dados.get("is_playing") or _anuncio_lock.locked():
+            return
+        atual = (dados.get("device") or {}).get("volume_percent")
+        limite = _limite_spotify()
+        if not isinstance(atual, int) or isinstance(atual, bool) or atual <= limite:
+            return
+        device_id = spotify_active_device_id()
+        if not device_id:
+            return
+        with _teto_spotify_lock:
+            agora = time.monotonic()
+            if agora < _teto_spotify["proxima"]:
+                return
+            _teto_spotify["proxima"] = agora + SPOTIFY_TETO_INTERVALO_S
+        status, reason = spotify_comando("PUT", "/me/player/volume",
+                                         params={"volume_percent": limite, "device_id": device_id})
+        if _sucesso(status):
+            with _teto_spotify_lock:
+                _teto_spotify["de"] = atual
+                _teto_spotify["para"] = limite
+                _teto_spotify["ate"] = time.monotonic() + SPOTIFY_TETO_AVISO_S
+            auditar("spotify_teto", de=atual, para=limite)
+        else:
+            log.warning("Não foi possível baixar o Spotify ao teto de volume (HTTP %s, %s).", status, reason or "-")
+    except Exception:  # noqa: BLE001  (a leitura do status nunca cai por causa disto)
+        log.warning("Falha ao aplicar o teto de volume do Spotify.")
+
+
 def spotify_player_state(force: bool = False) -> dict | None:
+    """
+    Leitura do player (veja `_ler_player_spotify`). v2.8.7: quando a leitura foi NOVA (não do cache) e o Spotify está
+    tocando acima do teto, `_corrigir_teto_spotify` baixa o volume (fora do lock; o resultado devolvido é o lido).
+    """
+    dados, nova = _ler_player_spotify(force)
+    if nova:
+        _corrigir_teto_spotify(dados)
+    return dados
+
+
+def _ler_player_spotify(force: bool = False) -> tuple[dict | None, bool]:
     """
     GET /me/player com cache de ~2 s compartilhado entre todos os clientes.
     Em 429 (ou backoff ativo) devolve o último valor em cache em vez de
     martelar a API. Devolve {} se não há player ativo e None se indisponível
     (nesse caso `_player_estado["erro"]` guarda (status, reason) da falha).
+    O segundo item é True só quando a leitura veio da API agora.
     """
     if not force and _cache_player_fresco():
-        return _player_estado["data"]
+        return _player_estado["data"], False
     with _player_lock:
         if not force and _cache_player_fresco():  # double-check
-            return _player_estado["data"]
+            return _player_estado["data"], False
         if _em_backoff():
-            return _player_estado["data"]
+            return _player_estado["data"], False
         geracao = _player_estado["gen"]
         data, status, reason = spotify_api("GET", "/me/player")
         if status == 429:
-            return _player_estado["data"]
+            return _player_estado["data"], False
         resultado: dict | None = data if status == 200 and data else ({} if status in (200, 204) else None)
         # Só grava se nenhum comando invalidou o cache durante a chamada.
         if geracao == _player_estado["gen"]:
             _player_estado["data"] = resultado
             _player_estado["ts"] = time.monotonic()
         _player_estado["erro"] = None if resultado is not None else (status, reason)
-        return resultado
+        return resultado, True
 
 
 _rebusca_lock = threading.Lock()
@@ -5706,6 +5831,7 @@ def spotify_status() -> Response:
     else:
         reason = _motivo_sem_token(cfg)                 # sem_config | reconectar | sem_token
     api_ok, api_codigo = spotify_api_ok() if reason in ("ok", "rede") else (None, None)
+    corrigido_de, corrigido_para = _volume_corrigido()
     return jsonify(
         {
             "connected": reason in ("ok", "rede"),
@@ -5715,6 +5841,8 @@ def spotify_status() -> Response:
             "api_codigo": api_codigo,
             "api_error": MSG_API_ERRO_STATUS.get(api_codigo) if api_codigo else None,
             "volume_pendente": _volume_pendente() is not None,
+            "volume_corrigido_de": corrigido_de,     # v2.8.7: N% antes de baixar ao limite (~1 min) ou null
+            "volume_corrigido_para": corrigido_para,  # ... e o valor para o qual baixou (70 ou a liberação) ou null
         }
     )
 
@@ -5944,6 +6072,8 @@ def spotify_volume() -> Response:
         "/me/player/volume",
         params={"volume_percent": value, "device_id": spotify_active_device_id()},
     )
+    if _sucesso(status):   # v2.8.7: > 70 = liberação (e auditoria volume_alto); <= 70 a desfaz
+        _definir_liberacao_spotify(value)
     return _resposta_comando(status, reason)
 
 
@@ -6027,7 +6157,7 @@ def _volume_pendente() -> int | None:
     volume, ts = p.get("volume"), p.get("ts")
     if (isinstance(volume, int) and not isinstance(volume, bool) and 0 <= volume <= 100
             and isinstance(ts, (int, float)) and 0 <= time.time() - ts <= SPOTIFY_PENDENTE_VALIDADE_S):
-        return volume
+        return min(volume, _limite_spotify())   # v2.8.7: nunca restaura acima do limite (70 ou a liberação)
     return None
 
 
@@ -6229,7 +6359,7 @@ def spotify_duck() -> int | None:
         params={"volume_percent": SPOTIFY_DUCK_VOLUME, "device_id": device_id},
     )
     if _sucesso(status):
-        return anterior
+        return min(anterior, _limite_spotify())   # v2.8.7: a restauração nunca devolve acima do limite
     log.warning("Não foi possível abaixar o volume do Spotify (HTTP %s, %s).", status, reason or "-")
     _aviso_musica("musica_nao_abaixada")
     return None
@@ -6245,6 +6375,7 @@ def spotify_restore(volume_anterior: int | None) -> bool:
     """
     if volume_anterior is None or not spotify_active_device_id():
         return True
+    volume_anterior = min(volume_anterior, _limite_spotify())   # v2.8.7: defesa final (chamador direto)
     gen = _geracao_restore()
     estado: dict[str, Any] = {"ok": None, "pendente": False}
     pronto = threading.Event()
@@ -6321,7 +6452,7 @@ _yt_comandos: deque[dict] = deque(maxlen=50)
 _yt_ultimo_id = 0
 _yt_estado_lock = threading.Lock()
 _yt_estado: dict[str, Any] = {
-    "now_playing": "", "is_playing": False, "volume": 70, "last_heartbeat": None,
+    "now_playing": "", "is_playing": False, "volume": 50, "last_heartbeat": None,
     "video_id": None, "list_id": None, "playlist_ids": [], "playlist_index": None,
     "source": "youtube", "music_id": None,   # v2.4: o que a aba tocadora está tocando
     "yt_pronto": True,   # v2.4: o player do YouTube da aba tocadora carregou (False = sem internet/API)
@@ -6866,6 +6997,8 @@ def youtube_command() -> Response:
         _pedir_titulo(_yt_url_canonica(params["video_id"], params["list_id"]))
     elif action == "volume":
         params["value"] = validar_int(bruto.get("value"), "value", 0, 100)
+        if params["value"] > MUSICA_TETO:   # v2.8.7: acima de 70 passa (gerente/ADM); fica na trilha, só números
+            auditar_agregado("volume_alto_tocador")   # agregado: o controle manda muitos valores seguidos
     elif action == "play_index":
         params["index"] = validar_int(bruto.get("index"), "index", 0, YOUTUBE_PLAYLIST_MAX - 1)
     elif action == "seek":
@@ -7132,10 +7265,10 @@ def voz_salvar() -> Response:
     if _excedeu_limite_ip_e_conta("voz:", VOZ_LOJA_ESCRITA_MAX_POR_MIN, 60.0):   # v2.8: IP e conta
         raise ErroApi("Muitas alterações seguidas. Aguarde um minuto.", 429)
     # v2.8.4: o teto vem ANTES do 403, então um 403 repetido gasta a cota (e não enche o auditoria.log)
-    for volume_campo in ("aviso_volume", "voz_volume"):   # v2.8.5: cada volume tem a sua capacidade (as duas só do ADM)
-        if volume_campo in corpo and not _perfil_pode(volume_campo):
+    for volume_campo in CAMPOS_VOLUME_LOJA:   # cada volume tem a sua capacidade (v2.8.7: agendado_volume usa `voz_volume`; todas só do ADM)
+        if volume_campo in corpo and not _perfil_pode(CAPACIDADE_DO_VOLUME[volume_campo]):
             auditar("voz_salvar", resultado="sem_permissao", conta=_conta_auditoria())
-            return _resp_sem_permissao(volume_campo)
+            return _resp_sem_permissao(CAPACIDADE_DO_VOLUME[volume_campo])
     with _config_lock:
         cfg = load_config()
         atual = voz_loja()
@@ -7144,9 +7277,12 @@ def voz_salvar() -> Response:
         atual[AVISO_SOM_V_CHAVE] = AVISO_SOM_V   # v2.8.6: o que o ADM grava agora nunca é rebaixado de novo
         cfg["voz_loja"] = atual
         _gravar_config_atomico(cfg)
+    for c in CAMPOS_VOLUME_LOJA:   # v2.8.7: volume acima de 70 (segunda trava) fica na trilha, só números
+        if c in corpo and corpo[c] > VOLUME_TETO_SEGURO:
+            auditar("volume_alto", onde=c, valor=corpo[c], conta=_conta_auditoria())
     # só quantos campos (+ o volume do aviso, um número sem texto de ninguém)
     auditar("voz_salvar", campos=len(corpo), conta=_conta_auditoria(),
-            **{c: corpo[c] for c in ("aviso_volume", "voz_volume") if c in corpo})
+            **{c: corpo[c] for c in CAMPOS_VOLUME_LOJA if c in corpo})
     return _resposta_voz_loja()
 
 
@@ -11096,12 +11232,21 @@ def _prog_teto_audio(m: "musicas.Musica") -> float:
     return min(PROG_AUDIO_TETO_S, float(m.duracao_s) * PROG_AUDIO_FOLGA_PROP + PROG_AUDIO_FOLGA_S)
 
 
-def _prog_tocar_no_motor(caminho: Path, duracao: float | None, sinal: Any) -> bool:
-    """(Thread de áudio) Toca o arquivo da biblioteca pelo motor da saída fixada; teto próprio de 10 min."""
+def _volume_agendado(volume: Any) -> int:
+    """
+    v2.8.7: o volume do áudio agendado que vai ao áudio. Defesa final além de `voz_loja()`: só um volume válido
+    (10..100, múltiplo de 10) vale; qualquer outra coisa = padrão (50).
+    """
+    return volume if volume_valido(volume) else AGENDADO_VOLUME_PADRAO
+
+
+def _prog_tocar_no_motor(caminho: Path, duracao: float | None, sinal: Any, volume: int = AGENDADO_VOLUME_PADRAO) -> bool:
+    """(Thread de áudio) Toca o arquivo da biblioteca pelo motor da saída fixada; teto próprio de 10 min.
+    v2.8.7: `volume` = `agendado_volume` da loja (ganho do mixer só nesta chamada, de volta a 1.0 no `finally` do motor)."""
     motor = SOM.motor
     prazo = motor.agora() + PROG_AUDIO_TETO_S + PROG_AUDIO_MARGEM_S - 5.0   # antes do teto do executor
     motor.tocar(caminho, prazo=prazo, duracao=duracao, parar=sinal, teto_s=PROG_AUDIO_TETO_S,
-                folga_proporcional=PROG_AUDIO_FOLGA_PROP - 1.0, margem_s=PROG_AUDIO_FOLGA_S)
+                folga_proporcional=PROG_AUDIO_FOLGA_PROP - 1.0, margem_s=PROG_AUDIO_FOLGA_S, volume=volume)
     return sinal.is_set()
 
 
@@ -11113,16 +11258,17 @@ def _prog_tocar_arquivo(m: "musicas.Musica", real: Path, ctx: programacao.Execuc
     """
     avisos: list[str] = []
     teto = _prog_teto_audio(m)
+    volume = _volume_agendado(voz_loja()["agendado_volume"])   # v2.8.7: lido uma vez por áudio
     espera_max = teto + PROG_AUDIO_MARGEM_S      # o laço de reprodução sempre sai antes do executor
     try:
         if som is not None:
             _abrir_saida_som(SOM.candidatas_anuncio(som))
         with _musica_pausada(avisos):
             if som is not None:
-                cortado = executar_no_audio(_prog_tocar_no_motor, real, m.duracao_s, ctx.sinal,
+                cortado = executar_no_audio(_prog_tocar_no_motor, real, m.duracao_s, ctx.sinal, volume,
                                             timeout=espera_max)
             else:
-                cortado = executar_no_audio(_reproduzir_legado, real, teto, ctx.sinal, timeout=espera_max)
+                cortado = executar_no_audio(_reproduzir_legado, real, teto, ctx.sinal, volume, timeout=espera_max)
     except ErroSom as e:
         raise programacao.NaoTocou(e.codigo or "sem_saida", e.mensagem, "erro") from None
     except som_pkg.SaidaIndisponivel as e:

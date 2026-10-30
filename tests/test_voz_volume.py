@@ -167,7 +167,7 @@ class _MusicaDeMentira:
     def load(self, caminho: str) -> None:
         self.e.append("load")
 
-    def play(self) -> None:
+    def play(self, *_a, **_k) -> None:
         self.e.append("play")
 
     def set_volume(self, v: float) -> None:
@@ -205,7 +205,7 @@ class TestLegadoOnlinePygame(unittest.TestCase):
     def test_volta_a_1_mesmo_se_a_reproducao_falhar(self) -> None:
         musica = _MusicaDeMentira(self.ev)
 
-        def falha() -> None:
+        def falha(*_a, **_k) -> None:
             raise RuntimeError("falhou")
 
         musica.play = falha  # type: ignore[method-assign]

@@ -183,6 +183,10 @@ class BaseSpotify(unittest.TestCase):
         server._login_resetar_global()
         self.zerar_modulo()
         self.f = SpotifyFalso()
+        # v2.8.7: o aparelho falso toca em 80%; os testes antigos supõem que o volume normal da loja é 80, então o limite do
+        # Spotify (70, ou a liberação do painel) começa liberado em 100 aqui. test_seguranca_som.py testa o 70 de verdade.
+        server._definir_liberacao_spotify(100)
+        self.addCleanup(server._definir_liberacao_spotify, 70)
         patcher = mock.patch.object(server, "_http", self.f)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -230,6 +234,7 @@ class BaseSpotify(unittest.TestCase):
         server._rebusca_ate = 0.0
         server._critico_ate = 0.0
         server._player_estado.update(data=None, ts=None, erro=None)
+        server._teto_spotify.update(proxima=0.0, de=None, ate=0.0)   # v2.8.7
         with server._api_resultado_lock:
             server._api_resultado.clear()
         server._busca_cache.clear()
