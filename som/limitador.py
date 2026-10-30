@@ -13,6 +13,10 @@ Duas etapas, num laço só com variáveis locais (~1 µs por amostra: 10 s de fa
 
 Medido com voz real do edge-tts: agudos acima de 5 kHz -6 dB e RMS só -0,4 dB (a fala continua com o mesmo volume).
 
+Limitações conhecidas: o laço roda na thread do pedido e disputa o GIL (~0,3 s por 10 s de fala); o ataque é instantâneo, sem
+lookahead (se houver chiado em fala forte, a evolução é uma rampa de ~1 ms com lookahead). Fala acima de `LIMITADOR_MAX_S` é
+TRUNCADA nesse tamanho (a fala toca no máximo ~85 s: nada audível se perde), nunca recusada (recusar deixaria passar sem limite).
+
 Este módulo é puro: sem pygame, sem Flask, sem o servidor. Quem decodifica o mp3 (o mixer) e quem decide quando
 limitar é o servidor; aqui só entram bytes PCM 16 bits ou um WAV PCM 16 bits e saem arquivos WAV.
 """
@@ -36,7 +40,18 @@ LIMITADOR_MAX_S = 100.0         # acima disto não processa (a fala tem teto de 
 _Q_BUTTERWORTH = 1.0 / math.sqrt(2.0)
 _ESCALA = 32767.0
 _TAXA_MAX = 192000
-_CANAIS_MAX = 2
+_CANAIS_MAX = 8                 # até 7.1; estéreo/mono são o normal
+
+
+class ErroLimitador(ValueError):
+    """ValueError com um `motivo` fixo (`formato` | `canais`) para a contagem de falhas do servidor (nunca texto livre)."""
+
+    def __init__(self, mensagem: str, motivo: str) -> None:
+        super().__init__(mensagem)
+        self.motivo = motivo
+
+
+_substituir = os.replace        # indireção: os testes trocam SÓ esta (nunca o os.replace do processo)
 
 
 def _coeficientes(taxa: int) -> tuple[float, float, float, float]:
@@ -104,7 +119,7 @@ def _gravar_wav(destino: Path, canais: int, taxa: int, amostras: array) -> Path:
             arq.setsampwidth(2)
             arq.setframerate(taxa)
             arq.writeframes(dados.tobytes())
-        os.replace(temporario, destino)
+        _substituir(temporario, destino)
     finally:
         with contextlib.suppress(OSError):
             temporario.unlink(missing_ok=True)   # no-op depois do replace
@@ -124,27 +139,28 @@ def _limitar_amostras(amostras: array, taxa: int, canais: int, destino: Path) ->
     return _gravar_wav(destino, canais, taxa, saida)
 
 
-def _validar_formato(taxa: int, canais: int, quadros: int) -> None:
-    """ValueError se a taxa/canais não valem ou se a fala passa de `LIMITADOR_MAX_S`."""
+def _validar_formato(taxa: int, canais: int) -> None:
+    """ValueError se a taxa ou os canais não valem. (Duração longa NÃO é erro: o chamador trunca em `_max_quadros`.)"""
     if not isinstance(taxa, int) or isinstance(taxa, bool) or not 1 <= taxa <= _TAXA_MAX:
-        raise ValueError("taxa inválida")
+        raise ErroLimitador("taxa inválida", "formato")
     if not isinstance(canais, int) or isinstance(canais, bool) or not 1 <= canais <= _CANAIS_MAX:
-        raise ValueError("canais inválidos")
-    if quadros / taxa > LIMITADOR_MAX_S:
-        raise ValueError("áudio longo demais para o limitador")
+        raise ErroLimitador("canais inválidos", "canais")
+
+
+def _max_quadros(taxa: int) -> int:
+    """Quadros (amostras por canal) que o limitador processa: `LIMITADOR_MAX_S` segundos."""
+    return int(LIMITADOR_MAX_S * taxa)
 
 
 def limitar_pcm16(bruto: bytes, taxa: int, canais: int, destino: Path) -> Path:
     """
     PCM 16 bits intercalado (o `Sound.get_raw()` do pygame com mixer -16) -> WAV limitado em `destino`.
     Se todos os canais forem iguais, processa uma vez e grava WAV MONO; senão processa cada canal. Bytes que sobram
-    de um quadro incompleto são descartados. Duração acima de `LIMITADOR_MAX_S` = ValueError.
+    de um quadro incompleto são descartados. Duração acima de `LIMITADOR_MAX_S` é TRUNCADA nesse tamanho.
     """
-    if not isinstance(canais, int) or isinstance(canais, bool) or not 1 <= canais <= _CANAIS_MAX:
-        raise ValueError("canais inválidos")
+    _validar_formato(taxa, canais)
     passo = 2 * canais
-    bruto = bytes(bruto[: len(bruto) - len(bruto) % passo])
-    _validar_formato(taxa, canais, len(bruto) // passo)
+    bruto = bytes(bruto[: min(len(bruto) - len(bruto) % passo, _max_quadros(taxa) * passo)])   # corta ANTES de copiar
     amostras = array("h")
     amostras.frombytes(bruto)   # o mixer entrega na ordem nativa da máquina
     return _limitar_amostras(amostras, taxa, canais, destino)
@@ -153,18 +169,18 @@ def limitar_pcm16(bruto: bytes, taxa: int, canais: int, destino: Path) -> Path:
 def limitar_wav(origem: Path, destino: Path) -> Path:
     """
     WAV PCM 16 bits (o do pyttsx3 `save_to_file`) -> WAV limitado em `destino` (pode ser o mesmo arquivo).
-    Qualquer outro formato (8 ou 24 bits, mais de 2 canais, ilegível) = ValueError.
+    Qualquer outro formato (8 ou 24 bits, mais de 8 canais, ilegível) = ValueError. Duração acima do máximo é truncada.
     """
     try:
         with wave.open(str(origem), "rb") as arq:
             canais, largura, taxa, quadros = (arq.getnchannels(), arq.getsampwidth(),
                                               arq.getframerate(), arq.getnframes())
             if largura != 2:
-                raise ValueError("só WAV de 16 bits")
-            _validar_formato(taxa, canais, quadros)   # antes de ler tudo para a memória
-            bruto = arq.readframes(quadros)
+                raise ErroLimitador("só WAV de 16 bits", "formato")
+            _validar_formato(taxa, canais)
+            bruto = arq.readframes(min(quadros, _max_quadros(taxa)))   # duração longa: trunca, não lê tudo
     except (wave.Error, EOFError) as exc:
-        raise ValueError("WAV ilegível") from exc
+        raise ErroLimitador("WAV ilegível", "formato") from exc
     amostras = array("h")
     amostras.frombytes(bruto[: len(bruto) - len(bruto) % (2 * canais)])
     if sys.byteorder == "big":
