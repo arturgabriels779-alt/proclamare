@@ -46,14 +46,29 @@ de fundo **abaixa sozinha** durante o anúncio e volta ao volume normal no final
 - **Listas e programação de horários:** crie listas de músicas no painel e marque a hora para tocar um áudio da pasta (ex.: a Ave Maria às 18:00), uma lista (ex.: "Manhã calma" de segunda a sexta às 8:00) ou um anúncio de texto — todo dia, em dias da semana ou numa data. No horário a música que estiver tocando (aba Tocador e Spotify) é **pausada e volta de onde parou**; áudio (MP3, OGG, WAV ou FLAC, até 10 min) e anúncio tocam mesmo com o navegador fechado; a lista precisa da aba "Tocador da loja" aberta. No painel: seção **Listas** em *Minhas músicas* (Nova lista, Tocar, Embaralhar, Editar, "＋ Lista" em cada música) e bloco **Programação** (aba **Horários** no celular), que substitui o Agendador do Windows. Passo a passo no `docs/GUIA.md` (seções 4b e 4c).
 - **Abaixa a música automaticamente** durante cada anúncio (Spotify, YouTube e Minhas músicas) e restaura o volume no final.
 
+### 🔊 Segurança do som (v2.8.4-v2.8.8)
+Recomendações preventivas, para dar mais segurança e vida útil às caixas e aos amplificadores:
+- **Limitador da voz (v2.8.8):** corta os agudos fortes (acima de 6 kHz) e segura os picos da fala em −6 dB, sem
+  baixar o volume da voz. Vale para todo anúncio (digitado, Mensagens prontas, Programação e "Testar caixas"). **Vem
+  ligado**; só o administrador liga e desliga, em *Voz da loja*. Se alguma fala não puder ser processada, o painel do
+  administrador avisa quantas foram no dia.
+- **Volumes separados (v2.8.4-v2.8.7):** volume do aviso sonoro, da voz e dos áudios agendados, só para o
+  administrador. Começam em 30% (aviso) e 50% (voz e áudios agendados); a música do Tocador começa em 50%.
+- **Sinetas suaves (v2.8.6):** sem distorção e com metade do volume máximo das versões antigas.
+- **Duas travas em todo volume (v2.8.7):** o controle para em 50% (aviso amarelo) e em 70% (aviso vermelho, para
+  conferir as luzinhas de *clip* da mesa e dos amplificadores); para passar, é preciso arrastar de novo.
+- **Spotify vigiado (v2.8.7):** se alguém subir o volume direto no aplicativo do Spotify acima do limite, o
+  Proclamare baixa sozinho, mesmo com o painel fechado.
+- **Entrada suave (v2.8.7):** os sons do Proclamare começam com uma subida curta, sem "estalo" (a voz do Windows só
+  com o limitador ligado).
+- O Proclamare **nunca mexe** no volume do Windows nem no ganho da mesa e dos amplificadores.
+- Volumes recomendados, **sons não recomendados** (bass boosted, tons de teste, sirenes, áudios estourados…) e como
+  regular o ganho: [docs/SEGURANCA-DO-SOM.md](docs/SEGURANCA-DO-SOM.md).
+
 ### 🖥️ Controle de qualquer lugar da rede
 - O som sempre sai no computador ligado ao amplificador; **qualquer PC, tablet ou celular** da rede local abre o painel no navegador, sem instalar nada.
 - **Outros aparelhos pedem um PIN** (6 a 8 números, definido no PC da loja em Configurações → Acesso pela rede, ou por `python server.py --definir-pin`). O PC da loja nunca pede PIN; sem PIN definido, o acesso pela rede fica desligado.
 - Indicadores ao vivo: servidor online, anúncio no ar, Spotify conectado, tocador do YouTube ativo.
-- **Segurança do som (v2.8.6-v2.8.8):** sinetas suaves, volumes que começam baixos, duas travas (50% e 70%) com aviso
-  das luzinhas de clip, volume próprio para os áudios agendados, Spotify vigiado e o **limitador da voz** (corta os
-  agudos fortes e segura os picos da fala; vem ligado, só o administrador desliga). Recomendações e **sons não
-  recomendados**: [docs/SEGURANCA-DO-SOM.md](docs/SEGURANCA-DO-SOM.md).
 - **Som da loja:** reconhece tudo o que está ligado ao PC e garante que o anúncio saiu no lugar certo — você testa a saída com um bipe, e o painel avisa se o padrão do Windows mudou, se a saída está mutada ou em 0%, ou se outro app a tomou (seção "Som da loja" do [guia](docs/GUIA.md)).
 
 ### 🎨 Interface
