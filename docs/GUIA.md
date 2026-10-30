@@ -598,7 +598,7 @@ contas criadas, só o computador das caixas muda os volumes.
   passar de 70%, com o mesmo aviso das luzinhas de clip. O funcionário continua sem acesso à música.
 - **Se alguém subir o volume pelo aplicativo do Spotify** acima do limite (70%, ou o valor que o gerente/administrador
   liberou pelo painel), o Proclamare baixa sozinho para o limite (no máximo uma vez por minuto e nunca no meio de um
-  anúncio) e o painel avisa por cerca de um minuto. A liberação some quando alguém grava 70% ou menos, ou ao reiniciar.
+  anúncio) e o painel avisa por cerca de um minuto. Isso vale **mesmo com o painel fechado**: o Proclamare confere o volume do Spotify a cada minuto, enquanto ele estiver conectado, e a correção vai sempre para o aparelho que está tocando. A liberação some quando alguém grava 70% ou menos, ou ao reiniciar.
   Depois de um anúncio, a música do Spotify volta no máximo ao limite.
 - **Entrada suave:** todo som tocado pelo Proclamare começa com uma subida rápida (120 ms), sem "tapa" no começo. A voz do
   Windows no modo offline fala direto e não tem essa subida.
