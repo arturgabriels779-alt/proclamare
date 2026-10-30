@@ -31,6 +31,16 @@ class TesteTravaDoVolume(unittest.TestCase):
         ):
             self.assertIn(texto, JS)
 
+    def test_valores_iniciais_aviso_30_voz_50(self) -> None:
+        """Item 13: o aviso começa em 30% e a voz em 50% (o servidor manda o valor real; isto é só o estado inicial)."""
+        m = re.search(r'<input[^>]* id="aviso-volume-range"[^>]*>', HTML)
+        self.assertIn('value="30"', m.group(0))
+        m = re.search(r'<input[^>]* id="voz-volume-range"[^>]*>', HTML)
+        self.assertIn('value="50"', m.group(0))
+        self.assertRegex(HTML, r'id="aviso-volume-value"[^>]*>30%<')
+        self.assertRegex(HTML, r'id="voz-volume-value"[^>]*>50%<')
+        self.assertIn("aviso_volume: 30, voz_volume: 50", JS)
+
     def test_limites_50_e_80(self) -> None:
         self.assertIn("n >= 80", JS)
         self.assertIn("n > 50", JS)

@@ -1137,7 +1137,7 @@
   const VOZ_OUVIR_TIMEOUT_MS = 45000; // > espera do servidor pela thread de áudio: até 2 x 3 s + 0,6 s + 15 s = 21,6 s
   const VOZ_CAMPOS = ["motor", "voz", "velocidade", "aviso"];
   // aviso: o padrão de fábrica do servidor (AVISO_PADRAO, "microfone"); vale só até a 1ª leitura de /api/voz
-  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "microfone", aviso_volume: 50, voz_volume: 50, definida: true, carregada: false };
+  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "microfone", aviso_volume: 30, voz_volume: 50, definida: true, carregada: false };
   // v2.8.4: volume da sineta (10..100, passo 10); só o ADM (capacidade aviso_volume; em modo PIN, só o PC das caixas)
   const avisoVolRange = $("aviso-volume-range");
   const avisoVolValue = $("aviso-volume-value");

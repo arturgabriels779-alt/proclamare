@@ -579,7 +579,7 @@ separados, de 10% a 100%, de 10 em 10:
 
 - **Volume da voz**: a fala dos anúncios. Vem em **50%**. Vale para os anúncios digitados, as mensagens
   prontas, os horários agendados com anúncio e o **Testar caixas**, que serve para conferir.
-- **Volume do aviso**: a sineta do início e a do fim. Vem em **50%**. Use o **Ouvir** para conferir. Desde a v2.8.6 as sinetas ficaram **mais suaves e mais baixas**, para proteger os amplificadores; quem já tinha um volume maior gravado volta para 50% uma vez, tanto o do aviso quanto o da **voz** (o administrador pode subir de novo). Acima de 50% o painel avisa e pede para arrastar de novo; acima de 80% o aviso fica vermelho. O que manda de verdade é o ganho da mesa e dos amplificadores: o Proclamare não mexe neles.
+- **Volume do aviso**: a sineta do início e a do fim. Vem em **30%**. Use o **Ouvir** para conferir. Desde a v2.8.6 as sinetas ficaram **mais suaves e mais baixas**, para proteger os amplificadores; quem já tinha um volume maior gravado volta uma vez para o padrão (o aviso para 30% e a **voz** para 50%; o administrador pode subir de novo). O aviso começa em 30% e a voz em 50%. Acima de 50% o painel avisa e pede para arrastar de novo; acima de 80% o aviso fica vermelho. O que manda de verdade é o ganho da mesa e dos amplificadores: o Proclamare não mexe neles.
 
 Um não mexe no outro, e nenhum dos dois muda as músicas, o YouTube, o Spotify nem o volume do Windows. Se o som estiver
 forçando as caixas, baixe aqui em vez de mexer no Windows ou na mesa de som. O gerente não vê esses controles. Sem
