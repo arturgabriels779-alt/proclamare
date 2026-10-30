@@ -406,12 +406,13 @@
             </div>
             <div class="field" id="limitador-field" data-perm="voz_volume">
               <label class="switch" for="limitador-switch">
-                <input type="checkbox" role="switch" class="switch__input" id="limitador-switch" aria-describedby="limitador-hint limitador-aviso" checked disabled>
+                <input type="checkbox" role="switch" class="switch__input" id="limitador-switch" aria-describedby="limitador-hint limitador-aviso limitador-falhas" checked disabled>
                 <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
                 <span class="switch__text">Limitador da voz</span>
               </label>
               <p class="hint" id="limitador-hint">Corta os agudos fortes e segura os picos da fala, para mais segurança das caixas. Recomendado: ligado.</p>
               <p class="vol-aviso vol-aviso--atencao" id="limitador-aviso" aria-live="polite" hidden></p>
+              <p class="vol-aviso vol-aviso--atencao" id="limitador-falhas" aria-live="polite" hidden></p>
             </div>
             <div class="field" id="aviso-volume-field" data-perm="aviso_volume">
               <label class="label label--split" for="aviso-volume-range">Volume do aviso <output class="label__value" id="aviso-volume-value" for="aviso-volume-range">30%</output></label>

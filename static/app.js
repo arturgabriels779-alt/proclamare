@@ -1172,6 +1172,8 @@
   // v2.8.8: limitador da voz (bool, padrão ligado); MESMA capacidade da voz (voz_volume)
   const limitadorSwitch = $("limitador-switch");
   const limitadorAviso = $("limitador-aviso");
+  const limitadorFalhas = $("limitador-falhas");
+  const limitadorInfo = { falhas: 0, motivo: null }; // do nível de cima da resposta (só quem tem voz_volume)
   let vozTimer = null; // debounce da gravação
   let vozPend = {}; // mudanças do usuário ainda não enviadas
   let vozEnviando = null; // corpo do POST em andamento (null = nenhum)
@@ -1288,6 +1290,10 @@
     updateAvisoVolLabel();
     updateVozVolLabel();
     updateAgendadoVolLabel();
+    // falhas do limitador: chaves ausentes (sem a capacidade) = sem aviso
+    const nf = data.limitador_falhas_hoje;
+    limitadorInfo.falhas = Number.isInteger(nf) && nf > 0 ? nf : 0;
+    limitadorInfo.motivo = typeof data.limitador_motivo === "string" ? data.limitador_motivo : null;
     updateLimitador();
     return true;
   }
@@ -1538,6 +1544,14 @@
     const desligado = !limitadorSwitch.checked;
     setText(limitadorAviso, desligado ? "Limitador desligado: a fala sai sem o corte de agudos." : "");
     limitadorAviso.hidden = !desligado;
+    const n = limitadorInfo.falhas;
+    const mostrar = !desligado && n > 0;
+    const motivos = { formato: "formato de som da saída não suportado", canais: "saída com canais demais", sintese: "a voz do Windows não gerou o arquivo", erro: "erro inesperado" };
+    const m = motivos[limitadorInfo.motivo];
+    setText(limitadorFalhas, mostrar
+      ? "O limitador não conseguiu processar " + n + (n === 1 ? " fala" : " falas") + " hoje; " + (n === 1 ? "ela saiu" : "elas saíram") + " sem o corte de agudos." + (m ? " Motivo: " + m + "." : "")
+      : "");
+    limitadorFalhas.hidden = !mostrar;
   }
   limitadorSwitch.addEventListener("change", () => {
     updateLimitador();
