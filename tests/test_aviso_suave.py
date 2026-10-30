@@ -81,6 +81,24 @@ class TestSintese(unittest.TestCase):
                     self.assertLessEqual(m, 2)                     # no máximo fundamental + 2º harmônico
                     self.assertTrue(m == 1 or peso <= 0.15)         # o 2º é fraco
         self.assertGreaterEqual(aviso_mod._FADE_S, 0.02)
+        # vibrafone: parciais = (razão da frequência, peso, decaimento); nenhuma razão acima de 2 (sem agudo de 4x)
+        self.assertLessEqual(max(r for r, _, _ in aviso_mod._VIBRAFONE_PARCIAIS), 2)
+
+    def test_sem_saturacao_provada_pelo_sinal(self) -> None:
+        """Onda não achatada: poucas amostras perto do pico e nenhuma sequência longa colada nele (um sinal saturado
+        por tanh/clipping ficaria com muitas amostras seguidas no teto)."""
+        for nome, fim, f in todos():
+            for vol in (100, 50):
+                x, _ = amostras(f(nome, volume=vol))
+                pico = max(abs(v) for v in x)
+                perto = [abs(v) >= 0.98 * pico for v in x]
+                seguidas = melhor = 0
+                for p in perto:
+                    seguidas = seguidas + 1 if p else 0
+                    melhor = max(melhor, seguidas)
+                with self.subTest(nome=nome, fim=fim, vol=vol):
+                    self.assertLess(sum(perto) / len(x), 0.005)    # medido: <= 0,13%
+                    self.assertLessEqual(melhor, 8)                # medido: <= 3 seguidas
 
     def test_pico_e_teto_rigido_em_todos_os_avisos_e_volumes(self) -> None:
         self.assertEqual(aviso_mod._PICO, 0.5)

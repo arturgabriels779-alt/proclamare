@@ -10,7 +10,7 @@ Os sons são ORIGINAIS, só no estilo das referências que a loja mandou (nada b
     com as mesmas notas na ordem inversa (mi-dó#-lá). "Ao contrário" = a ordem das notas, não o áudio de trás para
     frente (que soaria "sugado"). Timbre mais limpo/eletrônico que o do aeroporto;
   * "aviao": o "bing-bong" da cabine de avião: UM par suave, agudo -> grave (lá5 -> fá5), timbre redondo (quase só a
-    fundamental), decaimento longo; o 2º tom entra antes de o 1º sumir. Depois da fala toca o inverso (fá5 -> lá5);
+    fundamental), decaimento suave; o 2º tom entra antes de o 1º sumir. Depois da fala toca o inverso (fá5 -> lá5);
   * "aeroporto": a sineta clássica de aeroporto, três notas subindo (só antes da fala);
   * "supermercado": a sineta de microfone de supermercado, quatro notas um pouco mais lentas subindo antes
     (fá-lá-dó-fá) e descendo depois da fala;
@@ -50,7 +50,7 @@ NOMES_AVISO: dict[str, str] = {
 
 # v2.8.6 "Sinetas suaves": pico 0,5 da escala (-6 dBFS; era 0,9) é TETO RÍGIDO de qualquer volume; sem saturação (tanh)
 # e sem harmônicos agudos (no máximo fundamental + 2º fraco). RMS da janela mais alta de 400 ms a 100%
-# (int16; antigo -> novo): ver docs/ e tests/test_aviso_suave.py (todos >= 9 dB abaixo do antigo).
+# (int16; antigo -> novo): ver tests/test_aviso_suave.py (todos >= 9 dB abaixo do antigo).
 _PICO = 0.5
 _HARMONICOS = ((1, 1.0), (2, 0.15))                  # timbre suave (aeroporto/supermercado)
 _HARMONICOS_MICROFONE = ((1, 1.0), (2, 0.10))        # microfone: quase senoidal
@@ -73,8 +73,8 @@ _SEQUENCIAS: dict[str, tuple[tuple[float, ...], float, tuple, float]] = {
     "supermercado": ((_F4, _A4, _C5, _F5), _NOTA_SUPERMERCADO_S, _HARMONICOS, _DECAIMENTO),   # fá-lá-dó-fá
 }
 
-# "aviao": bing (lá5) -> bong (fá5), UMA vez; tons de 0,9 s com decaimento longo e suave, o 2º começa em 0,7 s
-# (sobrepõe o fim do 1º). Total 0,7 + 0,9 = 1,6 s. Timbre arredondado: fundamental + um pouco de 2º/3º harmônico.
+# "aviao": bing (lá5) -> bong (fá5), UMA vez; tons de 0,9 s com decaimento suave, o 2º começa em 0,7 s
+# (sobrepõe o fim do 1º). Total 0,7 + 0,9 = 1,6 s. Timbre arredondado: fundamental + um pouco de 2º harmônico.
 _A5, _F5_AVIAO = 880.00, 698.46
 _AVIAO_NOTAS = (_A5, _F5_AVIAO)
 _AVIAO_TOM_S = 0.9
@@ -106,7 +106,7 @@ def _nota(freq: float, duracao_s: float, taxa: int, decaimento: float, harmonico
 def _ding(freq: float, duracao_s: float, taxa: int, parciais) -> list[float]:
     """
     Um "ding" de vibrafone: cada parcial com o seu próprio decaimento exponencial (os agudos morrem antes), ataque e
-    saída lineares de _FADE_S (>= 10 ms, sem estalo); amostras em [-1, 1].
+    saída lineares de _FADE_S (25 ms, sem estalo); amostras em [-1, 1].
     """
     total = int(taxa * duracao_s)
     fade = max(1, int(taxa * _FADE_S))
