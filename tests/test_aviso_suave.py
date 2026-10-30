@@ -143,6 +143,8 @@ class TestMigracao(taa.BaseAviso):
         p = mock.patch.dict(server.VOZ_LOJA_PADRAO, {"aviso_volume": 50, "voz_volume": 50})
         p.start()
         self.addCleanup(p.stop)
+        server._migracao_proxima_tentativa = 0.0     # sem backoff herdado de um teste de gravação falha
+        self.addCleanup(setattr, server, "_migracao_proxima_tentativa", 0.0)
 
     def gravar_cru(self, voz_loja: dict) -> None:
         cfg = server.load_config()
@@ -222,7 +224,10 @@ class TestMigracao(taa.BaseAviso):
         with mock.patch.object(server, "_gravar_config_atomico", side_effect=OSError("disco")):
             self.assertEqual(server.voz_loja()["aviso_volume"], 50)
         self.assertEqual(server.load_config()["voz_loja"], {"aviso_volume": 100})   # nada gravado
-        self.assertEqual(server.voz_loja()["aviso_volume"], 50)                      # e a próxima leitura grava
+        self.assertEqual(server.voz_loja()["aviso_volume"], 50)                      # dentro do backoff (300 s): não regrava
+        self.assertNotIn("aviso_som_v", server.load_config()["voz_loja"])
+        server._migracao_proxima_tentativa = 0.0                                     # passada a janela, grava
+        self.assertEqual(server.voz_loja()["aviso_volume"], 50)
         self.assertEqual(server.load_config()["voz_loja"]["aviso_som_v"], 2)
 
     def test_config_ilegivel_nao_levanta(self) -> None:
@@ -275,3 +280,84 @@ class TestCacheAntigoNaoToca(taa.BaseAviso):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMigracaoRodada1(taa.BaseAviso):
+    """Rodada 1: backoff da gravação falha (Revisor A5 / RT BAIXO-1), auditoria da migração (RT BAIXO-4) e marcador
+    estrito (RT I-2)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        p = mock.patch.dict(server.VOZ_LOJA_PADRAO, {"aviso_volume": 50, "voz_volume": 50})
+        p.start()
+        self.addCleanup(p.stop)
+        server._migracao_proxima_tentativa = 0.0
+        self.addCleanup(setattr, server, "_migracao_proxima_tentativa", 0.0)
+
+    def gravar_cru(self, voz_loja: dict) -> None:
+        cfg = server.load_config()
+        cfg["voz_loja"] = voz_loja
+        server.save_config(cfg)
+
+    # --- backoff ---------------------------------------------------------------------------------------------
+    def test_gravacao_falhando_nao_tenta_de_novo_dentro_de_300_s_e_loga_uma_vez(self) -> None:
+        self.gravar_cru({"aviso_volume": 100, "voz_volume": 90})
+        relogio = [1000.0]
+        with mock.patch.object(server.time, "monotonic", lambda: relogio[0]), \
+                mock.patch.object(server, "_gravar_config_atomico", side_effect=OSError("disco")) as grav, \
+                self.assertLogs(server.log.name, level="WARNING") as cap:
+            for _ in range(5):
+                v = server.voz_loja()
+                self.assertEqual((v["aviso_volume"], v["voz_volume"]), (50, 50))   # a leitura segue rebaixada
+                relogio[0] += 10
+            self.assertEqual(grav.call_count, 1)                                    # 1 tentativa na janela
+            self.assertEqual(len([r for r in cap.records if "migra" in r.getMessage().lower()]), 1)
+            relogio[0] = 1000.0 + 301
+            server.voz_loja()
+            self.assertEqual(grav.call_count, 2)                                    # janela acabou: tenta de novo
+
+    def test_depois_do_backoff_a_gravacao_que_funciona_grava_o_marcador(self) -> None:
+        self.gravar_cru({"aviso_volume": 100})
+        relogio = [1000.0]
+        with mock.patch.object(server.time, "monotonic", lambda: relogio[0]):
+            with mock.patch.object(server, "_gravar_config_atomico", side_effect=OSError("disco")):
+                server.voz_loja()
+            self.assertNotIn("aviso_som_v", server.load_config()["voz_loja"])
+            relogio[0] += 301
+            server.voz_loja()
+        self.assertEqual(server.load_config()["voz_loja"]["aviso_som_v"], 2)
+
+    # --- auditoria ------------------------------------------------------------------------------------------
+    def test_uma_linha_de_auditoria_so_com_numeros_quando_rebaixou(self) -> None:
+        self.gravar_cru({"aviso": "aviao", "aviso_volume": 90, "voz_volume": 70})
+        with self.assertLogs(server.auditoria.name, level="INFO") as cap:
+            server.voz_loja()
+            server.voz_loja()                     # segunda leitura: nada de nova linha
+        linhas = [r.getMessage() for r in cap.records if "acao=voz_migrar" in r.getMessage()]
+        self.assertEqual(len(linhas), 1, linhas)
+        for parte in ("aviso_volume_de=90", "aviso_volume=50", "voz_volume_de=70", "voz_volume=50"):
+            self.assertIn(parte, linhas[0])
+        self.assertNotIn("aviao", linhas[0])
+
+    def test_sem_nada_rebaixado_nao_audita(self) -> None:
+        for cru in ({"aviso_volume": 30, "voz_volume": 50}, {"velocidade": 3}):
+            with self.subTest(cru=cru):
+                self.gravar_cru(cru)
+                with self.assertNoLogs(server.auditoria.name, level="INFO"):
+                    server.voz_loja()
+
+    def test_gravacao_falha_nao_audita(self) -> None:
+        self.gravar_cru({"aviso_volume": 100})
+        with mock.patch.object(server, "_gravar_config_atomico", side_effect=OSError("disco")), \
+                self.assertNoLogs(server.auditoria.name, level="INFO"):
+            server.voz_loja()
+
+    # --- marcador estrito -----------------------------------------------------------------------------------
+    def test_marcador_so_vale_se_for_o_int_2(self) -> None:
+        for falso in (2.0, "2", True, [2], None, 3, 1):
+            with self.subTest(marcador=falso):
+                self.gravar_cru({"aviso_volume": 100, "aviso_som_v": falso})
+                self.assertEqual(server.voz_loja()["aviso_volume"], 50)
+                self.assertEqual(server.load_config()["voz_loja"]["aviso_som_v"], 2)
+        self.gravar_cru({"aviso_volume": 100, "aviso_som_v": 2})
+        self.assertEqual(server.voz_loja()["aviso_volume"], 100)

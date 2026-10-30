@@ -4705,10 +4705,16 @@ def _voz_loja_campo_ok(campo: str, valor: Any) -> bool:
     return False
 
 
+def _marcador_ok(bruto: dict) -> bool:
+    """v2.8.6 (RT I-2): o marcador só vale se for exatamente o int 2 (2.0, "2" e True não valem: migra de novo)."""
+    v = bruto.get(AVISO_SOM_V_CHAVE)
+    return type(v) is int and v == AVISO_SOM_V
+
+
 def _rebaixar_volumes(bruto: dict) -> bool:
     """v2.8.6: aplica EM `bruto` a migração única (sem o marcador: volume válido gravado vira min(gravado, 50)) e
     põe o marcador. Devolve True se mudou algo."""
-    if bruto.get(AVISO_SOM_V_CHAVE) == AVISO_SOM_V:
+    if _marcador_ok(bruto):
         return False
     for campo in ("aviso_volume", "voz_volume"):
         if campo in bruto and volume_valido(bruto[campo]):
@@ -4717,17 +4723,37 @@ def _rebaixar_volumes(bruto: dict) -> bool:
     return True
 
 
+# v2.8.6 rodada 1: se a gravação da migração falha (disco cheio, somente leitura), não tenta de novo (nem loga de
+# novo) por 300 s; a leitura segue rebaixada em memória. Instante `time.monotonic()`; 0 = livre para tentar.
+MIGRACAO_BACKOFF_S = 300.0
+_migracao_proxima_tentativa = 0.0
+
+
 def _migrar_volumes_gravados() -> None:
-    """Grava a migração (uma vez, sob o _config_lock, só a chave voz_loja; nunca levanta)."""
+    """Grava a migração (uma vez, sob o _config_lock, só a chave voz_loja; nunca levanta). Falha = backoff de
+    MIGRACAO_BACKOFF_S (um log por janela). Sucesso com algum volume rebaixado = UMA linha de auditoria só com números."""
+    global _migracao_proxima_tentativa
+    if time.monotonic() < _migracao_proxima_tentativa:
+        return
     try:
         with _config_lock:
             cfg = load_config()   # cópia rasa: o dict de dentro é do cache, então copia antes de mexer
             bruto = dict(cfg.get("voz_loja")) if isinstance(cfg.get("voz_loja"), dict) else None
+            antes = dict(bruto) if bruto is not None else {}
             if bruto is not None and _rebaixar_volumes(bruto):
                 cfg["voz_loja"] = bruto
                 _gravar_config_atomico(cfg)
+                if any(bruto.get(c) != antes.get(c) for c in ("aviso_volume", "voz_volume")):
+                    try:   # só números: nunca texto, nome de aviso nem conta
+                        auditar("voz_migrar", aviso_volume_de=antes.get("aviso_volume"),
+                                aviso_volume=bruto.get("aviso_volume"), voz_volume_de=antes.get("voz_volume"),
+                                voz_volume=bruto.get("voz_volume"))
+                    except Exception:  # noqa: BLE001  (a auditoria nunca derruba a leitura)
+                        pass
     except Exception as exc:  # noqa: BLE001  (disco cheio etc.: a leitura já devolve o valor rebaixado)
-        log.warning("Não foi possível gravar a migração dos volumes (%s).", type(exc).__name__)
+        _migracao_proxima_tentativa = time.monotonic() + MIGRACAO_BACKOFF_S
+        log.warning("Não foi possível gravar a migração dos volumes (%s); nova tentativa em %d s.",
+                    type(exc).__name__, int(MIGRACAO_BACKOFF_S))
 
 
 def voz_loja() -> dict[str, Any]:
@@ -4739,7 +4765,7 @@ def voz_loja() -> dict[str, Any]:
         cfg = {}
     existe = "voz_loja" in cfg
     bruto = cfg.get("voz_loja") if isinstance(cfg.get("voz_loja"), dict) else {}
-    if bruto and bruto.get(AVISO_SOM_V_CHAVE) != AVISO_SOM_V:
+    if bruto and not _marcador_ok(bruto):
         bruto = dict(bruto)
         _rebaixar_volumes(bruto)       # a leitura já vem rebaixada, mesmo que a gravação falhe
         _migrar_volumes_gravados()
