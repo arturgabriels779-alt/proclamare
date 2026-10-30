@@ -359,6 +359,27 @@ class TestRotaModoPin(BaseContas):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertIs(server.voz_loja()["limitador"], False)
 
+    def test_remoto_com_pin_nao_ve_as_chaves_de_falhas(self) -> None:
+        """RT B-1: o remoto com PIN vale "gerente": nem o GET nem um POST que ele PODE fazer trazem o contador."""
+        with mock.patch.dict(server._limitador_falhas, {"dia": None, "n": 0, "motivo": None}):
+            server._registrar_falha_limitador("formato")
+            server.aplicar_pin(PIN)
+            token = cookie_da_resposta(self.login())
+            cab = {"Cookie": f"{server.COOKIE_SESSAO}={token}"}
+            for metodo, corpo in (("get", None), ("post", {"velocidade": 3})):
+                with self.subTest(metodo=metodo):
+                    extra = {} if corpo is None else {"json": corpo}
+                    r = getattr(self.r, metodo)("/api/voz", base_url=HOST_REMOTO, environ_base=ip_remoto(50),
+                                                headers=cab, **extra)
+                    self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+                    j = r.get_json()
+                    self.assertNotIn("limitador_falhas_hoje", j)
+                    self.assertNotIn("limitador_motivo", j)
+                    self.assertNotIn("limitador_falhas_hoje", j["voz_loja"])
+                    self.assertNotIn("limitador_motivo", j["voz_loja"])
+            # o PC das caixas (vale "adm" no modo PIN) continua vendo
+            self.assertEqual(self.l.get("/api/voz").get_json()["limitador_falhas_hoje"], 1)
+
 
 # ---------------------------------------------------------------------------------------------------------------
 # Fluxo dos anúncios
@@ -693,6 +714,17 @@ class TestChavesPorPerfil(tpm.BasePermissoes):
     def test_post_do_adm_devolve_as_chaves(self) -> None:
         r = self.chamar("POST", "/api/voz", self.rede["adm"], local=False, corpo={"limitador": True})
         self.assertIn("limitador_falhas_hoje", r.get_json())
+
+    def test_post_do_gerente_que_grava_nao_devolve_as_chaves(self) -> None:
+        """RT B-1: o gerente PODE gravar a velocidade (200), mas a resposta do POST nunca traz o contador."""
+        server._registrar_falha_limitador("canais")
+        r = self.chamar("POST", "/api/voz", self.rede["gerente"], local=False, corpo={"velocidade": 3})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        j = r.get_json()
+        self.assertNotIn("limitador_falhas_hoje", j)
+        self.assertNotIn("limitador_motivo", j)
+        self.assertNotIn("limitador_falhas_hoje", j["voz_loja"])
+        self.assertNotIn("limitador_motivo", j["voz_loja"])
 
 
 class TestSaidaFixada(BaseLimitador):
