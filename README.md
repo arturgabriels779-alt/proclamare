@@ -50,6 +50,9 @@ de fundo **abaixa sozinha** durante o anúncio e volta ao volume normal no final
 - O som sempre sai no computador ligado ao amplificador; **qualquer PC, tablet ou celular** da rede local abre o painel no navegador, sem instalar nada.
 - **Outros aparelhos pedem um PIN** (6 a 8 números, definido no PC da loja em Configurações → Acesso pela rede, ou por `python server.py --definir-pin`). O PC da loja nunca pede PIN; sem PIN definido, o acesso pela rede fica desligado.
 - Indicadores ao vivo: servidor online, anúncio no ar, Spotify conectado, tocador do YouTube ativo.
+- **Segurança do som (v2.8.6-v2.8.7):** sinetas suaves, volumes que começam baixos, duas travas (50% e 70%) com aviso
+  das luzinhas de clip, volume próprio para os áudios agendados e Spotify vigiado. Recomendações e **sons não
+  recomendados**: [docs/SEGURANCA-DO-SOM.md](docs/SEGURANCA-DO-SOM.md).
 - **Som da loja:** reconhece tudo o que está ligado ao PC e garante que o anúncio saiu no lugar certo — você testa a saída com um bipe, e o painel avisa se o padrão do Windows mudou, se a saída está mutada ou em 0%, ou se outro app a tomou (seção "Som da loja" do [guia](docs/GUIA.md)).
 
 ### 🎨 Interface

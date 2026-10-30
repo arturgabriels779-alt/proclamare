@@ -540,6 +540,10 @@ Detalhes que valem saber:
 
 ## 2c. Aviso sonoro e voz da loja
 
+> **Proteja as caixas e os amplificadores:** leia **[Segurança do som](SEGURANCA-DO-SOM.md)**: volumes recomendados,
+> sons que **não** são recomendados (vídeos "bass boosted", tons de teste, sirenes, áudios estourados...), como preparar
+> um áudio para a Programação e como o técnico deve regular a mesa e os amplificadores (luzinhas de clip).
+
 Antes de cada anúncio falado, o Proclamare toca um **aviso sonoro curto** (como o "ding-dong" do microfone da loja) para
 chamar a atenção. Ele toca depois de a música abaixar e **antes** da fala. Vale para o anúncio que você digita, para
 as **Mensagens prontas** e para os **anúncios da Programação**. **Não** toca no **Testar caixas**, nem nos áudios
