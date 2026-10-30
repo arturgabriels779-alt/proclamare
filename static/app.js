@@ -1153,7 +1153,7 @@
   const VOZ_OUVIR_TIMEOUT_MS = 45000; // > espera do servidor pela thread de áudio: até 2 x 3 s + 0,6 s + 15 s = 21,6 s
   const VOZ_CAMPOS = ["motor", "voz", "velocidade", "aviso"];
   // aviso: o padrão de fábrica do servidor (AVISO_PADRAO, "microfone"); vale só até a 1ª leitura de /api/voz
-  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "microfone", aviso_volume: 30, voz_volume: 50, agendado_volume: 50, definida: true, carregada: false };
+  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "microfone", aviso_volume: 30, voz_volume: 50, agendado_volume: 50, limitador: true, definida: true, carregada: false };
   // v2.8.4: volume da sineta (10..100, passo 10); só o ADM (capacidade aviso_volume; em modo PIN, só o PC das caixas)
   const avisoVolRange = $("aviso-volume-range");
   const avisoVolValue = $("aviso-volume-value");
@@ -1169,6 +1169,9 @@
   // v2.8.7: volume dos áudios agendados (10..100, passo 10, padrão 50; travas em 50 e 70); MESMA capacidade da voz (voz_volume)
   const agendadoVolRange = $("agendado-volume-range");
   const agendadoVolValue = $("agendado-volume-value");
+  // v2.8.8: limitador da voz (bool, padrão ligado); MESMA capacidade da voz (voz_volume)
+  const limitadorSwitch = $("limitador-switch");
+  const limitadorAviso = $("limitador-aviso");
   let vozTimer = null; // debounce da gravação
   let vozPend = {}; // mudanças do usuário ainda não enviadas
   let vozEnviando = null; // corpo do POST em andamento (null = nenhum)
@@ -1201,6 +1204,7 @@
     avisoVolRange.disabled = !on || !podeAvisoVolume();
     vozVolRange.disabled = !on || !podeVozVolume();
     agendadoVolRange.disabled = !on || !podeVozVolume();
+    limitadorSwitch.disabled = !on || !podeVozVolume();
     btnAvisoOuvir.disabled = !on || vozOuvindo || !avisoSelect.value || avisoSelect.value === "nenhum";
   }
   vozHabilitar();
@@ -1273,6 +1277,10 @@
       if (agendadoVolRange.value !== String(v.agendado_volume)) agendadoVolRange.value = String(v.agendado_volume);
       volTravaLiberarAte(agendadoVolTrava, v.agendado_volume);
     }
+    if (typeof v.limitador === "boolean" && !vozCampoPendente("limitador")) {
+      voz.limitador = v.limitador;
+      if (limitadorSwitch.checked !== v.limitador) limitadorSwitch.checked = v.limitador;
+    }
     voz.definida = v.definida !== false;
     voz.carregada = true;
     vozHabilitar();
@@ -1280,6 +1288,7 @@
     updateAvisoVolLabel();
     updateVozVolLabel();
     updateAgendadoVolLabel();
+    updateLimitador();
     return true;
   }
 
@@ -1403,6 +1412,11 @@
       volTravaLiberarAte(agendadoVolTrava, voz.agendado_volume);
       updateAgendadoVolLabel();
     }
+    // v2.8.8: o interruptor volta ao último valor CONFIRMADO (vale também no 403, que não relê)
+    if ("limitador" in corpo && !vozCampoPendente("limitador")) {
+      limitadorSwitch.checked = voz.limitador;
+      updateLimitador();
+    }
     return false;
   }
 
@@ -1518,6 +1532,19 @@
   });
   agendadoVolTrava.atualizar = updateAgendadoVolLabel;
   updateAgendadoVolLabel();
+
+  /** v2.8.8: aviso amarelo só com o limitador desligado (texto de segurança preventiva; o prefixo "Atenção:" vem do CSS). */
+  function updateLimitador() {
+    const desligado = !limitadorSwitch.checked;
+    setText(limitadorAviso, desligado ? "Limitador desligado: a fala sai sem o corte de agudos." : "");
+    limitadorAviso.hidden = !desligado;
+  }
+  limitadorSwitch.addEventListener("change", () => {
+    updateLimitador();
+    const b = limitadorSwitch.checked;
+    if (b !== voz.limitador || vozCampoPendente("limitador")) vozAgendar({ limitador: b });
+  });
+  updateLimitador();
 
   /** "Ouvir" toca no volume GRAVADO: se há mudança pendente ou em andamento, grava antes (espera até ~10 s). */
   async function vozSalvarPendente() {
