@@ -37,7 +37,7 @@ from tests.test_auth import HOST_REMOTO, PIN, ip_remoto  # noqa: E402
 from tests.test_login_contas import BaseContas, cookie_da_resposta  # noqa: E402
 
 # SHA-256 (16 primeiros hex) do WAV de início e do de fim a 100% na v2.8.6 (sinetas suaves). "" = sem fim.
-# Mudaram de propósito: o WAV antigo (pico 0,9 + tanh) era o que queimou o amplificador. Mudou a síntese? Refaça.
+# Mudaram de propósito: o WAV antigo (pico 0,9 + tanh) foi trocado pelo suave (segurança preventiva). Mudou a síntese? Refaça.
 HASH_100 = {
     "microfone": ("4ea66db7524272aa", "cc8c48a688f491f3"),
     "aviao": ("d7626c4a7353e61c", "276daae720a8274e"),

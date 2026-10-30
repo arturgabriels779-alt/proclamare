@@ -1,5 +1,5 @@
 """
-Testes da v2.8.7 "Segurança do som" (um amplificador da loja queimou; pedido do dono: o máximo de segurança).
+Testes da v2.8.7 "Segurança do som" (pedido do dono: o máximo de segurança para o equipamento).
 
   1. O 70 (`VOLUME_TETO_SEGURO`) é a SEGUNDA trava, não um teto: voz/aviso/agendado aceitam 10..100 (só ADM), sem min na
      leitura; acima de 70 só fica a auditoria `volume_alto` (só números).

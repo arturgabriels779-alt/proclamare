@@ -1,7 +1,7 @@
 # Segurança do som: recomendações para proteger caixas e amplificadores
 
 Este guia é para quem usa o Proclamare no dia a dia e para o técnico que cuida da mesa e dos amplificadores da loja.
-Ele existe porque um amplificador da loja queimou. O objetivo é evitar que isso se repita.
+São recomendações preventivas, para dar mais segurança e vida útil às caixas e aos amplificadores.
 
 ## Resumo em 30 segundos
 

@@ -370,7 +370,7 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
                      só quando existe: sem ele = "antes das contas" (itens de antes da atualização continuam
                      funcionando; quem salvar de novo vira o autor). Carimbo torto no disco é descartado.
 
-Contrato v2.8.7 (Segurança do som; um amplificador da loja queimou)
+Contrato v2.8.7 (Segurança do som; recomendações preventivas para o equipamento)
 ------------------------------------------------------------------
   Nunca muda o volume/mudo/saída padrão do Windows nem Bluetooth (continua valendo). DECISÃO DO DONO: o 70 NÃO é teto
   rígido, é a SEGUNDA trava (a 1ª é a leve trava em 50 do painel): quem pode mexer no volume pode passar de 70, com aviso
@@ -420,7 +420,7 @@ Contrato v2.8 (Parte A: voz da loja)
   GRAVADO), no anúncio digitado, nas Mensagens prontas e no tipo `anuncio` da Programação. A fala não muda. GET /api/voz devolve
   o campo; /api/auth/status -> permissoes traz "aviso_volume" para o ADM (e no modo PIN para o PC local). Auditoria: voz_salvar
   com campos=N e aviso_volume=<número>.
-  v2.8.6 "Sinetas suaves" (um amplificador da loja queimou; o Proclamare nunca mexe no volume do Windows nem no ganho da
+  v2.8.6 "Sinetas suaves" (prevenção, mais segurança para o equipamento; o Proclamare nunca mexe no volume do Windows nem no ganho da
   mesa/amplificador, só controla a energia do que toca): as sinetas perderam a saturação (tanh) e os harmônicos agudos
   (no máximo fundamental + 2º fraco, fade >= 25 ms), as mesmas notas/durações; o 100% novo tem pico 0,5 da escala
   (-6 dBFS, `som.aviso._PICO`, TETO RÍGIDO de qualquer volume) e RMS (janela mais alta de 400 ms) >= 9 dB abaixo do antigo.
@@ -4831,7 +4831,7 @@ SPOTIFY_SCOPES = (
 )
 SPOTIFY_TIMEOUT = (3.05, 8.0)  # (conexão, leitura) em segundos
 SPOTIFY_DUCK_VOLUME = 12  # volume (%) da música durante o anúncio
-# v2.8.7 (decisão do dono, um amplificador queimou): o 70 da MÚSICA (Spotify e aba Tocador) é a SEGUNDA trava, não um limite fixo. Quem pode mexer na música (gerente/ADM) pode passar de 70
+# v2.8.7 (decisão do dono, segurança preventiva do equipamento): o 70 da MÚSICA (Spotify e aba Tocador) é a SEGUNDA trava, não um limite fixo. Quem pode mexer na música (gerente/ADM) pode passar de 70
 # pelo painel; o valor gravado acima de 70 vira a "liberação" do Spotify (em memória) e o limite passa a max(70, liberação).
 MUSICA_TETO = 70
 _spotify_liberado_lock = threading.Lock()

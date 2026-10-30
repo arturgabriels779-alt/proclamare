@@ -3,7 +3,7 @@ Testes da v2.8.6 "Sinetas suaves": as sinetas perdem a saturação (tanh) e os h
 pico 0,5 da escala (-6 dBFS, teto rígido) e o volume padrão do aviso passa de 80 para 30% (a voz, 50%). Uma instalação que já
 gravou um `aviso_volume` é rebaixada UMA vez (min(gravado, 30); a voz, min(gravado, 50)) e marcada com `aviso_som_v` = 2.
 
-Motivo: um amplificador da loja queimou. O Proclamare nunca mexe no volume do Windows nem no ganho dos
+Motivo: segurança preventiva do equipamento. O Proclamare nunca mexe no volume do Windows nem no ganho dos
 amplificadores; o que ele controla é a energia das sinetas.
 
 NUNCA há som real: `_tocar_aviso` é registrador (tests/__init__.py) e a saída fixada usa o motor FALSO do BaseSom.

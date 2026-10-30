@@ -589,7 +589,7 @@ Um não mexe no outro, e nenhum dos dois muda as músicas, o YouTube, o Spotify 
 forçando as caixas, baixe aqui em vez de mexer no Windows ou na mesa de som. O gerente não vê esses controles. Sem
 contas criadas, só o computador das caixas muda os volumes.
 
-**Volumes e travas de segurança (v2.8.7).** Um amplificador da loja queimou, então o Proclamare ganhou travas. Elas
+**Volumes e travas de segurança (v2.8.7).** Para dar mais segurança ao equipamento, o Proclamare tem travas. Elas
 **avisam e pedem confirmação**; quem decide é você:
 
 - **Voz, aviso e áudios agendados (só o administrador).** Em **Voz da loja** há três controles de volume, de 10 a 100,

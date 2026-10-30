@@ -2,7 +2,7 @@
 Avisos sonoros (v2.8 A1): sinetas curtas tocadas ANTES de um anúncio, sintetizadas em memória.
 
 Só stdlib (wave/struct/math), determinístico e sem tocar nada: quem reproduz é o motor de áudio.
-Mono, 16 bits, pico <= 0,5 da escala (-6 dBFS; v2.8.6: um amplificador da loja queimou, então as sinetas ficaram
+Mono, 16 bits, pico <= 0,5 da escala (-6 dBFS; v2.8.6: por segurança preventiva do equipamento, as sinetas ficaram
 suaves e mais baixas), SEM saturação e com ataque/fade de pelo menos 20 ms (sem estalo).
 
 Os sons são ORIGINAIS, só no estilo das referências que a loja mandou (nada baixado nem copiado):
