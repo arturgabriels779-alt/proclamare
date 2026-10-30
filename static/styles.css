@@ -326,6 +326,24 @@ b { font-weight: 600; }
 .vol-aviso--atencao::before { content: "Atenção: "; font-weight: 700; }
 .vol-aviso--perigo { background: var(--live-soft); color: var(--live); }
 .vol-aviso--perigo::before { content: "Perigo: "; font-weight: 700; }
+
+/* v2.8.7: bloco "Volumes" (voz, aviso e áudios agendados). Ocupa a linha inteira da grade da Voz da loja. */
+.vol-bloco {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 12px 20px;
+  align-items: start;
+  padding: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm, 10px);
+}
+.vol-bloco > .label,
+.vol-bloco > .hint { grid-column: 1 / -1; margin: 0; }
+.vol-bloco > .label { margin-bottom: -6px; }
+/* a dica de cada controle: sem mexer na altura quando o aviso some */
+.volume + .hint { margin-top: 6px; }
+.volume ~ .vol-aviso { margin-top: 6px; }
 kbd {
   display: inline-block;
   padding: 1px 6px;

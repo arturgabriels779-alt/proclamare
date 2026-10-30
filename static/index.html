@@ -394,17 +394,28 @@
               <button type="button" class="btn btn--ghost btn--sm" id="btn-aviso-ouvir" disabled>Ouvir</button>
             </div>
           </div>
-          <div class="field" id="voz-volume-field" data-perm="voz_volume">
-            <label class="label label--split" for="voz-volume-range">Volume da voz <output class="label__value" id="voz-volume-value" for="voz-volume-range">50%</output></label>
-            <input type="range" id="voz-volume-range" class="range" min="10" max="100" step="10" value="50" aria-describedby="voz-volume-hint voz-volume-aviso" disabled>
-            <p class="hint" id="voz-volume-hint">Só a voz dos anúncios. Recomendado: até 50%. Use Testar caixas para conferir.</p>
-            <p class="vol-aviso" id="voz-volume-aviso" aria-live="polite" hidden></p>
-          </div>
-          <div class="field" id="aviso-volume-field" data-perm="aviso_volume">
-            <label class="label label--split" for="aviso-volume-range">Volume do aviso <output class="label__value" id="aviso-volume-value" for="aviso-volume-range">30%</output></label>
-            <input type="range" id="aviso-volume-range" class="range" min="10" max="100" step="10" value="30" aria-describedby="aviso-volume-hint aviso-volume-aviso" disabled>
-            <p class="hint" id="aviso-volume-hint">Só a sineta antes e depois do anúncio. A voz não muda. Recomendado: até 50%.</p>
-            <p class="vol-aviso" id="aviso-volume-aviso" aria-live="polite" hidden></p>
+          <!-- v2.8.7: Volumes (só o ADM). Máximo 70% em todos; recomendado até 50%. -->
+          <div class="vol-bloco" role="group" aria-labelledby="vol-bloco-titulo" data-perm="voz_volume aviso_volume">
+            <p class="label" id="vol-bloco-titulo">Volumes</p>
+            <p class="hint">Recomendado: até 50%. Acima de 70% só o administrador.</p>
+            <div class="field" id="voz-volume-field" data-perm="voz_volume">
+              <label class="label label--split" for="voz-volume-range">Volume da voz <output class="label__value" id="voz-volume-value" for="voz-volume-range">50%</output></label>
+              <input type="range" id="voz-volume-range" class="range" min="10" max="100" step="10" value="50" aria-describedby="voz-volume-hint voz-volume-aviso" disabled>
+              <p class="hint" id="voz-volume-hint">Só a voz dos anúncios. Use Testar caixas para conferir.</p>
+              <p class="vol-aviso" id="voz-volume-aviso" aria-live="polite" hidden></p>
+            </div>
+            <div class="field" id="aviso-volume-field" data-perm="aviso_volume">
+              <label class="label label--split" for="aviso-volume-range">Volume do aviso <output class="label__value" id="aviso-volume-value" for="aviso-volume-range">30%</output></label>
+              <input type="range" id="aviso-volume-range" class="range" min="10" max="100" step="10" value="30" aria-describedby="aviso-volume-hint aviso-volume-aviso" disabled>
+              <p class="hint" id="aviso-volume-hint">Só a sineta antes e depois do anúncio. A voz não muda.</p>
+              <p class="vol-aviso" id="aviso-volume-aviso" aria-live="polite" hidden></p>
+            </div>
+            <div class="field" id="agendado-volume-field" data-perm="voz_volume">
+              <label class="label label--split" for="agendado-volume-range">Volume dos áudios agendados <output class="label__value" id="agendado-volume-value" for="agendado-volume-range">50%</output></label>
+              <input type="range" id="agendado-volume-range" class="range" min="10" max="100" step="10" value="50" aria-describedby="agendado-volume-hint agendado-volume-aviso" disabled>
+              <p class="hint" id="agendado-volume-hint">Só os arquivos de áudio da Programação de horários. Listas, músicas e Spotify não mudam.</p>
+              <p class="vol-aviso" id="agendado-volume-aviso" aria-live="polite" hidden></p>
+            </div>
           </div>
         </div>
       </div>
@@ -600,9 +611,12 @@
 
               <div class="volume">
                 <svg class="icon" aria-hidden="true"><use href="#i-volume"/></svg>
-                <input type="range" id="spotify-volume" class="range" min="0" max="100" step="1" value="70" aria-label="Volume do Spotify">
-                <output class="volume__out" id="spotify-volume-out" for="spotify-volume">70%</output>
+                <input type="range" id="spotify-volume" class="range" min="0" max="100" step="1" value="50" aria-label="Volume do Spotify" aria-describedby="spotify-volume-aviso">
+                <output class="volume__out" id="spotify-volume-out" for="spotify-volume">50%</output>
               </div>
+              <p class="hint">Recomendado: até 50%. Acima de 70%, confira as luzinhas de clip.</p>
+              <p class="vol-aviso" id="spotify-volume-aviso" aria-live="polite" hidden></p>
+              <p class="vol-aviso vol-aviso--atencao" id="spotify-volume-corrigido" aria-live="polite" hidden></p>
             </div>
 
             <!-- Playlists salvas (v2.7): atalhos de playlist/álbum do Spotify; tocam com um toque e entram na Programação -->
@@ -727,9 +741,11 @@
 
               <div class="volume">
                 <svg class="icon" aria-hidden="true"><use href="#i-volume"/></svg>
-                <input type="range" id="youtube-volume" class="range" min="0" max="100" step="1" value="70" aria-label="Volume do tocador">
-                <output class="volume__out" id="youtube-volume-out" for="youtube-volume">70%</output>
+                <input type="range" id="youtube-volume" class="range" min="0" max="100" step="1" value="50" aria-label="Volume do tocador" aria-describedby="youtube-volume-aviso">
+                <output class="volume__out" id="youtube-volume-out" for="youtube-volume">50%</output>
               </div>
+              <p class="hint">Recomendado: até 50%. Acima de 70%, confira as luzinhas de clip.</p>
+              <p class="vol-aviso" id="youtube-volume-aviso" aria-live="polite" hidden></p>
             </div>
 
             <!-- Configuração (título e textos se adaptam à fonte: YouTube x Minhas músicas) -->

@@ -677,6 +677,13 @@
     return { set, get value() { return current; } };
   }
 
+  /**
+   * v2.8.7: duas travas de volume (voz, aviso, áudios agendados, música): em 50 (amarela) e em VOL_TETO = 70 (vermelha).
+   * Voz/aviso/agendado são só do ADM; a música é de quem já mexe nela (gerente e ADM). Todos têm max 100.
+   */
+  const VOL_TETO = 70;
+  const VOL_MAX = 100;
+
   /** Pinta o trecho preenchido do fader (variáveis CSS --from/--to). */
   function paintRange(input, bipolar) {
     const min = Number(input.min);
@@ -693,20 +700,26 @@
    * "change". `set()` (vindo do servidor) é ignorado enquanto o usuário
    * arrasta ou acabou de mexer — assim o slider nunca "pula" sob o dedo.
    */
-  function bindVolume(input, output, send) {
+  function bindVolume(input, output, send, avisoEl) {
     let dragging = false;
     let lastTouch = 0;
-    const read = () => clamp(Math.round(Number(input.value) || 0), 0, 100);
-    const paint = () => { paintRange(input, false); setText(output, read() + "%"); };
+    // v2.8.7: nunca passa do `max` do input (100). Com `avisoEl`, usa a MESMA trava da Voz da loja
+    // (volTravaNova/volTravaInput/volAvisoAtualizar, definidas mais abaixo; só rodam depois de tudo carregado).
+    const trava = avisoEl ? volTravaNova() : null;
+    const maxDe = () => Number(input.max) || VOL_MAX;
+    const read = () => clamp(Math.round(Number(input.value) || 0), 0, maxDe());
+    const aviso = () => { if (trava) volAvisoAtualizar(input, avisoEl, trava); };
+    const paint = () => { paintRange(input, false); setText(output, read() + "%"); aviso(); };
     const touch = () => { lastTouch = performance.now(); };
     const sendLive = throttle((v) => send(v, false), 600);
     const endDrag = () => { dragging = false; touch(); };
+    if (trava) { volTravaGestos(input, trava); trava.atualizar = aviso; }
 
     input.addEventListener("pointerdown", () => { dragging = true; touch(); });
     input.addEventListener("pointerup", endDrag);
     input.addEventListener("pointercancel", endDrag);
     input.addEventListener("blur", () => { dragging = false; });
-    input.addEventListener("input", () => { touch(); paint(); sendLive(read()); });
+    input.addEventListener("input", () => { touch(); if (trava) volTravaInput(input, trava); paint(); sendLive(read()); });
     input.addEventListener("change", () => { touch(); sendLive.cancel(); send(read(), true); });
     paint();
 
@@ -714,14 +727,16 @@
       get: read,
       set(value) {
         if (!isNum(value) || dragging || performance.now() - lastTouch < 2500) return;
-        const n = clamp(Math.round(value), 0, 100);
+        const n = clamp(Math.round(value), 0, maxDe());
+        if (trava) volTravaLiberarAte(trava, n); // já veio acima de uma trava: como está (com o aviso)
         if (read() === n && input.value === String(n)) return;
         input.value = String(n);
         paint();
       },
       /** Define sem respeitar o arraste (inicialização). */
       force(value) {
-        input.value = String(clamp(Math.round(value), 0, 100));
+        input.value = String(clamp(Math.round(value), 0, maxDe()));
+        if (trava) volTravaLiberarAte(trava, Number(input.value));
         paint();
       },
     };
@@ -806,6 +821,7 @@
   const spotifyPlayIcon = $("spotify-play-icon");
   const spotifyVolume = $("spotify-volume");
   const spotifyVolumeOut = $("spotify-volume-out");
+  const spotifyVolumeCorrigido = $("spotify-volume-corrigido");
   const spotifyNpCard = spotifyNowPlaying.closest(".np");
   // youtube
   const lampYoutubeBulb = $("lamp-youtube-bulb");
@@ -1137,12 +1153,12 @@
   const VOZ_OUVIR_TIMEOUT_MS = 45000; // > espera do servidor pela thread de áudio: até 2 x 3 s + 0,6 s + 15 s = 21,6 s
   const VOZ_CAMPOS = ["motor", "voz", "velocidade", "aviso"];
   // aviso: o padrão de fábrica do servidor (AVISO_PADRAO, "microfone"); vale só até a 1ª leitura de /api/voz
-  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "microfone", aviso_volume: 30, voz_volume: 50, definida: true, carregada: false };
+  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "microfone", aviso_volume: 30, voz_volume: 50, agendado_volume: 50, definida: true, carregada: false };
   // v2.8.4: volume da sineta (10..100, passo 10); só o ADM (capacidade aviso_volume; em modo PIN, só o PC das caixas)
   const avisoVolRange = $("aviso-volume-range");
   const avisoVolValue = $("aviso-volume-value");
   const avisoVolField = $("aviso-volume-field");
-  const volumeValido = (n) => Number.isInteger(n) && n >= 10 && n <= 100 && n % 10 === 0;
+  const volumeValido = (n) => Number.isInteger(n) && n >= 10 && n <= VOL_MAX && n % 10 === 0;
   /** Quem vê e usa o controle: com contas, só quem tem a capacidade; em modo PIN, só o PC das caixas. */
   const podeAvisoVolume = () => (auth.modoContas ? auth.permissoes.includes("aviso_volume") : auth.supported && auth.local);
   // v2.8.5: volume da VOZ dos anúncios (10..100, passo 10, padrão 50); só o ADM (capacidade voz_volume; modo PIN: só o PC das caixas)
@@ -1150,6 +1166,9 @@
   const vozVolValue = $("voz-volume-value");
   const vozVolField = $("voz-volume-field");
   const podeVozVolume = () => (auth.modoContas ? auth.permissoes.includes("voz_volume") : auth.supported && auth.local);
+  // v2.8.7: volume dos áudios agendados (10..70, passo 10, padrão 50); MESMA capacidade da voz (voz_volume)
+  const agendadoVolRange = $("agendado-volume-range");
+  const agendadoVolValue = $("agendado-volume-value");
   let vozTimer = null; // debounce da gravação
   let vozPend = {}; // mudanças do usuário ainda não enviadas
   let vozEnviando = null; // corpo do POST em andamento (null = nenhum)
@@ -1181,6 +1200,7 @@
     avisoSelect.disabled = !on;
     avisoVolRange.disabled = !on || !podeAvisoVolume();
     vozVolRange.disabled = !on || !podeVozVolume();
+    agendadoVolRange.disabled = !on || !podeVozVolume();
     btnAvisoOuvir.disabled = !on || vozOuvindo || !avisoSelect.value || avisoSelect.value === "nenhum";
   }
   vozHabilitar();
@@ -1241,12 +1261,17 @@
     if (volumeValido(v.aviso_volume) && !vozCampoPendente("aviso_volume")) {
       voz.aviso_volume = v.aviso_volume;
       if (avisoVolRange.value !== String(v.aviso_volume)) avisoVolRange.value = String(v.aviso_volume);
-      if (v.aviso_volume > 50) { avisoVolTrava.liberado = true; avisoVolTrava.msg = false; } // valor que já veio acima de 50: como está
+      volTravaLiberarAte(avisoVolTrava, v.aviso_volume);
     }
     if (volumeValido(v.voz_volume) && !vozCampoPendente("voz_volume")) {
       voz.voz_volume = v.voz_volume;
       if (vozVolRange.value !== String(v.voz_volume)) vozVolRange.value = String(v.voz_volume);
-      if (v.voz_volume > 50) { vozVolTrava.liberado = true; vozVolTrava.msg = false; } // valor que já veio acima de 50: como está
+      volTravaLiberarAte(vozVolTrava, v.voz_volume);
+    }
+    if (volumeValido(v.agendado_volume) && !vozCampoPendente("agendado_volume")) {
+      voz.agendado_volume = v.agendado_volume;
+      if (agendadoVolRange.value !== String(v.agendado_volume)) agendadoVolRange.value = String(v.agendado_volume);
+      volTravaLiberarAte(agendadoVolTrava, v.agendado_volume);
     }
     voz.definida = v.definida !== false;
     voz.carregada = true;
@@ -1254,6 +1279,7 @@
     updateSpeedLabel();
     updateAvisoVolLabel();
     updateVozVolLabel();
+    updateAgendadoVolLabel();
     return true;
   }
 
@@ -1364,13 +1390,18 @@
     // v2.8.4: o controle do volume volta ao último valor CONFIRMADO pelo servidor (vale também no 403, que não relê)
     if ("aviso_volume" in corpo && !vozCampoPendente("aviso_volume")) {
       avisoVolRange.value = String(voz.aviso_volume);
-      if (voz.aviso_volume > 50) { avisoVolTrava.liberado = true; avisoVolTrava.msg = false; }
+      volTravaLiberarAte(avisoVolTrava, voz.aviso_volume);
       updateAvisoVolLabel();
     }
     if ("voz_volume" in corpo && !vozCampoPendente("voz_volume")) {
       vozVolRange.value = String(voz.voz_volume);
-      if (voz.voz_volume > 50) { vozVolTrava.liberado = true; vozVolTrava.msg = false; }
+      volTravaLiberarAte(vozVolTrava, voz.voz_volume);
       updateVozVolLabel();
+    }
+    if ("agendado_volume" in corpo && !vozCampoPendente("agendado_volume")) {
+      agendadoVolRange.value = String(voz.agendado_volume);
+      volTravaLiberarAte(agendadoVolTrava, voz.agendado_volume);
+      updateAgendadoVolLabel();
     }
     return false;
   }
@@ -1383,20 +1414,34 @@
     vozAgendar({ aviso: avisoSelect.value });
   });
 
-  /** v2.8.6: aviso de recomendação/limite sob o controle (> 50 amarelo, >= 80 vermelho). Não bloqueia nada. */
+  /**
+   * v2.8.6/v2.8.7: aviso de recomendação/limite sob o controle e DUAS travas com a mesma lógica: em 50 (amarela) e em
+   * VOL_TETO = 70 (vermelha). Acima de 70 liberado, o aviso vermelho fica fixo. Todos os perfis que mexem no volume têm max 100.
+   */
   const VOL_TRAVA_MSG = "Acima de 50% pode forçar os amplificadores. Para subir mesmo assim, arraste de novo.";
+  const VOL_TRAVA_MSG_70 = "Volume alto: confira se as luzinhas vermelhas (clip/peak) dos amplificadores e da mesa não estão acendendo. Para subir mesmo assim, arraste de novo.";
+  const VOL_ACIMA_70_MSG = "Acima de 70%: fique de olho nas luzinhas vermelhas (clip) dos amplificadores e da mesa.";
+  const VOL_TRAVAS = [50, VOL_TETO]; // em ordem crescente
   const VOL_TRAVA_JANELA_MS = 10000;
-  /** Estado da "leve trava" de cada controle (só em memória: recarregar a página trava de novo). */
-  function volTravaNova() { return { liberado: false, avisoEm: 0, msg: false, gesto: true }; }
+  /** Estado da trava de cada controle (só em memória: recarregar a página trava de novo). `lib` = maior trava já liberada. */
+  function volTravaNova() { return { lib: 0, barreira: 0, avisoEm: 0, msg: 0, gesto: true }; }
+  /** Valor que já veio do servidor (ou confirmado) acima de uma trava: vale como liberado, com o aviso. */
+  function volTravaLiberarAte(trava, n) {
+    for (const t of VOL_TRAVAS) if (n > t && trava.lib < t) trava.lib = t;
+    trava.msg = 0;
+  }
   function volAvisoAtualizar(range, el, trava) {
     const n = Number(range.value);
     let msg = "";
     let nivel = "";
-    if (trava.msg) {
+    if (trava.msg === VOL_TETO) {
+      msg = VOL_TRAVA_MSG_70;
+      nivel = "perigo";
+    } else if (trava.msg) {
       msg = VOL_TRAVA_MSG;
       nivel = "atencao";
-    } else if (n >= 80) {
-      msg = "Volume alto: risco para os amplificadores. Confira a luz de \"clip\" e o ganho da mesa antes de usar.";
+    } else if (n > VOL_TETO) {
+      msg = VOL_ACIMA_70_MSG;
       nivel = "perigo";
     } else if (n > 50) {
       msg = "Acima do recomendado. Confira se os amplificadores não distorcem.";
@@ -1407,27 +1452,33 @@
     if (el.textContent !== msg) setText(el, msg); // só mexe no DOM se mudou (leitor de tela não repete)
     el.hidden = msg === "";
   }
-  /** Chamado no `input`: segura em 50 a 1ª tentativa de passar; a 2ª (novo gesto, até 10 s) libera. */
+  /** Chamado no `input`: segura na trava a 1ª tentativa de passar; a 2ª (novo gesto, até 10 s, MESMA trava) libera. */
   function volTravaInput(range, trava) {
     const n = Number(range.value);
-    if (n <= 50 || trava.liberado) { trava.msg = false; return; }
+    const alvo = VOL_TRAVAS.find((t) => n > t && trava.lib < t); // a 1ª trava ainda fechada que o valor ultrapassa
+    if (!alvo) { trava.msg = 0; return; }
     const agora = Date.now();
     const novoGesto = trava.gesto;
     trava.gesto = false; // o resto do mesmo arrasto não conta como "empurrar de novo"
-    if (novoGesto && trava.avisoEm && agora - trava.avisoEm <= VOL_TRAVA_JANELA_MS) {
-      trava.liberado = true;
-      trava.msg = false;
+    if (novoGesto && trava.barreira === alvo && trava.avisoEm && agora - trava.avisoEm <= VOL_TRAVA_JANELA_MS) {
+      trava.lib = alvo;
+      trava.msg = 0;
+      trava.avisoEm = 0;
+      trava.barreira = 0;
+      // 1 passo à frente pode ainda passar da trava seguinte (ex.: 50 -> 100): segura nela já neste mesmo input
+      if (VOL_TRAVAS.some((t) => n > t && trava.lib < t)) volTravaInput(range, trava);
       return;
     }
-    range.value = "50";
-    trava.msg = true;
-    if (novoGesto || !trava.avisoEm) trava.avisoEm = agora;
+    range.value = String(alvo);
+    trava.msg = alvo;
+    if (trava.barreira !== alvo) { trava.barreira = alvo; trava.avisoEm = agora; }
+    else if (novoGesto || !trava.avisoEm) trava.avisoEm = agora;
     // A4: a mensagem some sozinha quando a janela de 10 s acaba (só muda o DOM se ainda estiver à mostra)
     clearTimeout(trava.timer);
     trava.timer = setTimeout(() => {
       trava.timer = null;
       if (!trava.msg) return;
-      trava.msg = false;
+      trava.msg = 0;
       if (trava.atualizar) trava.atualizar();
     }, VOL_TRAVA_JANELA_MS);
   }
@@ -1474,6 +1525,23 @@
   });
   vozVolTrava.atualizar = updateVozVolLabel;
   updateVozVolLabel();
+
+  // v2.8.7: volume dos áudios agendados (mesma trava; grava em /api/voz como os outros dois)
+  const agendadoVolAviso = $("agendado-volume-aviso");
+  const agendadoVolTrava = volTravaNova();
+  volTravaGestos(agendadoVolRange, agendadoVolTrava);
+  function updateAgendadoVolLabel() {
+    setText(agendadoVolValue, agendadoVolRange.value + "%");
+    paintRange(agendadoVolRange, false);
+    volAvisoAtualizar(agendadoVolRange, agendadoVolAviso, agendadoVolTrava);
+  }
+  agendadoVolRange.addEventListener("input", () => { volTravaInput(agendadoVolRange, agendadoVolTrava); updateAgendadoVolLabel(); });
+  agendadoVolRange.addEventListener("change", () => {
+    const n = Number(agendadoVolRange.value);
+    if (volumeValido(n) && (n !== voz.agendado_volume || vozCampoPendente("agendado_volume"))) vozAgendar({ agendado_volume: n });
+  });
+  agendadoVolTrava.atualizar = updateAgendadoVolLabel;
+  updateAgendadoVolLabel();
 
   /** "Ouvir" toca no volume GRAVADO: se há mudança pendente ou em andamento, grava antes (espera até ~10 s). */
   async function vozSalvarPendente() {
@@ -2820,6 +2888,14 @@
     const codigo = SP_CODIGOS.includes(data.api_codigo) ? data.api_codigo : "indisponivel";
     sp.problem = connected && data.api_ok === false ? { codigo, error: str(data.api_error, 200), src: "status" } : null;
     sp.volPend = connected && data.volume_pendente === true;
+    // v2.8.7: o servidor baixou o Spotify para o teto (~1 min no status); só mexe no DOM se o texto mudou
+    const de = data.volume_corrigido_de;
+    const para = Number.isInteger(data.volume_corrigido_para) && data.volume_corrigido_para >= 0 && data.volume_corrigido_para < de
+      ? data.volume_corrigido_para : VOL_TETO; // sem o campo (ou inválido): 70
+    const msgTeto = connected && Number.isInteger(de) && de > VOL_TETO && de <= 100
+      ? "O Spotify estava em " + de + "% e foi baixado para " + para + "% para proteger as caixas." : "";
+    if (spotifyVolumeCorrigido.textContent !== msgTeto) setText(spotifyVolumeCorrigido, msgTeto);
+    spotifyVolumeCorrigido.hidden = msgTeto === "";
     setSpotifyConnected(connected, data.device_id);
   }
 
@@ -3076,7 +3152,7 @@
 
   const spotifyVol = bindVolume(spotifyVolume, spotifyVolumeOut, (value, final) => {
     spotifyCommand("/api/spotify/volume", { value }, { quiet: !final });
-  });
+  }, $("spotify-volume-aviso"));
 
   /** Envia um comando ao Spotify. Devolve true em sucesso; avisa o usuário em erro. */
   async function spotifyCommand(path, body, opts) {
@@ -3453,7 +3529,7 @@
   let ytPendingLoad = null;
   let ytDucking = false;
   let ytDuckTimer = 0;
-  let ytUserVolume = clamp(Number(youtubeVolume.value) || 70, 0, 100);
+  let ytUserVolume = clamp(Number(youtubeVolume.value) || 50, 0, VOL_MAX);
   let ytAlive = null; // última leitura de player_alive
   let ytLoopCtrl = null;
   let ytLastPush = 0;
@@ -3550,6 +3626,7 @@
 
   /** Volume do YouTube E do <audio> (o "abaixar" durante o anúncio vale para os dois). */
   function applyVolumes() {
+    // v2.8.7: aplica o valor que o servidor entregou (0..100); quem limita a 70 quem não é ADM é o servidor
     const v = ytDucking ? Math.min(12, ytUserVolume) : ytUserVolume;
     if (ytPlayer && ytReady) {
       try { ytPlayer.setVolume(v); } catch (e) { /* player em troca */ }
@@ -4312,7 +4389,7 @@
     } else {
       youtubeEnqueue("volume", { value }, true);
     }
-  });
+  }, $("youtube-volume-aviso"));
 
   // ---- Modo tocador: YT.Player ----
   window.onYouTubeIframeAPIReady = function () {
@@ -4630,7 +4707,7 @@
       return;
     }
     if (cmd.action === "volume" && isNum(params.value)) {
-      ytUserVolume = clamp(Math.round(params.value), 0, 100);
+      ytUserVolume = clamp(Math.round(params.value), 0, VOL_MAX);
       youtubeVol.set(ytUserVolume);
       if (!ytDucking) applyVolumes();
       return;
