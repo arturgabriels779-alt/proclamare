@@ -391,9 +391,9 @@ Contrato v2.8 (Parte A: voz da loja)
   mesa/amplificador, só controla a energia do que toca): as sinetas perderam a saturação (tanh) e os harmônicos agudos
   (no máximo fundamental + 2º fraco, fade >= 25 ms), as mesmas notas/durações; o 100% novo tem pico 0,5 da escala
   (-6 dBFS, `som.aviso._PICO`, TETO RÍGIDO de qualquer volume) e RMS (janela mais alta de 400 ms) >= 9 dB abaixo do antigo.
-  PADRÃO dos DOIS volumes = 50 (`aviso_volume` e `voz_volume`; a fala a 50 aplica ganho 0,5; 100 gravado segue sem
+  PADRÕES: `aviso_volume` = 30 (a sineta a 30% fica no nível da voz a 50%) e `voz_volume` = 50 (a fala a 50 aplica ganho 0,5; 100 gravado segue sem
   processamento). Migração ÚNICA (marcador `config.json["voz_loja"]["aviso_som_v"]` = 2, um só para as duas chaves): na
-  leitura (`voz_loja()`), sem o marcador, `aviso_volume`/`voz_volume` válidos já gravados viram min(gravado, 50) e o marcador é
+  leitura (`voz_loja()`), sem o marcador, `aviso_volume` válido já gravado vira min(gravado, 30) e `voz_volume` min(gravado, 50), e o marcador é
   gravado sob o _config_lock (só a chave `voz_loja`; sem `voz_loja` nada é gravado; falha de gravação = a leitura já vem
   rebaixada); todo POST /api/voz grava o marcador (o ADM sobe até 100 depois). O marcador nunca aparece no GET /api/voz e o
   POST o recusa (400, chave fora da lista). Rodada 1: marcador aceito só como int 2 (2.0/"2"/True migram); gravação da migração falha = backoff de 300 s (um log por janela, leitura rebaixada); a migração audita UMA linha `voz_migrar` só com números (volumes de/para). Os WAV em audios_temp mudam de conteúdo: a conferência por conteúdo os regrava.
@@ -4679,11 +4679,11 @@ VELOCIDADE_OFFLINE_WPM = 165
 # v2.8.5: `voz_volume` = volume da FALA em % (10..100, múltiplo de 10, só o ADM muda). v2.8.6: padrão 50 (segurança).
 VOZ_VOLUME_PADRAO = 50
 # v2.8.6: marcador ÚNICO da migração dos dois volumes (config.json["voz_loja"]["aviso_som_v"] = 2): sem ele, o
-# aviso_volume/voz_volume já gravados viram min(gravado, 50) uma vez. Nunca vai ao GET e o POST o recusa (400).
+# aviso_volume já gravado vira min(gravado, 30) e voz_volume min(gravado, 50), uma vez. Nunca vai ao GET e o POST o recusa (400).
 AVISO_SOM_V_CHAVE, AVISO_SOM_V = "aviso_som_v", 2
-VOLUMES_MIGRADOS_TETO = 50
+VOLUMES_MIGRADOS_TETO = {"aviso_volume": 30, "voz_volume": 50}   # teto de cada volume na migração única
 # v2.8 (A2): voz da LOJA, guardada no config.json["voz_loja"]. Campo ausente ou torto cai no padrão, campo a campo.
-# v2.8.4: `aviso_volume` = volume do aviso sonoro em % (10..100, múltiplo de 10; padrão 50 desde a v2.8.6, só o ADM muda).
+# v2.8.4: `aviso_volume` = volume do aviso sonoro em % (10..100, múltiplo de 10; padrão 30 desde a v2.8.6, só o ADM muda).
 VOZ_LOJA_PADRAO: dict[str, Any] = {"motor": "auto", "voz": "francisca", "velocidade": 0, "aviso": AVISO_PADRAO,
                                    "aviso_volume": VOLUME_PADRAO, "voz_volume": VOZ_VOLUME_PADRAO}
 VOZES_LOJA_NOMES = (("francisca", "Francisca (feminina)"), ("antonio", "Antônio (masculina)"))
@@ -4712,13 +4712,13 @@ def _marcador_ok(bruto: dict) -> bool:
 
 
 def _rebaixar_volumes(bruto: dict) -> bool:
-    """v2.8.6: aplica EM `bruto` a migração única (sem o marcador: volume válido gravado vira min(gravado, 50)) e
+    """v2.8.6: aplica EM `bruto` a migração única (sem o marcador: volume válido gravado vira min(gravado, teto): aviso 30, voz 50) e
     põe o marcador. Devolve True se mudou algo."""
     if _marcador_ok(bruto):
         return False
     for campo in ("aviso_volume", "voz_volume"):
         if campo in bruto and volume_valido(bruto[campo]):
-            bruto[campo] = min(bruto[campo], VOLUMES_MIGRADOS_TETO)
+            bruto[campo] = min(bruto[campo], VOLUMES_MIGRADOS_TETO[campo])
     bruto[AVISO_SOM_V_CHAVE] = AVISO_SOM_V
     return True
 

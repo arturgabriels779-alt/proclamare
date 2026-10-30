@@ -1,7 +1,7 @@
 """
 Testes da v2.8.6 "Sinetas suaves": as sinetas perdem a saturação (tanh) e os harmônicos agudos, o 100% novo tem
-pico 0,5 da escala (-6 dBFS, teto rígido) e o volume padrão do aviso passa de 80 para 50%. Uma instalação que já
-gravou um `aviso_volume` é rebaixada UMA vez (min(gravado, 50)) e marcada com `aviso_som_v` = 2.
+pico 0,5 da escala (-6 dBFS, teto rígido) e o volume padrão do aviso passa de 80 para 30% (a voz, 50%). Uma instalação que já
+gravou um `aviso_volume` é rebaixada UMA vez (min(gravado, 30); a voz, min(gravado, 50)) e marcada com `aviso_som_v` = 2.
 
 Motivo: um amplificador da loja queimou. O Proclamare nunca mexe no volume do Windows nem no ganho dos
 amplificadores; o que ele controla é a energia das sinetas.
@@ -141,9 +141,9 @@ class TestSintese(unittest.TestCase):
         self.assertNotEqual(ini[::-1], fim)
         self.assertNotEqual(ini, fim)
 
-    def test_padrao_50(self) -> None:
-        self.assertEqual(aviso_mod.VOLUME_PADRAO, 50)
-        self.assertEqual(server.VOZ_LOJA_PADRAO["aviso_volume"], 50)
+    def test_padroes_aviso_30_voz_50(self) -> None:
+        self.assertEqual(aviso_mod.VOLUME_PADRAO, 30)
+        self.assertEqual(server.VOZ_LOJA_PADRAO["aviso_volume"], 30)
         self.assertEqual(server.VOZ_VOLUME_PADRAO, 50)       # adendo do dono: a voz também começa em 50%
         self.assertEqual(server.VOZ_LOJA_PADRAO["voz_volume"], 50)
 
@@ -153,12 +153,12 @@ class TestSintese(unittest.TestCase):
 
 
 class TestMigracao(taa.BaseAviso):
-    """`aviso_volume` já gravado vira min(gravado, 50) UMA vez; depois o ADM sobe de novo."""
+    """`aviso_volume` já gravado vira min(gravado, 30) UMA vez; depois o ADM sobe de novo."""
 
     def setUp(self) -> None:
         super().setUp()
         # estes testes olham o padrão e a migração de verdade (a BaseAviso fixa o padrão em 100)
-        p = mock.patch.dict(server.VOZ_LOJA_PADRAO, {"aviso_volume": 50, "voz_volume": 50})
+        p = mock.patch.dict(server.VOZ_LOJA_PADRAO, {"aviso_volume": 30, "voz_volume": 50})
         p.start()
         self.addCleanup(p.stop)
         server._migracao_proxima_tentativa = 0.0     # sem backoff herdado de um teste de gravação falha
@@ -170,7 +170,7 @@ class TestMigracao(taa.BaseAviso):
         server.save_config(cfg)
 
     def test_valor_alto_gravado_e_rebaixado_e_marcado_uma_vez(self) -> None:
-        for antigo, esperado in ((100, 50), (80, 50), (60, 50), (50, 50), (30, 30), (10, 10)):
+        for antigo, esperado in ((100, 30), (80, 30), (60, 30), (50, 30), (30, 30), (10, 10)):
             with self.subTest(antigo=antigo):
                 self.gravar_cru({"aviso": "aviao", "aviso_volume": antigo})
                 self.assertEqual(server.voz_loja()["aviso_volume"], esperado)
@@ -184,7 +184,7 @@ class TestMigracao(taa.BaseAviso):
             with self.subTest(antigo=antigo):
                 self.gravar_cru({"voz_volume": antigo, "aviso_volume": 100})
                 v = server.voz_loja()
-                self.assertEqual((v["voz_volume"], v["aviso_volume"]), (esperado, 50))
+                self.assertEqual((v["voz_volume"], v["aviso_volume"]), (esperado, 30))
                 gravado = server.load_config()["voz_loja"]
                 self.assertEqual((gravado["voz_volume"], gravado["aviso_som_v"]), (esperado, 2))
 
@@ -196,13 +196,13 @@ class TestMigracao(taa.BaseAviso):
         server.save_config(cfg)
         self.assertEqual(server.voz_loja()["voz_volume"], 100)
 
-    def test_sem_voz_loja_os_dois_em_50(self) -> None:
+    def test_sem_voz_loja_aviso_30_voz_50(self) -> None:
         v = server.voz_loja()
-        self.assertEqual((v["aviso_volume"], v["voz_volume"]), (50, 50))
+        self.assertEqual((v["aviso_volume"], v["voz_volume"]), (30, 50))
 
     def test_depois_da_migracao_o_adm_sobe_ate_100(self) -> None:
         self.gravar_cru({"aviso_volume": 100})
-        self.assertEqual(server.voz_loja()["aviso_volume"], 50)
+        self.assertEqual(server.voz_loja()["aviso_volume"], 30)
         cfg = server.load_config()
         cfg["voz_loja"]["aviso_volume"] = 100      # o que um POST do ADM deixa gravado
         server.save_config(cfg)
@@ -218,39 +218,39 @@ class TestMigracao(taa.BaseAviso):
         depois = server.load_config()
         self.assertEqual({k: v for k, v in depois.items() if k != "voz_loja"},
                          {k: v for k, v in cfg.items() if k != "voz_loja"})
-        self.assertEqual(depois["voz_loja"], {"aviso_volume": 50, "velocidade": 5, "aviso_som_v": 2})
+        self.assertEqual(depois["voz_loja"], {"aviso_volume": 30, "velocidade": 5, "aviso_som_v": 2})
 
     def test_sem_voz_loja_nada_e_gravado(self) -> None:
         antes = server.load_config()
-        self.assertEqual(server.voz_loja()["aviso_volume"], 50)
+        self.assertEqual(server.voz_loja()["aviso_volume"], 30)
         self.assertEqual(server.load_config(), antes)
         self.assertFalse(server.voz_loja()["definida"])
 
     def test_sem_aviso_volume_gravado_so_marca(self) -> None:
         self.gravar_cru({"velocidade": 3})
-        self.assertEqual(server.voz_loja()["aviso_volume"], 50)
+        self.assertEqual(server.voz_loja()["aviso_volume"], 30)
         self.assertEqual(server.load_config()["voz_loja"], {"velocidade": 3, "aviso_som_v": 2})
 
     def test_valor_torto_cai_no_padrao_e_nao_levanta(self) -> None:
         for torto in (0, 55, "100", True, 80.0, None):
             with self.subTest(torto=torto):
                 self.gravar_cru({"aviso_volume": torto})
-                self.assertEqual(server.voz_loja()["aviso_volume"], 50)
+                self.assertEqual(server.voz_loja()["aviso_volume"], 30)
 
     def test_se_a_gravacao_falha_a_leitura_ja_vem_rebaixada(self) -> None:
         self.gravar_cru({"aviso_volume": 100})
         with mock.patch.object(server, "_gravar_config_atomico", side_effect=OSError("disco")):
-            self.assertEqual(server.voz_loja()["aviso_volume"], 50)
+            self.assertEqual(server.voz_loja()["aviso_volume"], 30)
         self.assertEqual(server.load_config()["voz_loja"], {"aviso_volume": 100})   # nada gravado
-        self.assertEqual(server.voz_loja()["aviso_volume"], 50)                      # dentro do backoff (300 s): não regrava
+        self.assertEqual(server.voz_loja()["aviso_volume"], 30)                      # dentro do backoff (300 s): não regrava
         self.assertNotIn("aviso_som_v", server.load_config()["voz_loja"])
         server._migracao_proxima_tentativa = 0.0                                     # passada a janela, grava
-        self.assertEqual(server.voz_loja()["aviso_volume"], 50)
+        self.assertEqual(server.voz_loja()["aviso_volume"], 30)
         self.assertEqual(server.load_config()["voz_loja"]["aviso_som_v"], 2)
 
     def test_config_ilegivel_nao_levanta(self) -> None:
         with mock.patch.object(server, "load_config", side_effect=OSError):
-            self.assertEqual(server.voz_loja()["aviso_volume"], 50)
+            self.assertEqual(server.voz_loja()["aviso_volume"], 30)
 
     def test_marcador_nunca_aparece_no_get_nem_e_aceito_no_post(self) -> None:
         self.gravar_cru({"aviso_volume": 100})
@@ -306,7 +306,7 @@ class TestMigracaoRodada1(taa.BaseAviso):
 
     def setUp(self) -> None:
         super().setUp()
-        p = mock.patch.dict(server.VOZ_LOJA_PADRAO, {"aviso_volume": 50, "voz_volume": 50})
+        p = mock.patch.dict(server.VOZ_LOJA_PADRAO, {"aviso_volume": 30, "voz_volume": 50})
         p.start()
         self.addCleanup(p.stop)
         server._migracao_proxima_tentativa = 0.0
@@ -326,7 +326,7 @@ class TestMigracaoRodada1(taa.BaseAviso):
                 self.assertLogs(server.log.name, level="WARNING") as cap:
             for _ in range(5):
                 v = server.voz_loja()
-                self.assertEqual((v["aviso_volume"], v["voz_volume"]), (50, 50))   # a leitura segue rebaixada
+                self.assertEqual((v["aviso_volume"], v["voz_volume"]), (30, 50))   # a leitura segue rebaixada
                 relogio[0] += 10
             self.assertEqual(grav.call_count, 1)                                    # 1 tentativa na janela
             self.assertEqual(len([r for r in cap.records if "migra" in r.getMessage().lower()]), 1)
@@ -353,7 +353,7 @@ class TestMigracaoRodada1(taa.BaseAviso):
             server.voz_loja()                     # segunda leitura: nada de nova linha
         linhas = [r.getMessage() for r in cap.records if "acao=voz_migrar" in r.getMessage()]
         self.assertEqual(len(linhas), 1, linhas)
-        for parte in ("aviso_volume_de=90", "aviso_volume=50", "voz_volume_de=70", "voz_volume=50"):
+        for parte in ("aviso_volume_de=90", "aviso_volume=30", "voz_volume_de=70", "voz_volume=50"):
             self.assertIn(parte, linhas[0])
         self.assertNotIn("aviao", linhas[0])
 
@@ -387,7 +387,7 @@ class TestMigracaoRodada1(taa.BaseAviso):
         for falso in (2.0, "2", True, [2], None, 3, 1):
             with self.subTest(marcador=falso):
                 self.gravar_cru({"aviso_volume": 100, "aviso_som_v": falso})
-                self.assertEqual(server.voz_loja()["aviso_volume"], 50)
+                self.assertEqual(server.voz_loja()["aviso_volume"], 30)
                 self.assertEqual(server.load_config()["voz_loja"]["aviso_som_v"], 2)
         self.gravar_cru({"aviso_volume": 100, "aviso_som_v": 2})
         self.assertEqual(server.voz_loja()["aviso_volume"], 100)

@@ -147,7 +147,7 @@ def _sintetizar(nome: str, taxa: int, fim: bool = False) -> list[float]:
 
 
 VOLUME_MIN, VOLUME_MAX, VOLUME_PASSO = 10, 100, 10   # v2.8.4: volume do aviso, em % (múltiplos de 10)
-VOLUME_PADRAO = 50                                    # padrão da LOJA (v2.8.6, decisão do dono: segurança dos amplificadores)
+VOLUME_PADRAO = 30                                    # padrão da LOJA (v2.8.6, decisão do dono: segurança dos amplificadores; a sineta a 30% fica no nível da voz a 50%)
 
 
 def volume_valido(valor: object) -> bool:
