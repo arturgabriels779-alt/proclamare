@@ -417,6 +417,21 @@ class MotorAudio:
                 with contextlib.suppress(Exception):
                     musica.set_volume(1.0)
 
+    def ler_pcm(self, caminho: Path) -> tuple[bytes, int, int, int]:
+        """
+        (Thread de áudio) v2.8.8: decodifica o arquivo (mp3/wav) no mixer JÁ ABERTO e devolve (bytes PCM, taxa, tamanho, canais)
+        no formato do mixer (`Sound.get_raw()` + `mixer.get_init()`; tamanho -16 = PCM de 16 bits). Para o limitador da voz,
+        ANTES de abaixar a música. Não toca nada. Mixer fechado = ErroReproducao.
+        """
+        self._exigir_vivo()
+        mixer = self._modulo().mixer
+        formato = mixer.get_init()
+        if not formato:
+            raise ErroReproducao("O mixer não está aberto.")
+        bruto = mixer.Sound(str(caminho)).get_raw()
+        taxa, tamanho, canais = formato[0], formato[1], formato[2]
+        return bytes(bruto), int(taxa), int(tamanho), int(canais)
+
     def sintetizar(self, texto: str, velocidade_wpm: int, voz_id: str | None, destino: Path) -> Path:
         """(Thread de áudio) Voz offline -> WAV em `destino` (não toca nada)."""
         self._exigir_vivo()
