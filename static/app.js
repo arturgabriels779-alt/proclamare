@@ -706,7 +706,7 @@
     // v2.8.7: nunca passa do `max` do input (100). Com `avisoEl`, usa a MESMA trava da Voz da loja
     // (volTravaNova/volTravaInput/volAvisoAtualizar, definidas mais abaixo; só rodam depois de tudo carregado).
     const trava = avisoEl ? volTravaNova() : null;
-    const maxDe = () => Number(input.max) || VOL_MAX;
+    const maxDe = () => (Number.isFinite(Number(input.max)) && Number(input.max) > 0 ? Number(input.max) : VOL_MAX);
     const read = () => clamp(Math.round(Number(input.value) || 0), 0, maxDe());
     const aviso = () => { if (trava) volAvisoAtualizar(input, avisoEl, trava); };
     const paint = () => { paintRange(input, false); setText(output, read() + "%"); aviso(); };
@@ -1166,7 +1166,7 @@
   const vozVolValue = $("voz-volume-value");
   const vozVolField = $("voz-volume-field");
   const podeVozVolume = () => (auth.modoContas ? auth.permissoes.includes("voz_volume") : auth.supported && auth.local);
-  // v2.8.7: volume dos áudios agendados (10..70, passo 10, padrão 50); MESMA capacidade da voz (voz_volume)
+  // v2.8.7: volume dos áudios agendados (10..100, passo 10, padrão 50; travas em 50 e 70); MESMA capacidade da voz (voz_volume)
   const agendadoVolRange = $("agendado-volume-range");
   const agendadoVolValue = $("agendado-volume-value");
   let vozTimer = null; // debounce da gravação
@@ -1421,15 +1421,11 @@
   const VOL_TRAVA_MSG = "Acima de 50% pode forçar os amplificadores. Para subir mesmo assim, arraste de novo.";
   const VOL_TRAVA_MSG_70 = "Volume alto: confira se as luzinhas vermelhas (clip/peak) dos amplificadores e da mesa não estão acendendo. Para subir mesmo assim, arraste de novo.";
   const VOL_ACIMA_70_MSG = "Acima de 70%: fique de olho nas luzinhas vermelhas (clip) dos amplificadores e da mesa.";
-  const VOL_TRAVAS = [50, VOL_TETO]; // em ordem crescente
-  const VOL_TRAVA_JANELA_MS = 10000;
-  /** Estado da trava de cada controle (só em memória: recarregar a página trava de novo). `lib` = maior trava já liberada. */
-  function volTravaNova() { return { lib: 0, barreira: 0, avisoEm: 0, msg: 0, gesto: true }; }
-  /** Valor que já veio do servidor (ou confirmado) acima de uma trava: vale como liberado, com o aviso. */
-  function volTravaLiberarAte(trava, n) {
-    for (const t of VOL_TRAVAS) if (n > t && trava.lib < t) trava.lib = t;
-    trava.msg = 0;
-  }
+  const VT = VolumeTrava; // static/volume-trava.js (lógica pura das travas; carregado antes deste arquivo)
+  const VOL_TRAVA_JANELA_MS = VT.JANELA_MS;
+  const volTravaNova = VT.nova;
+  /** Valor que veio do servidor: fica como está (com o aviso) se passa de uma trava; abaixo dela a trava volta a valer. */
+  const volTravaLiberarAte = VT.liberarAte;
   function volAvisoAtualizar(range, el, trava) {
     const n = Number(range.value);
     let msg = "";
@@ -1452,27 +1448,12 @@
     if (el.textContent !== msg) setText(el, msg); // só mexe no DOM se mudou (leitor de tela não repete)
     el.hidden = msg === "";
   }
-  /** Chamado no `input`: segura na trava a 1ª tentativa de passar; a 2ª (novo gesto, até 10 s, MESMA trava) libera. */
+  /** Chamado no `input`: aplica VT.entrada ao valor do range e cuida do aviso (temporizador de 10 s). */
   function volTravaInput(range, trava) {
-    const n = Number(range.value);
-    const alvo = VOL_TRAVAS.find((t) => n > t && trava.lib < t); // a 1ª trava ainda fechada que o valor ultrapassa
-    if (!alvo) { trava.msg = 0; return; }
-    const agora = Date.now();
-    const novoGesto = trava.gesto;
-    trava.gesto = false; // o resto do mesmo arrasto não conta como "empurrar de novo"
-    if (novoGesto && trava.barreira === alvo && trava.avisoEm && agora - trava.avisoEm <= VOL_TRAVA_JANELA_MS) {
-      trava.lib = alvo;
-      trava.msg = 0;
-      trava.avisoEm = 0;
-      trava.barreira = 0;
-      // 1 passo à frente pode ainda passar da trava seguinte (ex.: 50 -> 100): segura nela já neste mesmo input
-      if (VOL_TRAVAS.some((t) => n > t && trava.lib < t)) volTravaInput(range, trava);
-      return;
-    }
-    range.value = String(alvo);
-    trava.msg = alvo;
-    if (trava.barreira !== alvo) { trava.barreira = alvo; trava.avisoEm = agora; }
-    else if (novoGesto || !trava.avisoEm) trava.avisoEm = agora;
+    const antes = Number(range.value);
+    const depois = VT.entrada(trava, antes, Date.now());
+    if (depois !== antes) range.value = String(depois);
+    if (!trava.msg) return;
     // A4: a mensagem some sozinha quando a janela de 10 s acaba (só muda o DOM se ainda estiver à mostra)
     clearTimeout(trava.timer);
     trava.timer = setTimeout(() => {
@@ -1482,15 +1463,10 @@
       if (trava.atualizar) trava.atualizar();
     }, VOL_TRAVA_JANELA_MS);
   }
-  /** Teclas que mudam o valor do range (Shift/Tab/etc. nunca contam como gesto). */
-  const VOL_TECLAS = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"];
   /** Cada toque novo ou tecla de valor NOVA (sem `repeat`: tecla segurada não libera) é um gesto novo. */
   function volTravaGestos(range, trava) {
-    range.addEventListener("pointerdown", () => { trava.gesto = true; });
-    range.addEventListener("keydown", (e) => {
-      if (e.repeat || !VOL_TECLAS.includes(e.key)) return;
-      trava.gesto = true;
-    });
+    range.addEventListener("pointerdown", () => VT.toqueGesto(trava));
+    range.addEventListener("keydown", (e) => { VT.teclaGesto(trava, e.key, e.repeat); });
   }
   const avisoVolAviso = $("aviso-volume-aviso");
   const vozVolAviso = $("voz-volume-aviso");
@@ -3529,7 +3505,7 @@
   let ytPendingLoad = null;
   let ytDucking = false;
   let ytDuckTimer = 0;
-  let ytUserVolume = clamp(Number(youtubeVolume.value) || 50, 0, VOL_MAX);
+  let ytUserVolume = clamp(Number.isFinite(Number(youtubeVolume.value)) ? Number(youtubeVolume.value) : 50, 0, VOL_MAX); // 0 vale 0
   let ytAlive = null; // última leitura de player_alive
   let ytLoopCtrl = null;
   let ytLastPush = 0;

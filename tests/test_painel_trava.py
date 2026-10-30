@@ -13,6 +13,7 @@ from pathlib import Path
 RAIZ = Path(__file__).resolve().parent.parent
 HTML = (RAIZ / "static" / "index.html").read_text(encoding="utf-8")
 JS = (RAIZ / "static" / "app.js").read_text(encoding="utf-8")
+TRAVA = (RAIZ / "static" / "volume-trava.js").read_text(encoding="utf-8")
 
 
 class TesteTravaDoVolume(unittest.TestCase):
@@ -46,18 +47,20 @@ class TesteTravaDoVolume(unittest.TestCase):
     def test_limites_50_e_70(self) -> None:
         """Duas travas com UMA função: 50 (amarela) e 70 (vermelha), parametrizadas por VOL_TRAVAS."""
         self.assertIn("const VOL_TETO = 70;", JS)
-        self.assertIn("const VOL_TRAVAS = [50, VOL_TETO];", JS)
-        self.assertIn("range.value = String(alvo)", JS)
+        self.assertIn("const TRAVAS = [50, 70];", TRAVA)  # a lógica pura mora em static/volume-trava.js
+        self.assertIn("VT.entrada(trava, antes, Date.now())", JS)
         self.assertEqual(JS.count("function volTravaInput("), 1)
         self.assertNotIn("n >= 80", JS)
-        self.assertIn("n > 50", JS)
+        self.assertNotIn("range.value = \"50\"", JS)
+        # carregado ANTES do app.js, sem inline
+        self.assertLess(HTML.index("/static/volume-trava.js"), HTML.index("/static/app.js"))
 
     def test_tecla_segurada_nao_libera(self) -> None:
         m = re.search(r"function volTravaGestos\(.*?\n  \}\n", JS, re.S)
         self.assertIsNotNone(m)
-        self.assertIn("e.repeat", m.group(0))
-        self.assertIn("VOL_TECLAS", m.group(0))
-        lista = re.search(r"const VOL_TECLAS = \[(.*?)\]", JS).group(1)
+        self.assertIn("e.repeat", m.group(0))  # o app.js repassa `repeat`; o comportamento é provado no teste do Node
+        self.assertIn("VT.teclaGesto", m.group(0))
+        lista = re.search(r"const TECLAS = \[(.*?)\]", TRAVA).group(1)
         for t in ("ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"):
             self.assertIn(t, lista)
         for t in ("Shift", "Tab"):
@@ -70,6 +73,7 @@ class TesteTravaDoVolume(unittest.TestCase):
     def test_mensagem_some_com_a_janela(self) -> None:
         self.assertIn("VOL_TRAVA_JANELA_MS", JS)
         self.assertIn("trava.timer = setTimeout", JS)
+        self.assertIn("JANELA_MS = 10000", TRAVA)
 
     def test_max_100_em_todos_os_controles(self) -> None:
         """v2.8.7 (adendos 2 e 3): voz, aviso, agendado, Spotify e Tocador têm max=100 (as travas em 50 e 70 seguram o resto)."""
@@ -120,7 +124,7 @@ class TesteTravaDoVolume(unittest.TestCase):
         m = re.search(r"function applyVolumes\(\) \{.*?\n  \}\n", JS, re.S)
         self.assertNotIn("VOL_TETO", m.group(0))  # aplica o valor do servidor (0..100)
         self.assertIn("clamp(Math.round(params.value), 0, VOL_MAX)", JS)
-        self.assertIn("clamp(Number(youtubeVolume.value) || 50, 0, VOL_MAX)", JS)
+        self.assertIn("clamp(Number.isFinite(Number(youtubeVolume.value)) ? Number(youtubeVolume.value) : 50, 0, VOL_MAX)", JS)
 
     def test_comentario_sem_padrao_100(self) -> None:
         self.assertNotIn("padrão 100); só o ADM (capacidade voz_volume", JS)

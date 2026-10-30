@@ -394,7 +394,7 @@
               <button type="button" class="btn btn--ghost btn--sm" id="btn-aviso-ouvir" disabled>Ouvir</button>
             </div>
           </div>
-          <!-- v2.8.7: Volumes (só o ADM). Máximo 70% em todos; recomendado até 50%. -->
+          <!-- v2.8.7: Volumes (só o ADM). Até 100%; travas em 50% (amarela) e 70% (vermelha); recomendado até 50%. -->
           <div class="vol-bloco" role="group" aria-labelledby="vol-bloco-titulo" data-perm="voz_volume aviso_volume">
             <p class="label" id="vol-bloco-titulo">Volumes</p>
             <p class="hint">Recomendado: até 50%. Acima de 70% só o administrador.</p>
@@ -2080,6 +2080,7 @@
 </dialog>
 
 <!-- A API do YouTube só é carregada pelo app.js quando o modo "Tocador da loja" é usado -->
+<script src="/static/volume-trava.js" defer></script>
 <script src="/static/app.js" defer></script>
 </body>
 </html>
