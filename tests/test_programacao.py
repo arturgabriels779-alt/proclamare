@@ -982,15 +982,27 @@ class TesteRotasEsquema(BaseProg):
         self.assertEqual((r.status_code, r.get_json()["campo"], r.get_json()["indice"]), (400, "chave", 0))
 
     def test_campos_de_voz_so_para_anuncio(self) -> None:
-        ok = self.salvar_itens([self.corpo_anuncio(voz="antonio", motor="offline", velocidade=-20)])
+        ok = self.salvar_itens([self.corpo_anuncio(voz="seraphina", motor="offline", velocidade=-20)])
         it = ok.get_json()["itens"][0]
-        self.assertEqual((it["voz"], it["motor"], it["velocidade"]), ("antonio", "offline", -20))
+        self.assertEqual((it["voz"], it["motor"], it["velocidade"]), ("seraphina", "offline", -20))
         for campo, valor in (("voz", "robo"), ("motor", "x"), ("velocidade", 51), ("velocidade", -51),
                              ("velocidade", True), ("velocidade", 1.5)):
             with self.subTest(campo=campo, valor=valor):
                 self.assertEqual(self.salvar_itens([self.corpo_anuncio(**{campo: valor})]).status_code, 400)
         base = {"tipo": "lista", "alvo": "abcdef01", "hora": "08:00", "dias": [1]}
-        self.assertEqual(self.salvar_itens([{**base, "voz": "antonio"}]).status_code, 400)
+        self.assertEqual(self.salvar_itens([{**base, "voz": "remy"}]).status_code, 400)
+
+    def test_antonio_vira_remy_no_post_e_no_arquivo(self) -> None:
+        # v2.8.9: POST de app.js antigo e programacao.json antigo -> "remy"; nunca recusa nem KeyError
+        it = self.salvar_itens([self.corpo_anuncio(voz="antonio")]).get_json()["itens"][0]
+        self.assertEqual(it["voz"], "remy")
+        self.assertEqual(self.salvar_itens([self.corpo_anuncio(voz="robo")]).status_code, 400)
+        self.assertIs(server.VOZES_ANTIGAS, programacao.VOZES_ANTIGAS)
+        (self.tmp / "programacao.json").write_text(json.dumps({"versao": 5, "itens": [
+            {**item("aaaaaaaa", "18:00"), "tipo": "anuncio", "alvo": "oi", "voz": "antonio", "motor": "offline",
+             "velocidade": 0, "embaralhar": False}]}), encoding="utf-8")
+        d = self.c.get("/api/programacao").get_json()
+        self.assertEqual([(i["id"], i["voz"]) for i in d["itens"]], [("aaaaaaaa", "remy")])
 
     def test_vozes_novas_na_programacao(self) -> None:
         # v2.8.9: seraphina/remy valem no item anuncio
@@ -1725,11 +1737,11 @@ class TesteExecucaoAnuncio(BaseProg):
         self.assertEqual(self.chamadas_voz, [("online", TEXTO_SECRETO, "de-DE-SeraphinaMultilingualNeural", 0)])
 
     def test_anuncio_online_pausa_a_musica_em_vez_de_abaixar(self) -> None:
-        it = self.anuncio_gravado(alvo=TEXTO_SECRETO, voz="antonio", velocidade=10)
+        it = self.anuncio_gravado(alvo=TEXTO_SECRETO, voz="remy", velocidade=10)
         self.tocador(True)
         self.spotify.tocando = True
         self.assertEqual(self.tocar_agora(it["id"]).status_code, 202)
-        self.assertEqual(self.chamadas_voz, [("online", TEXTO_SECRETO, "pt-BR-AntonioNeural", 10)])
+        self.assertEqual(self.chamadas_voz, [("online", TEXTO_SECRETO, "fr-FR-RemyMultilingualNeural", 10)])
         ev = self.cen.eventos
         self.assertLess(ev.index("yt-pause"), ev.index("audio-play"))
         self.assertLess(ev.index("audio-stop"), ev.index("yt-play"))

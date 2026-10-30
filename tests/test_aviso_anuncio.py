@@ -181,7 +181,7 @@ class TestAvisoNoAnuncio(BaseAviso):
     def test_campos_antigos_ignorados(self) -> None:
         # app.js antigo: manda engine/voice/speed/offline_voice_id (até inválidos) -> aceita e usa a voz da loja.
         self.internet = True
-        self.voz(motor="online", voz="antonio", velocidade=20)
+        self.voz(motor="online", voz="seraphina", velocidade=20)
         usados: list[tuple] = []
         gerar_original = server.gerar_audio_online
 
@@ -193,7 +193,26 @@ class TestAvisoNoAnuncio(BaseAviso):
             r = self.anunciar(engine="offline", voice="xx", speed=999, offline_voice_id=["?"])
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(r.get_json()["engine_used"], "online")
-        self.assertEqual(usados, [("pt-BR-AntonioNeural", 20)])
+        self.assertEqual(usados, [("de-DE-SeraphinaMultilingualNeural", 20)])
+
+    def test_voz_antonio_gravada_fala_com_remy(self) -> None:
+        # v2.8.9: o Antônio saiu; "antonio" no config vale como remy e pt-BR-AntonioNeural nunca é pedido
+        self.internet = True
+        cfg = server.load_config()
+        cfg["voz_loja"] = {"motor": "online", "voz": "antonio", "velocidade": 0, "aviso_som_v": 2}
+        server.save_config(cfg)
+        self.assertEqual(server.voz_loja()["voz"], "remy")
+        usados: list[tuple] = []
+        gerar_original = server.gerar_audio_online
+
+        def gerar(texto: str, voz: str, vel: int) -> Path:
+            usados.append((voz, vel))
+            return gerar_original(texto, voz, vel)
+
+        with self.tocar_mp3_legado(), mock.patch.object(server, "gerar_audio_online", gerar):
+            r = self.anunciar()
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(usados, [("fr-FR-RemyMultilingualNeural", 0)])
 
     def test_voz_nova_usa_o_shortname_certo(self) -> None:
         # v2.8.9: voz da loja "remy" -> fr-FR-RemyMultilingualNeural no gerador (falso do teste)

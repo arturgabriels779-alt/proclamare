@@ -120,7 +120,10 @@
     conta: "proclamare_conta", // v2.8: id opaco da última conta logada neste navegador (outra pessoa = limpa o composer)
   };
   const ENGINES = ["auto", "online", "offline"];
-  const VOICES = ["francisca", "antonio", "seraphina", "remy"];
+  const VOICES = ["francisca", "seraphina", "remy"];
+  // v2.8.9: o Antônio saiu; "antonio" vindo de preferência antiga/item vale como "remy"
+  const VOZES_ANTIGAS = { antonio: "remy" };
+  const vozAtual = (v) => (typeof v === "string" && Object.prototype.hasOwnProperty.call(VOZES_ANTIGAS, v) ? VOZES_ANTIGAS[v] : v);
   const DEVICE_RE = /^[A-Za-z0-9]{1,128}$/;
   // Spotify v2.4.2: listas FIXAS do servidor (qualquer outro valor é ignorado)
   const SP_CODIGOS = ["premium", "sem_dispositivo", "reconectar", "limite", "indisponivel"];
@@ -1253,8 +1256,8 @@
       if (engineGroup.value !== v.motor) engineGroup.set(v.motor, true);
     }
     if (typeof v.voz === "string" && !vozCampoPendente("voz")) {
-      voz.voz = v.voz;
-      if (voiceSelect.value !== v.voz) voiceSelect.value = v.voz;
+      voz.voz = vozAtual(v.voz);
+      if (voiceSelect.value !== voz.voz) voiceSelect.value = voz.voz;
     }
     if (isNum(v.velocidade) && !vozCampoPendente("velocidade")) {
       voz.velocidade = clamp(Math.round(v.velocidade / 5) * 5, -50, 50);
@@ -1344,7 +1347,7 @@
       const p = JSON.parse(raw);
       const corpo = {};
       if (p && ENGINES.includes(p.engine)) corpo.motor = p.engine;
-      if (p && VOICES.includes(p.voice)) corpo.voz = p.voice;
+      if (p && VOICES.includes(vozAtual(p.voice))) corpo.voz = vozAtual(p.voice);
       if (p && isNum(p.speed)) corpo.velocidade = clamp(Math.round(p.speed / 5) * 5, -50, 50);
       // o aviso NUNCA vem das preferências antigas (não existia por aparelho): um id antigo/removido não é enviado;
       // o servidor já devolve o padrão ("microfone") para quem tinha um aviso que saiu da lista.
@@ -8299,7 +8302,7 @@
     else o.dias = it.dias;
     if (it.tipo === "lista") o.embaralhar = !!it.embaralhar;
     if (it.tipo === "anuncio") {
-      o.voz = it.voz || "francisca";
+      o.voz = vozAtual(it.voz) || "francisca";
       o.motor = it.motor || "auto";
       o.velocidade = isNum(it.velocidade) ? it.velocidade : 0;
     }
@@ -8850,7 +8853,7 @@
     progTexto.value = item && tipo === "anuncio" ? item.alvo : "";
     paintCounter(progTextoCount, progTexto.value.length, MAX_CHARS);
     // padrões vêm da voz da loja (v2.8)
-    const vozItem = item && item.voz ? item.voz : VOICES.includes(voz.voz) ? voz.voz : "francisca";
+    const vozItem = item && item.voz ? vozAtual(item.voz) : VOICES.includes(voz.voz) ? voz.voz : "francisca";
     const motor = item && item.motor ? item.motor : ENGINES.includes(voz.motor) ? voz.motor : "auto";
     const vel = item && isNum(item.velocidade) ? item.velocidade : voz.velocidade;
     progVoz.value = vozItem;
@@ -8927,7 +8930,7 @@
     const item = { ativo: pf.current ? pf.current.ativo : true, tipo: v.tipo, alvo, nome: nome || null, hora: v.hora, dias, data, embaralhar: v.tipo === "lista" && v.embaralhar, voz: null, motor: null, velocidade: null };
     if (pf.current) item.id = pf.current.id;
     if (v.tipo === "anuncio") {
-      item.voz = VOICES.includes(v.voz) ? v.voz : "francisca";
+      item.voz = VOICES.includes(vozAtual(v.voz)) ? vozAtual(v.voz) : "francisca";
       item.motor = ENGINES.includes(v.motor) ? v.motor : "auto";
       item.velocidade = clamp(Math.round(v.vel / 5) * 5, -50, 50);
     }

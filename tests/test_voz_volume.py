@@ -581,7 +581,7 @@ class TestProgramacaoAnuncio(tp.BaseProg):
         cfg = server.load_config()
         cfg["voz_loja"] = {"aviso": "aeroporto", "aviso_volume": 100, "voz_volume": 40, "aviso_som_v": 2}
         server.save_config(cfg)
-        it = self.gravar([self.corpo_anuncio(motor="offline", voz="antonio", velocidade=20)])[0]
+        it = self.gravar([self.corpo_anuncio(motor="offline", voz="remy", velocidade=20)])[0]
         self.assertEqual(self.tocar_agora(it["id"]).status_code, 202)
         self.assertTrue(tp.esperar_ate(lambda: self.servico.tocando is None))
         self.assertEqual(self.ordem, [("aviso", "aviso_aeroporto.wav"), ("fala", 40)])

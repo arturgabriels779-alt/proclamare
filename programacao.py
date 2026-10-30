@@ -70,7 +70,10 @@ VISTO_INTERVALO_S = 30.0
 JANELA_MAX = timedelta(hours=24)  # o "recuperar o que perdi" nunca olha mais que um dia para trás
 PERDIDOS_MAX_POR_VARREDURA = 20
 FEITOS_RETENCAO = timedelta(days=3)
-VOZES = ("francisca", "antonio", "seraphina", "remy")
+VOZES = ("francisca", "seraphina", "remy")
+# v2.8.9: o Antônio saiu da lista; quem o tinha (programacao.json antigo, aba com app.js em cache) passa para o Remy.
+# Fonte única: o server.py reutiliza este mapa (server.VOZES_ANTIGAS is programacao.VOZES_ANTIGAS).
+VOZES_ANTIGAS = {"antonio": "remy"}
 MOTORES = ("auto", "online", "offline")
 VELOCIDADE_MIN, VELOCIDADE_MAX = -50, 50
 STATUS = ("ok", "nao_tocou", "perdido", "erro")
@@ -392,6 +395,8 @@ def _validar_item(bruto: Any, i: int, atuais: dict[str, dict], hoje: date, ids_v
     voz, motor, velocidade = bruto.get("voz"), bruto.get("motor"), bruto.get("velocidade")
     if tipo == "anuncio":
         voz = "francisca" if voz is None else voz
+        if isinstance(voz, str):
+            voz = VOZES_ANTIGAS.get(voz, voz)   # v2.8.9: "antonio" -> "remy"
         motor = "auto" if motor is None else motor
         velocidade = 0 if velocidade is None else velocidade
         if not isinstance(voz, str) or voz not in VOZES:

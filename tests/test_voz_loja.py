@@ -58,13 +58,13 @@ class TestVozLoja(Base):
                              "aviso": "microfone", "aviso_volume": 30, "voz_volume": 50, "agendado_volume": 50, "limitador": True, "definida": False})   # v2.8: padrão de fábrica = Microfone
 
     def test_post_parcial_grava_e_preserva_resto(self) -> None:
-        self.assertEqual(self.c.post("/api/voz", json={"voz": "antonio", "velocidade": 10}).status_code, 200)
+        self.assertEqual(self.c.post("/api/voz", json={"voz": "remy", "velocidade": 10}).status_code, 200)
         r = self.c.post("/api/voz", json={"aviso": "aeroporto"})
         v = r.get_json()["voz_loja"]
-        self.assertEqual(v, {"motor": "auto", "voz": "antonio", "velocidade": 10, "aviso": "aeroporto",
+        self.assertEqual(v, {"motor": "auto", "voz": "remy", "velocidade": 10, "aviso": "aeroporto",
                              "aviso_volume": 30, "voz_volume": 50, "agendado_volume": 50, "limitador": True, "definida": True})
         self.assertEqual(self.c.get("/api/voz").get_json()["voz_loja"], v)
-        self.assertEqual(server.voz_loja()["voz"], "antonio")
+        self.assertEqual(server.voz_loja()["voz"], "remy")
 
     def test_post_valor_invalido_400_com_campo(self) -> None:
         for corpo, campo in (({"motor": "x"}, "motor"), ({"velocidade": 51}, "velocidade"),
@@ -79,12 +79,12 @@ class TestVozLoja(Base):
         # config.json cai no padrão novo (Microfone), sem erro, e o resto da voz da loja é preservado.
         for removido in ("sino", "ding_dong", "suave", "comissario", "aeroporto_inicio_fim"):
             with self.subTest(aviso=removido):
-                self.gravar_config({"voz_loja": {"motor": "offline", "voz": "antonio", "velocidade": 10,
+                self.gravar_config({"voz_loja": {"motor": "offline", "voz": "seraphina", "velocidade": 10,
                                                  "aviso": removido}})
                 self.assertEqual(server.voz_loja()["aviso"], "microfone")
                 r = self.c.get("/api/voz")
                 self.assertEqual(r.status_code, 200)
-                self.assertEqual(r.get_json()["voz_loja"], {"motor": "offline", "voz": "antonio", "velocidade": 10,
+                self.assertEqual(r.get_json()["voz_loja"], {"motor": "offline", "voz": "seraphina", "velocidade": 10,
                                                             "aviso": "microfone", "aviso_volume": 30, "voz_volume": 50, "agendado_volume": 50, "limitador": True,
                                                             "definida": True})
                 # gravar outro campo não ressuscita o id antigo: a resposta já mostra o padrão
@@ -110,11 +110,11 @@ class TestVozLoja(Base):
         self.assertEqual(self.c.post("/api/voz", json={}).status_code, 400)
 
     def test_config_torto_cai_no_padrao(self) -> None:
-        self.gravar_config({"voz_loja": {"velocidade": "rapido", "aviso": 3, "voz": "antonio"}})
+        self.gravar_config({"voz_loja": {"velocidade": "rapido", "aviso": 3, "voz": "seraphina"}})
         r = self.c.get("/api/voz")
         self.assertEqual(r.status_code, 200)
         v = r.get_json()["voz_loja"]
-        self.assertEqual((v["velocidade"], v["aviso"], v["voz"], v["definida"]), (0, "microfone", "antonio", True))
+        self.assertEqual((v["velocidade"], v["aviso"], v["voz"], v["definida"]), (0, "microfone", "seraphina", True))
         self.gravar_config({"voz_loja": "lixo"})
         self.assertEqual(self.c.get("/api/voz").status_code, 200)
 
@@ -143,7 +143,21 @@ class TestVozLoja(Base):
             {"id": "ding_dong_duplo", "nome": "Ding-dong (2 vezes)"},
         ])
         self.assertEqual(o["motores"], ["auto", "online", "offline"])
-        self.assertEqual([v["id"] for v in o["vozes"]], ["francisca", "antonio", "seraphina", "remy"])
+        self.assertEqual([v["id"] for v in o["vozes"]], ["francisca", "seraphina", "remy"])
+
+    def test_antonio_vira_remy(self) -> None:
+        # v2.8.9: config antigo e aba antiga (POST) com "antonio" -> "remy"; o resto continua 400
+        self.gravar_config({"voz_loja": {"voz": "antonio"}})
+        self.assertEqual(server.voz_loja()["voz"], "remy")
+        self.assertEqual(self.c.get("/api/voz").get_json()["voz_loja"]["voz"], "remy")
+        self.gravar_config({})
+        r = self.c.post("/api/voz", json={"voz": "antonio"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["voz_loja"]["voz"], "remy")
+        self.assertEqual(server.load_config()["voz_loja"]["voz"], "remy")
+        self.assertEqual(self.c.post("/api/voz", json={"voz": "robo"}).status_code, 400)
+        self.assertNotIn("antonio", server.VOZES_ONLINE)
+        self.assertNotIn("pt-BR-AntonioNeural", server.VOZES_ONLINE.values())
 
     def test_vozes_novas_aceitas_e_shortname(self) -> None:
         # v2.8.9: seraphina/remy gravam e mapeiam para o ShortName multilíngue; id desconhecido segue 400
