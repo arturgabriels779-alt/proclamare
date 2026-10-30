@@ -374,12 +374,12 @@ Contrato v2.8 (Parte A: voz da loja)
 ------------------------------------
   A voz dos anúncios é da LOJA, não de cada aparelho: mora em config.json["voz_loja"] =
   {"motor": auto|online|offline, "voz": francisca|antonio, "velocidade": -50..50, "aviso": nenhum|microfone|
-  aviao|aeroporto|supermercado|ding_dong_duplo, "aviso_volume": 10..100}. Padrão (VOZ_LOJA_PADRAO): auto / francisca / 0 / microfone / 50 / 50 (v2.8.6: os dois volumes). voz_loja() nunca levanta:
+  aviao|aeroporto|supermercado|ding_dong_duplo, "aviso_volume": 10..100}. Padrão (VOZ_LOJA_PADRAO): auto / francisca / 0 / microfone / 30 / 50 (v2.8.6: aviso 30, voz 50). voz_loja() nunca levanta:
   chave ausente ou campo torto cai no padrão campo a campo; "definida" = a chave existe no config. Os avisos que saíram
   da lista na v2.8 (ding_dong, suave, sino, comissario, aeroporto_inicio_fim) são "campo torto": guardados no
   config.json, viram o padrão (microfone) na leitura; no POST /api/voz e no /api/voz/ouvir, 400 com "campo":"aviso".
   v2.8.4 "aviso_volume": volume das sinetas (início E fim) em % — inteiro de 10 a 100, múltiplo de 10 (bool, float, texto,
-  0, 5, 55, 105 = 400 com "campo":"aviso_volume"); ausente/torto no config = 50 (v2.8.6; era 80). Só o ADM muda: mandar a chave no POST /api/voz
+  0, 5, 55, 105 = 400 com "campo":"aviso_volume"); ausente/torto no config = 30 (v2.8.6; era 80). Só o ADM muda: mandar a chave no POST /api/voz
   exige a capacidade "aviso_volume" (contas.PODE: só "adm"; gerente/funcionário = 403 "sem_permissao" e NADA do corpo é gravado,
   nem as outras chaves; modo PIN: só o PC das caixas, aparelho remoto com PIN = 403). O volume entra na SÍNTESE do WAV (pico =
   0,5 x volume/100 na v2.8.6; era 0,9; 100% = o WAV suave novo) e o cache tem o volume no nome (audios_temp/aviso_<nome>.v80.wav e
