@@ -14,7 +14,9 @@ a fala é trocada por registradores; a saída fixada usa o pygame FALSO do BaseS
 """
 from __future__ import annotations
 
+import datetime as dt
 import math
+import random
 import sys
 import tempfile
 import unittest
@@ -148,16 +150,66 @@ class TestDsp(unittest.TestCase):
         lim.limitar_pcm16(b"", 22050, 2, destino)
         self.assertEqual(len(ler_wav(destino)[2]), 0)
 
+    def test_pcm_6_canais_iguais_viram_mono(self) -> None:
+        x = seno(500, 0.8, 22050, 0.2)
+        bruto = array("h", bytes(2 * 6 * len(x)))
+        for c in range(6):
+            bruto[c::6] = x
+        destino = self.dir / "s6.wav"
+        lim.limitar_pcm16(bruto.tobytes(), 22050, 6, destino)
+        canais, _, dados = ler_wav(destino)
+        self.assertEqual((canais, len(dados)), (1, len(x)))
+        self.assertLessEqual(max(dados), TETO)
+
+    def test_pcm_6_canais_diferentes_processa_cada_um(self) -> None:
+        fontes = [seno(300 + 100 * c, 0.2 + 0.1 * c, 22050, 0.2) for c in range(6)]
+        bruto = array("h", bytes(2 * 6 * len(fontes[0])))
+        for c in range(6):
+            bruto[c::6] = fontes[c]
+        destino = self.dir / "d6.wav"
+        lim.limitar_pcm16(bruto.tobytes(), 22050, 6, destino)
+        canais, _, dados = ler_wav(destino)
+        self.assertEqual(canais, 6)
+        for c in range(6):
+            self.assertEqual(list(dados[c::6]), list(lim.processar_mono(fontes[c], 22050)))
+
     def test_pcm_canais_invalidos(self) -> None:
-        for canais in (0, 3, 6, True, "2"):
+        for canais in (0, 9, 16, True, "2"):
             with self.subTest(canais=canais), self.assertRaises(ValueError):
                 lim.limitar_pcm16(b"\0\0" * 100, 22050, canais, self.dir / "e.wav")
 
-    def test_duracao_maior_que_o_maximo_e_value_error(self) -> None:
-        bruto = bytes(2 * int(8000 * (lim.LIMITADOR_MAX_S + 1)))
-        with self.assertRaises(ValueError):
-            lim.limitar_pcm16(bruto, 8000, 1, self.dir / "f.wav")
-        self.assertFalse((self.dir / "f.wav").exists())
+    def test_duracao_maior_que_o_maximo_e_truncada_e_limitada(self) -> None:
+        with mock.patch.object(lim, "LIMITADOR_MAX_S", 2.0):
+            x = seno(1000, 0.95, 8000, 3.0)   # 3 s > 2 s
+            destino = self.dir / "f.wav"
+            lim.limitar_pcm16(x.tobytes(), 8000, 1, destino)
+        canais, taxa, dados = ler_wav(destino)
+        self.assertEqual(len(dados), 2 * 8000)
+        self.assertLessEqual(max(dados), TETO)
+
+    def test_motivos_fixos(self) -> None:
+        with self.assertRaises(lim.ErroLimitador) as c:
+            lim.limitar_pcm16(b"\0\0", 22050, 9, self.dir / "m.wav")
+        self.assertEqual(c.exception.motivo, "canais")
+        with self.assertRaises(lim.ErroLimitador) as c:
+            lim.limitar_pcm16(b"\0\0", 0, 1, self.dir / "m.wav")
+        self.assertEqual(c.exception.motivo, "formato")
+
+    def test_picos_fixos_em_16_44_e_48_khz(self) -> None:
+        rng = random.Random(1234)
+        for taxa in (16000, 44100, 48000):
+            n = taxa // 2
+            casos = {
+                "constante_min": array("h", [-32768] * n),
+                "constante_max": array("h", [32767] * n),
+                "ruido": array("h", [rng.randint(-32768, 32767) for _ in range(n)]),
+                "quadrada": array("h", [(32767 if (i // 20) % 2 else -32767) for i in range(n)]),
+            }
+            for nome, x in casos.items():
+                with self.subTest(taxa=taxa, caso=nome):
+                    y = lim.processar_mono(x, taxa)
+                    self.assertLessEqual(max(y), 16383)
+                    self.assertGreaterEqual(min(y), -16383)
 
     def _wav(self, nome: str, largura: int, canais: int = 1, taxa: int = 22050) -> Path:
         caminho = self.dir / nome
@@ -189,13 +241,21 @@ class TestDsp(unittest.TestCase):
             lim.limitar_wav(lixo, self.dir / "saida.wav")
         self.assertFalse((self.dir / "saida.wav").exists())
 
-    def test_wav_longo_demais_e_value_error(self) -> None:
-        longo = self._wav("longo.wav", 2, taxa=8000)
-        with mock.patch.object(lim, "LIMITADOR_MAX_S", 0.01), self.assertRaises(ValueError):
+    def test_wav_longo_demais_e_truncado(self) -> None:
+        longo = self.dir / "longo.wav"
+        with wave.open(str(longo), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(8000)
+            w.writeframes(seno(1000, 0.95, 8000, 3.0).tobytes())
+        with mock.patch.object(lim, "LIMITADOR_MAX_S", 2.0):
             lim.limitar_wav(longo, self.dir / "saida.wav")
+        _, _, dados = ler_wav(self.dir / "saida.wav")
+        self.assertEqual(len(dados), 2 * 8000)
+        self.assertLessEqual(max(dados), TETO)
 
     def test_nao_deixa_temporario_se_a_gravacao_falha(self) -> None:
-        with mock.patch.object(lim.os, "replace", side_effect=OSError("x")), self.assertRaises(OSError):
+        with mock.patch.object(lim, "_substituir", side_effect=OSError("x")), self.assertRaises(OSError):
             lim.limitar_pcm16(seno(500, 0.4, 22050, 0.1).tobytes(), 22050, 1, self.dir / "h.wav")
         self.assertEqual(list(self.dir.iterdir()), [])
 
@@ -313,6 +373,9 @@ class BaseLimitador(taa.BaseAviso):
         self.sintese_pedida: list[str] = []
         self.pcm: tuple | None = None    # None = a decodificação falha
         self.falha_sintese = False
+        zera = mock.patch.dict(server._limitador_falhas, {"dia": None, "n": 0, "motivo": None})   # contador limpo por teste
+        zera.start()
+        self.addCleanup(zera.stop)
         self.pcm_fala = intercalar(seno(1000, 0.9, 22050, 0.3), seno(1000, 0.9, 22050, 0.3))
         self.pcm = (self.pcm_fala, 22050, -16, 2)
         pares = {
@@ -402,10 +465,12 @@ class TestLegadoOnline(BaseLimitador):
         self.assertEqual(self.anunciar().status_code, 200)
         self.assertEqual(self.tocadas[0][1], "anuncio_online.mp3")
 
-    def test_fala_longa_demais_toca_o_original(self) -> None:
-        with mock.patch.object(lim, "LIMITADOR_MAX_S", 0.01):
+    def test_fala_longa_demais_e_truncada_e_limitada_nao_toca_o_original(self) -> None:
+        with mock.patch.object(lim, "LIMITADOR_MAX_S", 0.1):
             self.assertEqual(self.anunciar().status_code, 200)
-        self.assertEqual(self.tocadas[0][1], "anuncio_online.mp3")
+        (tipo, nome, volume, pico), = self.tocadas
+        self.assertTrue(nome.endswith(".wav"))
+        self.assertLessEqual(pico, TETO)
         self.assertEqual(self.arquivos_de_fala(), [])
 
     def test_erro_ao_tocar_ainda_apaga_o_wav(self) -> None:
@@ -501,6 +566,125 @@ class TestLegadoOffline(BaseLimitador):
         server._anunciar("oi", "offline", "pt-BR-FranciscaNeural", 0, None, False, parar=parar)
         self.assertEqual(self.tocadas, [])
         self.assertEqual(self.arquivos_de_fala(), [])
+
+
+class TestOfflineTimeoutEParar(BaseLimitador):
+    def setUp(self) -> None:
+        super().setUp()
+        self.voz(motor="offline", aviso="microfone", voz_volume=40)
+
+    def test_timeout_da_sintese_nao_cai_no_sapi_e_apaga_o_destino(self) -> None:
+        def preso(texto: str, wpm: int, voz: Any, destino: Path) -> Path:
+            destino.write_bytes(b"parcial")
+            raise TimeoutError("preso")
+
+        self.assertEqual(server.LIMITADOR_SINTETIZAR_S, 30.0)
+        # o executor de teste propaga a exceção da função como o `executar_no_audio` real propaga o TimeoutError
+        with mock.patch.object(server, "_sintetizar_wav_legado", preso):
+            r = self.anunciar()
+        self.assertNotEqual(r.status_code, 200)
+        self.assertNotIn("sapi", [t[0] for t in self.tocadas])   # NÃO falou direto
+        self.assertEqual(self.tocadas, [])
+        self.assertEqual(self.arquivos_de_fala(), [])
+        self.assertEqual(server.limitador_estado_falhas(), (1, "sintese"))
+
+    def test_falha_imediata_continua_caindo_no_sapi_e_conta(self) -> None:
+        self.falha_sintese = True
+        self.assertEqual(self.anunciar().status_code, 200)
+        self.assertEqual([t[0] for t in self.tocadas], ["sapi"])
+        self.assertEqual(server.limitador_estado_falhas(), (1, "sintese"))
+
+    def test_parar_durante_a_fala_em_wav_corta_sem_sineta_do_fim_e_apaga_o_wav(self) -> None:
+        from programacao import SinalParada
+        sinal = SinalParada()
+        vistos: list[Path] = []
+
+        def reproduzir(caminho: Path, teto_s: float, parar: Any = None, volume: int = 100) -> bool:
+            vistos.append(caminho)
+            sinal.parar()      # o "Parar" chega no meio da fala
+            return True
+
+        with mock.patch.object(server, "_tocar_mp3", server._tocar_mp3_original),                 mock.patch.object(server, "_reproduzir_legado", reproduzir):
+            server._anunciar("oi", "offline", "pt-BR-FranciscaNeural", 0, None, False, parar=sinal, aviso="microfone")
+        self.assertEqual(len(vistos), 1)
+        self.assertTrue(vistos[0].name.endswith(".wav"))
+        self.assertIs(sinal.fala_cortada, True)
+        self.assertTrue(sinal.interrompivel)
+        self.assertEqual([e for e in self.cen.eventos if isinstance(e, tuple) and e[0] == "aviso"],
+                         [("aviso", "aviso_microfone.wav")])   # a sineta do FIM não tocou
+        self.assertEqual(self.arquivos_de_fala(), [])
+
+
+class TestContadorDeFalhas(BaseLimitador):
+    def setUp(self) -> None:
+        super().setUp()
+        self.internet = True
+        self.voz(motor="online", aviso="nenhum")
+
+    def test_falha_sobe_o_contador_com_token_fixo(self) -> None:
+        self.assertEqual(server.limitador_estado_falhas(), (0, None))
+        self.pcm = None
+        self.anunciar()
+        self.assertEqual(server.limitador_estado_falhas(), (1, "erro"))
+        self.pcm = (self.pcm_fala, 22050, 8, 2)
+        self.anunciar()
+        self.assertEqual(server.limitador_estado_falhas(), (2, "formato"))
+        self.pcm = (self.pcm_fala, 22050, -16, 9)
+        self.anunciar()
+        self.assertEqual(server.limitador_estado_falhas(), (3, "canais"))
+
+    def test_sucesso_e_limitador_desligado_nao_contam(self) -> None:
+        self.anunciar()
+        self.voz(motor="online", limitador=False)
+        self.pcm = None
+        self.anunciar()
+        self.assertEqual(server.limitador_estado_falhas(), (0, None))
+
+    def test_motivo_desconhecido_vira_erro(self) -> None:
+        server._registrar_falha_limitador("texto livre do windows")
+        self.assertEqual(server.limitador_estado_falhas(), (1, "erro"))
+
+    def test_zera_na_virada_do_dia(self) -> None:
+        with mock.patch.object(server, "_hoje_local", lambda: dt.date(2026, 10, 30)):
+            server._registrar_falha_limitador("formato")
+            self.assertEqual(server.limitador_estado_falhas(), (1, "formato"))
+        with mock.patch.object(server, "_hoje_local", lambda: dt.date(2026, 10, 31)):
+            self.assertEqual(server.limitador_estado_falhas(), (0, None))
+            server._registrar_falha_limitador("erro")
+            self.assertEqual(server.limitador_estado_falhas(), (1, "erro"))
+
+    def test_audita_agregado_so_a_contagem(self) -> None:
+        self.pcm = None
+        with mock.patch.object(server, "auditar_agregado") as aud:
+            self.anunciar()
+        aud.assert_called_once_with("limitador_falhou")
+
+    def test_pc_local_no_modo_pin_ve_as_chaves_no_get(self) -> None:
+        self.pcm = None
+        self.anunciar()
+        j = self.local("get", "/api/voz").get_json()
+        self.assertEqual((j["limitador_falhas_hoje"], j["limitador_motivo"]), (1, "erro"))
+        self.assertNotIn("limitador_falhas_hoje", j["voz_loja"])   # o voz_loja() segue só com a config
+
+
+class TestChavesPorPerfil(tpm.BasePermissoes):
+    def test_adm_ve_gerente_e_funcionario_nao(self) -> None:
+        server._registrar_falha_limitador("formato")
+        self.addCleanup(server._limitador_falhas.update, dia=None, n=0, motivo=None)
+        for perfil, vê in (("adm", True), ("gerente", False), ("funcionario", False)):
+            with self.subTest(perfil=perfil):
+                r = self.chamar("GET", "/api/voz", self.rede[perfil], local=False)
+                if perfil == "funcionario":
+                    continue   # o funcionário nem lê /api/voz (sem capacidade): nada a vazar
+                j = r.get_json()
+                self.assertEqual("limitador_falhas_hoje" in j, vê)
+                self.assertEqual("limitador_motivo" in j, vê)
+                if vê:
+                    self.assertEqual((j["limitador_falhas_hoje"], j["limitador_motivo"]), (1, "formato"))
+
+    def test_post_do_adm_devolve_as_chaves(self) -> None:
+        r = self.chamar("POST", "/api/voz", self.rede["adm"], local=False, corpo={"limitador": True})
+        self.assertIn("limitador_falhas_hoje", r.get_json())
 
 
 class TestSaidaFixada(BaseLimitador):
