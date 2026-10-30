@@ -100,3 +100,44 @@ _reproduzir_legado_registrador.registrador_de_teste = True
 _prog_tocar_no_motor_registrador.registrador_de_teste = True
 server._reproduzir_legado = _reproduzir_legado_registrador
 server._prog_tocar_no_motor = _prog_tocar_no_motor_registrador
+
+# v2.8.8 — trava global do LIMITADOR DA VOZ. As novas entradas do limitador são as únicas que decodificam a fala no mixer REAL
+# (`_ler_pcm_legado`: Sound(...).get_raw() no dispositivo padrão) ou usam o SAPI (`_sintetizar_wav_legado`: pyttsx3.save_to_file).
+# Aqui viram registradores que anotam e LEVANTAM RuntimeError (= "limitador indisponível": o anúncio segue com a fala original, o
+# caminho de falha que o servidor já trata), então os testes antigos continuam passando sem tocar nada. Os testes do limitador
+# trocam por PCM/WAV sintético. Originais em `server._ler_pcm_legado_original` / `_sintetizar_wav_legado_original`. E
+# `MotorAudio.ler_pcm` com o pygame de PRODUÇÃO (`importar_pygame`) nunca chega ao mixer: levanta ErroReproducao.
+server._limitador_chamadas_em_teste = []
+server._ler_pcm_legado_original = server.__dict__.get("_ler_pcm_legado")
+server._sintetizar_wav_legado_original = server.__dict__.get("_sintetizar_wav_legado")
+
+
+def _ler_pcm_legado_registrador(caminho):  # noqa: ANN001 - mesma assinatura do original
+    """Registrador de teste: anota o caminho e levanta; NUNCA decodifica no mixer real."""
+    server._limitador_chamadas_em_teste.append(("ler_pcm", caminho))
+    raise RuntimeError("trava de teste: mixer real")
+
+
+def _sintetizar_wav_legado_registrador(texto, velocidade_wpm, voz_id, destino):  # noqa: ANN001 - idem
+    """Registrador de teste: anota o texto e levanta; NUNCA usa o SAPI."""
+    server._limitador_chamadas_em_teste.append(("sintetizar", texto))
+    raise RuntimeError("trava de teste: SAPI real")
+
+
+_ler_pcm_legado_registrador.registrador_de_teste = True
+_sintetizar_wav_legado_registrador.registrador_de_teste = True
+server._ler_pcm_legado = _ler_pcm_legado_registrador
+server._sintetizar_wav_legado = _sintetizar_wav_legado_registrador
+
+_ler_pcm_do_motor_original = _motor_mod.MotorAudio.ler_pcm
+
+
+def _ler_pcm_do_motor_travado(self, caminho):  # noqa: ANN001
+    """Motor de PRODUÇÃO (pygame real) nunca decodifica em teste; motor com pygame falso usa o original."""
+    if getattr(self, "_pygame_factory", None) is _motor_mod.importar_pygame:
+        server._limitador_chamadas_em_teste.append(("motor_ler_pcm", caminho))
+        raise _motor_mod.ErroReproducao("trava de teste: mixer real")
+    return _ler_pcm_do_motor_original(self, caminho)
+
+
+_motor_mod.MotorAudio.ler_pcm = _ler_pcm_do_motor_travado
