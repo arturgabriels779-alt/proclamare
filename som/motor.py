@@ -47,6 +47,7 @@ PROGRESSO_PARADO_S = 2.0       # posição de reprodução parada por tanto temp
 INICIO_TOLERANCIA_S = 3.0      # folga extra antes de a 1ª posição andar (Bluetooth acorda devagar)
 PASSO_S = 0.05
 VOLUME_CHEIO = 100             # v2.8.5: volume da fala sem ganho (som/ não importa o server)
+VOLUME_SEGURO = 50             # v2.8.6: volume torto vale 50 (= server.VOZ_VOLUME_PADRAO; som/ não importa o server)
 VOLUME_TESTE = 0.5             # amplitude fixa do bipe de teste (nunca vem do cliente)
 CODIGOS_503 = ("ausente", "em_uso_exclusivo", "motor_contaminado")
 
@@ -354,7 +355,7 @@ class MotorAudio:
         relativo à duração medida (duração x (1 + folga) + margem; padrão: duração + 3 s): o áudio
         agendado usa 15% + 10 s porque a duração de um mp3 VBR sem cabeçalho pode ser subestimada.
         v2.8.5: `volume` (%, 10..100) é o ganho do `mixer.music` só nesta chamada (a fala do anúncio); 100 (padrão) não
-        chama `set_volume` (salvo mixer preso em volume baixo: volta a 1.0). Volume que não seja int válido vale 100. Abaixo de 100 vai antes do play e volta a 1.0 no `finally`, qualquer que seja o desfecho:
+        chama `set_volume` (salvo mixer preso em volume baixo: volta a 1.0). Volume que não seja int válido vale 50 (v2.8.6). Abaixo de 100 vai antes do play e volta a 1.0 no `finally`, qualquer que seja o desfecho:
         o aviso, a sineta do fim e a música da pasta nunca herdam o volume baixo.
         """
         self._exigir_vivo()
@@ -368,9 +369,10 @@ class MotorAudio:
         inicio = self._relogio()
         if prazo is not None:
             teto = min(teto, max(1.0, prazo - inicio))
-        # volume torto (bool, 0, negativo, > 100, float, texto) = sem ganho; mesma regra do server (10..100, passo 10)
+        # volume torto (bool, 0, negativo, > 100, float, texto) = o padrão seguro (50), nunca 100; mesma regra do
+        # server (10..100, passo 10). O 100 VÁLIDO segue sem processamento.
         if not (isinstance(volume, int) and not isinstance(volume, bool) and 10 <= volume <= 100 and volume % 10 == 0):
-            volume = VOLUME_CHEIO
+            volume = VOLUME_SEGURO
         ajustou = volume < VOLUME_CHEIO
         try:
             try:

@@ -2,7 +2,7 @@
 Testes da v2.8.5: volume da VOZ dos anúncios (config.json["voz_loja"]["voz_volume"], só o ADM muda), separado do
 volume do aviso sonoro (`aviso_volume`, v2.8.4).
 
-  * Rota: padrão 100, validação (400), permissão (403 para gerente/funcionário sem gravar nada; ADM 200; modo PIN:
+  * Rota: padrão 50 (v2.8.6), validação (400), permissão (403 para gerente/funcionário sem gravar nada; ADM 200; modo PIN:
     só o PC das caixas), `permissoes` do /api/auth/status.
   * Reprodução: os TRÊS caminhos da fala (legado online = mp3 no pygame.mixer.music; legado offline = pyttsx3;
     saída fixada = MotorAudio) recebem o volume; 100% não aplica nada; o aviso não muda com `voz_volume` e a fala
@@ -257,12 +257,13 @@ class TestLegadoOnlineRodada1(TestLegadoOnlinePygame):
             server._reproduzir_legado(Path("x.mp3"), 5.0, None, 100)
         self.assertEqual(self.volumes(), [])
 
-    def test_volume_torto_vale_100(self) -> None:
+    def test_volume_torto_vale_50(self) -> None:
+        # v2.8.6 (RT BAIXO-3): volume torto = o padrão seguro (50), nunca 100
         for ruim in (True, False, 0, -10, 5, 55, 105, 200, 40.0, "40", None):
             with self.subTest(v=ruim):
                 self.ev.clear()
                 server._reproduzir_legado(Path("x.mp3"), 5.0, None, ruim)
-                self.assertEqual(self.volumes(), [])
+                self.assertEqual(self.volumes(), [("volume", 0.5), ("volume", 1.0)])
 
     def test_parar_volta_a_1(self) -> None:
         self.musica.ocupada = True
@@ -329,12 +330,13 @@ class TestLegadoOfflinePyttsx3(unittest.TestCase):
         self.assertEqual(ev[-1], ("volume", 1.0))
         self.assertIn(("volume", 0.4), ev)
 
-    def test_volume_torto_vale_100(self) -> None:
+    def test_volume_torto_vale_50(self) -> None:
         for ruim in (True, 0, -10, 105, 40.0, "40", None):
             with self.subTest(v=ruim):
                 ev = self.motor_falso()
                 server._falar_offline_original("oi", 165, None, ruim)
-                self.assertFalse([e for e in ev if isinstance(e, tuple) and e[0] == "volume"])
+                self.assertEqual([e for e in ev if isinstance(e, tuple) and e[0] == "volume"],
+                                 [("volume", 0.5), ("volume", 1.0)])
 
     def test_100_nao_mexe_no_volume(self) -> None:
         ev = self.motor_falso()
@@ -502,7 +504,7 @@ class TestAnuncioSaidaFixada(BaseVoz):
         self.assertNotEqual(r.status_code, 200)
         self.assertEqual(self.so_volumes(), [("volume", 0.4), ("volume", 1.0)])
 
-    def test_volume_torto_vale_100_no_motor_e_no_servidor(self) -> None:
+    def test_volume_torto_vale_50_no_motor_e_no_servidor(self) -> None:
         self.configurar()
         for ruim in (True, 0, 105, 40.0, "40"):
             with self.subTest(v=ruim):
@@ -513,10 +515,10 @@ class TestAnuncioSaidaFixada(BaseVoz):
                 self.assertEqual(self.anunciar().status_code, 200)   # abre a saída
                 self.cen.eventos.clear()
                 server.SOM.motor.tocar(wav, volume=ruim)
-                self.assertEqual(self.so_volumes(), [])
+                self.assertEqual(self.so_volumes(), [("volume", 0.5), ("volume", 1.0)])
                 self.cen.eventos.clear()
                 server._som_tocar_anuncio(None, wav, [None], None, None, ruim)
-                self.assertEqual(self.so_volumes(), [])
+                self.assertEqual(self.so_volumes(), [("volume", 0.5), ("volume", 1.0)])
 
     def test_mixer_preso_volta_a_1_no_motor(self) -> None:
         self.configurar()

@@ -4345,9 +4345,10 @@ def _garantir_mixer(reiniciar: bool = False) -> Any:
 def _volume_da_fala(volume: Any) -> int:
     """
     v2.8.5: o volume da fala que chega às funções de áudio. Só um int válido (10..100, múltiplo de 10; nunca bool)
-    vale; qualquer outra coisa (bool, 0, negativo, > 100, float, texto) é tratada como 100 = sem ganho.
+    vale; v2.8.6 (RT BAIXO-3): qualquer outra coisa (bool, 0, negativo, > 100, float, texto) vale o padrão seguro
+    `VOZ_VOLUME_PADRAO` (50), nunca 100. O 100 VÁLIDO continua sem processamento.
     """
-    return volume if volume_valido(volume) else VOLUME_MAX
+    return volume if volume_valido(volume) else VOZ_VOLUME_PADRAO
 
 
 def _soltar_volume_preso(musica: Any) -> None:
@@ -7689,7 +7690,7 @@ def _som_tocar_anuncio(aviso: Path | None, fala: Path, duracoes: list[float | No
     o log com o tipo: a fala já saiu e o anúncio conta como ok.
     v2.8.5: `volume_voz` (= `voz_volume` da loja) vale SÓ para a fala (`motor.tocar(volume=...)`, ganho do mixer por
     item, sem reescrever o WAV/mp3); o aviso e a sineta do fim já vêm no volume deles. A 100% o motor não chama
-    `set_volume` (só se o mixer estiver preso em volume baixo). Volume torto = 100.
+    `set_volume` (só se o mixer estiver preso em volume baixo). Volume torto = 50 (v2.8.6).
     """
     motor = SOM.motor
     volume_voz = _volume_da_fala(volume_voz)
