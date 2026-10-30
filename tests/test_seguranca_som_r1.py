@@ -163,16 +163,18 @@ class TestLiberacaoEAuditoria(BaseR1):
         self.post("/api/spotify/volume", {"value": 95})       # falha sem liberação anterior: continua 70
         self.assertEqual(server._limite_spotify(), 70)
 
-    def test_audita_so_quando_a_liberacao_muda_de_valor(self) -> None:
+    def test_audita_uma_linha_por_passagem_acima_de_70(self) -> None:
+        # RT B4: arrastar/alternar acima de 70 (80, 90, 95...) = UMA linha `volume_alto` ao passar de 70; voltar a <= 70 e
+        # passar de novo = outra linha. Mudanças acima de 70 ficam só no agregado.
         with self.assertLogs(server.auditoria.name, level="INFO") as cap:
-            self.post("/api/spotify/volume", {"value": 90})
-            self.post("/api/spotify/volume", {"value": 90})
-            self.post("/api/spotify/volume", {"value": 90})
-            self.post("/api/spotify/volume", {"value": 95})
-        linhas = [x for x in cap.output if "acao=volume_alto" in x]
-        self.assertEqual(len(linhas), 2)
+            for v in (90, 90, 80, 90, 95, 80, 90):
+                self.post("/api/spotify/volume", {"value": v})
+            self.post("/api/spotify/volume", {"value": 60})
+            self.post("/api/spotify/volume", {"value": 85})
+        linhas = [x for x in cap.output if "acao=volume_alto " in x or x.endswith("acao=volume_alto")]
+        self.assertEqual(len(linhas), 2, cap.output)
         self.assertIn("valor=90", linhas[0])
-        self.assertIn("valor=95", linhas[1])
+        self.assertIn("valor=85", linhas[1])
 
     def test_put_que_falha_nao_audita(self) -> None:
         self.f.rotas[("PUT", "/me/player/volume")] = [tsp.CENARIOS["premium"]]

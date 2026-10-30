@@ -387,7 +387,7 @@ Contrato v2.8.7 (Segurança do som; um amplificador da loja queimou)
     `volume` do POST /api/youtube/state (0..100) passam sem corte; o padrão do estado passou de 70 para 50; acima de 70 o
     comando deixa a auditoria agregada `volume_alto_tocador`. Spotify: POST /api/spotify/volume acima de 70 vira a
     "liberação" (`_spotify_liberado`, em memória: some ao reiniciar ou ao gravar <= 70 pelo painel) e deixa a auditoria
-    `volume_alto` (onde=spotify, valor). O LIMITE do Spotify é `max(70, liberação)` (`_limite_spotify`): a restauração depois
+    `volume_alto` (onde=spotify, valor) UMA vez ao passar de 70 (mudanças acima de 70 = só `volume_alto_spotify` agregado). O LIMITE do Spotify é `max(70, liberação)` (`_limite_spotify`): a restauração depois
     do anúncio, o volume pendente e a correção automática nunca passam dele.
   * Correção automática (item 6, também com o painel FECHADO: um vigia lê o estado do player a cada 60 s quando o Spotify está
     configurado e conectado; a leitura do painel também a dispara): se alguém subir o volume pelo APP do Spotify, o servidor, ao LER um estado novo do player
@@ -6142,8 +6142,11 @@ def spotify_volume() -> Response:
         )
         if not _sucesso(status):
             _restaurar_liberacao_spotify(liberacao_anterior)
-    if _sucesso(status) and value > MUSICA_TETO and value != liberacao_anterior:
-        auditar("volume_alto", onde="spotify", valor=value)   # só quando a liberação MUDA de valor (só números)
+    if _sucesso(status) and value > MUSICA_TETO:
+        if liberacao_anterior is None:   # passou de 70 agora: UMA linha (só números)
+            auditar("volume_alto", onde="spotify", valor=value)
+        elif value != liberacao_anterior:   # já estava acima e mudou (arrasto): só o agregado, sem inundar a trilha
+            auditar_agregado("volume_alto_spotify")
     return _resposta_comando(status, reason)
 
 
