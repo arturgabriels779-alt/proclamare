@@ -2389,7 +2389,7 @@ class TestAnnounceSom(BaseSom):
     EVENTOS_LEGADO = ["duck_spotify", ("yt", "duck"), "falar_legacy", ("restore_spotify", 30), ("yt", "restore")]
     # v2.8 (A3): estes testes comparam a sequência EXATA de áudio (cen.tocados, arquivos na pasta) de antes do aviso
     # sonoro; a voz da loja deles fica sem aviso. O aviso em si é testado em tests/test_aviso_anuncio.py.
-    CONFIG_SEM_AVISO = {"voz_loja": {"aviso": "nenhum"}}
+    CONFIG_SEM_AVISO = {"voz_loja": {"aviso": "nenhum", "aviso_som_v": 2}}
 
     def setUp(self) -> None:
         super().setUp()

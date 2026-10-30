@@ -669,6 +669,9 @@ class MusicaFalsa:
         if self.c.fim_externo is not None:
             self.c.fim_externo()
 
+    def set_volume(self, valor: float) -> None:   # v2.8.6: o padrão da voz é 50%, então a fala aplica ganho
+        pass
+
     def get_busy(self) -> bool:
         return self.tocando and (self.c.preso or time.monotonic() < self.fim)
 
