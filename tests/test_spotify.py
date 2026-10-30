@@ -235,6 +235,7 @@ class BaseSpotify(unittest.TestCase):
         server._critico_ate = 0.0
         server._player_estado.update(data=None, ts=None, erro=None)
         server._teto_spotify.update(proxima=0.0, de=None, ate=0.0)   # v2.8.7
+        server._duck_aparelho_definir(None)
         with server._api_resultado_lock:
             server._api_resultado.clear()
         server._busca_cache.clear()

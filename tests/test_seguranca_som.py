@@ -3,7 +3,7 @@ Testes da v2.8.7 "Segurança do som" (um amplificador da loja queimou; pedido do
 
   1. O 70 (`VOLUME_TETO_SEGURO`) é a SEGUNDA trava, não um teto: voz/aviso/agendado aceitam 10..100 (só ADM), sem min na
      leitura; acima de 70 só fica a auditoria `volume_alto` (só números).
-  2. `agendado_volume` (10..70, padrão 50, só ADM) no GET/POST /api/voz e a sua aplicação ao áudio agendado
+  2. `agendado_volume` (10..100, padrão 50, só ADM) no GET/POST /api/voz e a sua aplicação ao áudio agendado
      (legado e saída fixada), sempre de volta a 1.0.
   3. Música: Tocador (padrão 50; sem clamp) e Spotify (acima de 70 vira a "liberação"; correção automática e restauração
      usam max(70, liberação)).

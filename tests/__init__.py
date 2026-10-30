@@ -63,3 +63,40 @@ _tocar_mp3_registrador.registrador_de_teste = True
 _falar_offline_registrador.registrador_de_teste = True
 server._tocar_mp3 = _tocar_mp3_registrador
 server._falar_offline = _falar_offline_registrador
+
+# v2.8.7 (rodada 1, RT I2) — trava global do ÁUDIO AGENDADO. ESTE PC É O DAS CAIXAS. O arquivo agendado chega ao hardware por
+# dois caminhos: o legado (`_reproduzir_legado` -> pygame.mixer.music no dispositivo padrão do Windows) e a saída fixada
+# (`_prog_tocar_no_motor` -> `SOM.motor`). Os dois viram registradores que SÓ tocam quando o teste trocou o pygame por um
+# FALSO (`_garantir_mixer` trocado / `SOM.motor` com `pygame_factory` próprio); sem isso, apenas anotam e NUNCA tocam.
+# Os originais ficam em `server._reproduzir_legado_original` / `_prog_tocar_no_motor_original`.
+from som import motor as _motor_mod  # noqa: E402
+
+server._audios_agendados_em_teste = []
+server._reproduzir_legado_original = server.__dict__.get("_reproduzir_legado")
+server._prog_tocar_no_motor_original = server.__dict__.get("_prog_tocar_no_motor")
+_garantir_mixer_de_producao = server.__dict__.get("_garantir_mixer")
+
+
+def _reproduzir_legado_registrador(caminho, teto_s, parar=None, volume=100):  # noqa: ANN001 - mesma assinatura do original
+    """Registrador de teste: com o `_garantir_mixer` REAL e o pygame REAL anota (arquivo, volume) e não toca; com pygame
+    falso (`_garantir_mixer` trocado ou um falso em sys.modules, sem `__file__`), usa o original."""
+    pg = sys.modules.get("pygame")
+    falso = pg is not None and getattr(pg, "__file__", None) is None   # o pygame real tem __file__
+    if server.__dict__.get("_garantir_mixer") is _garantir_mixer_de_producao and not falso:
+        server._audios_agendados_em_teste.append(("legado", caminho, volume))
+        return bool(parar is not None and parar.is_set())
+    return server._reproduzir_legado_original(caminho, teto_s, parar, volume)
+
+
+def _prog_tocar_no_motor_registrador(caminho, duracao, sinal, volume=50):  # noqa: ANN001 - idem
+    """Registrador de teste: com o motor de PRODUÇÃO (pygame real) anota e não toca; com motor de pygame falso, usa o original."""
+    if getattr(server.SOM.motor, "_pygame_factory", None) is _motor_mod.importar_pygame:
+        server._audios_agendados_em_teste.append(("motor", caminho, volume))
+        return sinal.is_set()
+    return server._prog_tocar_no_motor_original(caminho, duracao, sinal, volume)
+
+
+_reproduzir_legado_registrador.registrador_de_teste = True
+_prog_tocar_no_motor_registrador.registrador_de_teste = True
+server._reproduzir_legado = _reproduzir_legado_registrador
+server._prog_tocar_no_motor = _prog_tocar_no_motor_registrador
