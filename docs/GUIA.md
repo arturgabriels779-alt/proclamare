@@ -575,15 +575,36 @@ fim. Para ninguém ficar tocando sinetas sem
 parar, o **Ouvir** aceita até 6 toques por minuto em cada celular e 20 a cada 10 minutos na loja toda.
 
 **Volume da voz e volume do aviso (só o administrador).** Em **Voz da loja**, o administrador tem dois controles
-separados, de 10% a 100%, de 10 em 10:
+separados, de 10% a 100%, de 10 em 10 (veja "Volumes e travas de segurança", abaixo):
 
 - **Volume da voz**: a fala dos anúncios. Vem em **50%**. Vale para os anúncios digitados, as mensagens
   prontas, os horários agendados com anúncio e o **Testar caixas**, que serve para conferir.
-- **Volume do aviso**: a sineta do início e a do fim. Vem em **30%**. Use o **Ouvir** para conferir. Desde a v2.8.6 as sinetas ficaram **mais suaves e mais baixas**, para proteger os amplificadores; quem já tinha um volume maior gravado volta uma vez para o padrão (o aviso para 30% e a **voz** para 50%; o administrador pode subir de novo). O aviso começa em 30% e a voz em 50%. Acima de 50% o painel avisa e pede para arrastar de novo; acima de 80% o aviso fica vermelho. O que manda de verdade é o ganho da mesa e dos amplificadores: o Proclamare não mexe neles.
+- **Volume do aviso**: a sineta do início e a do fim. Vem em **30%**. Use o **Ouvir** para conferir. Desde a v2.8.6 as sinetas ficaram **mais suaves e mais baixas**, para proteger os amplificadores; quem já tinha um volume maior gravado volta uma vez para o padrão (o aviso para 30% e a **voz** para 50%; o administrador pode subir de novo). O aviso começa em 30% e a voz em 50%. Acima de 50% o painel avisa e pede para arrastar de novo; acima de 70% o aviso fica vermelho (v2.8.7). O que manda de verdade é o ganho da mesa e dos amplificadores: o Proclamare não mexe neles.
 
 Um não mexe no outro, e nenhum dos dois muda as músicas, o YouTube, o Spotify nem o volume do Windows. Se o som estiver
 forçando as caixas, baixe aqui em vez de mexer no Windows ou na mesa de som. O gerente não vê esses controles. Sem
 contas criadas, só o computador das caixas muda os volumes.
+
+**Volumes e travas de segurança (v2.8.7).** Um amplificador da loja queimou, então o Proclamare ganhou travas. Elas
+**avisam e pedem confirmação**; quem decide é você:
+
+- **Voz, aviso e áudios agendados (só o administrador).** Em **Voz da loja** há três controles de volume, de 10 a 100,
+  de 10 em 10: **Volume da voz** (vem em 50%), **Volume do aviso** (vem em 30%) e **Volume dos áudios agendados** (vem em
+  50%; vale só para os arquivos de música tocados por **Horários**, não para listas, músicas avulsas nem Spotify).
+  Recomendado: até 50%. Primeira trava em 50% (aviso amarelo e é preciso arrastar de novo). Segunda trava em 70%, com
+  **aviso vermelho**: confira as luzinhas vermelhas (clip/peak) dos amplificadores e da mesa. Passar de 70% só o
+  administrador consegue, e isso fica registrado (só o número, nunca texto).
+- **Música (aba Tocador e Spotify).** Quem já controla a música (gerente e administrador) tem as mesmas duas travas e pode
+  passar de 70%, com o mesmo aviso das luzinhas de clip. O funcionário continua sem acesso à música.
+- **Se alguém subir o volume pelo aplicativo do Spotify** acima do limite (70%, ou o valor que o gerente/administrador
+  liberou pelo painel), o Proclamare baixa sozinho para o limite (no máximo uma vez por minuto e nunca no meio de um
+  anúncio) e o painel avisa por cerca de um minuto. A liberação some quando alguém grava 70% ou menos, ou ao reiniciar.
+  Depois de um anúncio, a música do Spotify volta no máximo ao limite.
+- **Entrada suave:** todo som tocado pelo Proclamare começa com uma subida rápida (120 ms), sem "tapa" no começo. A voz do
+  Windows no modo offline fala direto e não tem essa subida.
+- **O que o Proclamare NÃO controla:** o volume do Windows (ele nunca mexe nele), o ganho da mesa de som e dos
+  amplificadores e o botão de volume do aplicativo do Spotify. O que manda de verdade nas caixas é a mesa/amplificador:
+  deixe o ganho deles num ponto seguro e confira a luz de "clip".
 
 **A voz é da loja inteira.** O motor (Auto, Online ou Offline), a voz (Francisca ou Antônio), a velocidade e o aviso
 valem para **todos os aparelhos**: o que você escolhe no celular muda também no computador da loja. Antes, cada
