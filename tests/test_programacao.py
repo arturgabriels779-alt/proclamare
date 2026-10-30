@@ -992,6 +992,12 @@ class TesteRotasEsquema(BaseProg):
         base = {"tipo": "lista", "alvo": "abcdef01", "hora": "08:00", "dias": [1]}
         self.assertEqual(self.salvar_itens([{**base, "voz": "antonio"}]).status_code, 400)
 
+    def test_vozes_novas_na_programacao(self) -> None:
+        # v2.8.9: seraphina/remy valem no item anuncio
+        for v in ("seraphina", "remy"):
+            it = self.salvar_itens([self.corpo_anuncio(voz=v)]).get_json()["itens"][0]
+            self.assertEqual(it["voz"], v)
+
     def test_embaralhar_so_para_lista(self) -> None:
         self.assertEqual(self.salvar_itens([self.corpo_anuncio(embaralhar=True)]).status_code, 400)
         self.assertEqual(self.salvar_itens([self.corpo_anuncio(embaralhar="sim")]).status_code, 400)
@@ -1710,6 +1716,13 @@ class TesteExecucaoAnuncio(BaseProg):
 
     def anuncio_gravado(self, **kw: Any) -> dict:
         return self.gravar([self.corpo_anuncio(**kw)])[0]
+
+    def test_anuncio_voz_nova_usa_shortname(self) -> None:
+        # v2.8.9
+        it = self.anuncio_gravado(alvo=TEXTO_SECRETO, voz="seraphina", velocidade=0)
+        self.tocador(True)
+        self.assertEqual(self.tocar_agora(it["id"]).status_code, 202)
+        self.assertEqual(self.chamadas_voz, [("online", TEXTO_SECRETO, "de-DE-SeraphinaMultilingualNeural", 0)])
 
     def test_anuncio_online_pausa_a_musica_em_vez_de_abaixar(self) -> None:
         it = self.anuncio_gravado(alvo=TEXTO_SECRETO, voz="antonio", velocidade=10)

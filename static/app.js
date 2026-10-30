@@ -120,7 +120,7 @@
     conta: "proclamare_conta", // v2.8: id opaco da última conta logada neste navegador (outra pessoa = limpa o composer)
   };
   const ENGINES = ["auto", "online", "offline"];
-  const VOICES = ["francisca", "antonio"];
+  const VOICES = ["francisca", "antonio", "seraphina", "remy"];
   const DEVICE_RE = /^[A-Za-z0-9]{1,128}$/;
   // Spotify v2.4.2: listas FIXAS do servidor (qualquer outro valor é ignorado)
   const SP_CODIGOS = ["premium", "sem_dispositivo", "reconectar", "limite", "indisponivel"];

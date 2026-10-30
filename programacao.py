@@ -70,7 +70,7 @@ VISTO_INTERVALO_S = 30.0
 JANELA_MAX = timedelta(hours=24)  # o "recuperar o que perdi" nunca olha mais que um dia para trás
 PERDIDOS_MAX_POR_VARREDURA = 20
 FEITOS_RETENCAO = timedelta(days=3)
-VOZES = ("francisca", "antonio")
+VOZES = ("francisca", "antonio", "seraphina", "remy")
 MOTORES = ("auto", "online", "offline")
 VELOCIDADE_MIN, VELOCIDADE_MAX = -50, 50
 STATUS = ("ok", "nao_tocou", "perdido", "erro")

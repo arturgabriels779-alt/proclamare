@@ -195,6 +195,22 @@ class TestAvisoNoAnuncio(BaseAviso):
         self.assertEqual(r.get_json()["engine_used"], "online")
         self.assertEqual(usados, [("pt-BR-AntonioNeural", 20)])
 
+    def test_voz_nova_usa_o_shortname_certo(self) -> None:
+        # v2.8.9: voz da loja "remy" -> fr-FR-RemyMultilingualNeural no gerador (falso do teste)
+        self.internet = True
+        self.voz(motor="online", voz="remy", velocidade=0)
+        usados: list[tuple] = []
+        gerar_original = server.gerar_audio_online
+
+        def gerar(texto: str, voz: str, vel: int) -> Path:
+            usados.append((voz, vel))
+            return gerar_original(texto, voz, vel)
+
+        with self.tocar_mp3_legado(), mock.patch.object(server, "gerar_audio_online", gerar):
+            r = self.anunciar()
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(usados, [("fr-FR-RemyMultilingualNeural", 0)])
+
     def test_voz_offline_e_a_padrao(self) -> None:
         vozes = {"voices": [{"id": "voz-br", "name": "BR"}], "default": "voz-br"}
         recebidas: list[Any] = []

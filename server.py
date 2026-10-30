@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.8.8 "Limitador da voz"; v2.8.7 "Segurança do som"; v2.8.6 "Sinetas suaves"; v2.8.5 "Volume da voz"; v2.8.4 "Volume do aviso"; v2.8.3 "Atualizador: ignora ZIP antigo"; v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.8.9 "Vozes Seraphina e Remy"; v2.8.8 "Limitador da voz"; v2.8.7 "Segurança do som"; v2.8.6 "Sinetas suaves"; v2.8.5 "Volume da voz"; v2.8.4 "Volume do aviso"; v2.8.3 "Atualizador: ignora ZIP antigo"; v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -434,7 +434,7 @@ Contrato v2.8.7 (Segurança do som; recomendações preventivas para o equipamen
 Contrato v2.8 (Parte A: voz da loja)
 ------------------------------------
   A voz dos anúncios é da LOJA, não de cada aparelho: mora em config.json["voz_loja"] =
-  {"motor": auto|online|offline, "voz": francisca|antonio, "velocidade": -50..50, "aviso": nenhum|microfone|
+  {"motor": auto|online|offline, "voz": francisca|antonio|seraphina|remy, "velocidade": -50..50, "aviso": nenhum|microfone|
   aviao|aeroporto|supermercado|ding_dong_duplo, "aviso_volume": 10..100}. Padrão (VOZ_LOJA_PADRAO): auto / francisca / 0 / microfone / 30 / 50 (v2.8.6: aviso 30, voz 50). voz_loja() nunca levanta:
   chave ausente ou campo torto cai no padrão campo a campo; "definida" = a chave existe no config. Os avisos que saíram
   da lista na v2.8 (ding_dong, suave, sino, comissario, aeroporto_inicio_fim) são "campo torto": guardados no
@@ -833,7 +833,7 @@ Contrato v2.6 etapa 2 (Programação de horários)
       tipo "lista"   alvo = lista_id (8 hex); não existe = 400 "lista_inexistente". "embaralhar": bool
                      (só vale aqui; true em outro tipo = 400).
       tipo "anuncio" alvo = TEXTO 1..500 caracteres, mesma higienização das Mensagens prontas (sem
-                     controle/formato/substituto/uso privado; CRLF vira LF). "voz" francisca|antonio,
+                     controle/formato/substituto/uso privado; CRLF vira LF). "voz" francisca|antonio|seraphina|remy,
                      "motor" auto|online|offline, "velocidade" -50..50: opcionais (padrão francisca/auto/0);
                      só valem em anúncio. Soma dos textos de anúncio <= 10.000 caracteres (o corpo do POST
                      fica abaixo dos 64 KB do waitress; emoji em todo texto pode estourar e dá 413).
@@ -4855,6 +4855,9 @@ def resolver_voz_offline(voz_id: Any) -> str | None:
 VOZES_ONLINE = {
     "francisca": "pt-BR-FranciscaNeural",
     "antonio": "pt-BR-AntonioNeural",
+    # v2.8.9: vozes MULTILÍNGUES da Microsoft (falam o português do texto com leve sotaque); mesmo edge-tts, sem dependência nova
+    "seraphina": "de-DE-SeraphinaMultilingualNeural",
+    "remy": "fr-FR-RemyMultilingualNeural",
 }
 MOTORES = frozenset({"auto", "online", "offline"})
 VELOCIDADE_OFFLINE_WPM = 165
@@ -4879,7 +4882,8 @@ CAMPOS_VOLUME_LOJA = ("aviso_volume", "voz_volume", "agendado_volume")
 CAPACIDADE_DO_VOLUME = {"aviso_volume": "aviso_volume", "voz_volume": "voz_volume", "agendado_volume": "voz_volume",
                         "limitador": "voz_volume"}   # v2.8.8: o limitador da voz reaproveita a capacidade do volume da voz
 CAMPOS_COM_CAPACIDADE = (*CAMPOS_VOLUME_LOJA, "limitador")   # o que o POST /api/voz só aceita de quem tem a capacidade
-VOZES_LOJA_NOMES = (("francisca", "Francisca (feminina)"), ("antonio", "Antônio (masculina)"))
+VOZES_LOJA_NOMES = (("francisca", "Francisca (feminina)"), ("antonio", "Antônio (masculina)"),
+                    ("seraphina", "Seraphina (feminina)"), ("remy", "Remy (masculina)"))
 VOZ_LOJA_ESCRITA_MAX_POR_MIN = 20   # POST /api/voz, por IP
 
 

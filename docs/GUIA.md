@@ -619,12 +619,16 @@ como sempre e o anúncio não falha.
   amplificadores e o botão de volume do aplicativo do Spotify. O que manda de verdade nas caixas é a mesa/amplificador:
   deixe o ganho deles num ponto seguro e confira a luz de "clip".
 
-**A voz é da loja inteira.** O motor (Auto, Online ou Offline), a voz (Francisca ou Antônio), a velocidade e o aviso
+**A voz é da loja inteira.** O motor (Auto, Online ou Offline), a voz (Francisca, Antônio, Seraphina ou Remy), a velocidade e o aviso
 valem para **todos os aparelhos**: o que você escolhe no celular muda também no computador da loja. Antes, cada
 aparelho guardava a sua voz. Se a loja ainda não tinha uma voz salva, o computador da loja passa a usar a escolha
 que ele guardava antes (motor, voz e velocidade), uma única vez. Se outro aparelho já escolheu a voz da loja, a escolha
 antiga é descartada.
 Por enquanto qualquer aparelho com acesso (PC da loja ou PIN) pode mudar; numa versão futura só o gerente poderá.
+
+**Quatro vozes online.** Francisca e Antônio são vozes em português. Seraphina (feminina) e Remy (masculina) são vozes
+multilíngues da Microsoft: falam o português do texto com leve sotaque e são recomendadas por terem menos agudos.
+Sem internet, o modo Auto continua usando a voz do Windows.
 
 Se a voz da loja estiver em **Online** e a internet cair, o anúncio não sai e o painel avisa: escolha **Auto** para
 usar a voz do computador enquanto isso. No limite de 60 minutos de som por dia da **Programação**, cada anúncio

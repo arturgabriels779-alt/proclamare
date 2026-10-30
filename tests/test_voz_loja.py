@@ -143,7 +143,15 @@ class TestVozLoja(Base):
             {"id": "ding_dong_duplo", "nome": "Ding-dong (2 vezes)"},
         ])
         self.assertEqual(o["motores"], ["auto", "online", "offline"])
-        self.assertEqual([v["id"] for v in o["vozes"]], ["francisca", "antonio"])
+        self.assertEqual([v["id"] for v in o["vozes"]], ["francisca", "antonio", "seraphina", "remy"])
+
+    def test_vozes_novas_aceitas_e_shortname(self) -> None:
+        # v2.8.9: seraphina/remy gravam e mapeiam para o ShortName multilíngue; id desconhecido segue 400
+        for vid, nome in (("seraphina", "de-DE-SeraphinaMultilingualNeural"), ("remy", "fr-FR-RemyMultilingualNeural")):
+            self.assertEqual(self.c.post("/api/voz", json={"voz": vid}).status_code, 200)
+            self.assertEqual(server.voz_loja()["voz"], vid)
+            self.assertEqual(server.VOZES_ONLINE[vid], nome)
+        self.assertEqual(self.c.post("/api/voz", json={"voz": "outra"}).status_code, 400)
 
 
 if __name__ == "__main__":
