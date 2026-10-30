@@ -679,9 +679,12 @@ class TestChavesPorPerfil(tpm.BasePermissoes):
         for perfil, vê in (("adm", True), ("gerente", False), ("funcionario", False)):
             with self.subTest(perfil=perfil):
                 r = self.chamar("GET", "/api/voz", self.rede[perfil], local=False)
-                if perfil == "funcionario":
-                    continue   # o funcionário nem lê /api/voz (sem capacidade): nada a vazar
-                j = r.get_json()
+                j = r.get_json() or {}
+                if perfil == "funcionario":   # o funcionário lê a voz da loja, mas nunca o contador de falhas
+                    self.assertEqual(r.status_code, 200)
+                    self.assertNotIn("limitador_falhas_hoje", j)
+                    self.assertNotIn("limitador_motivo", j)
+                    continue
                 self.assertEqual("limitador_falhas_hoje" in j, vê)
                 self.assertEqual("limitador_motivo" in j, vê)
                 if vê:
