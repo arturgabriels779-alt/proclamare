@@ -389,9 +389,13 @@ Contrato v2.8.8 (Limitador da voz; segurança preventiva: mais segurança para a
     (3) saída fixada offline: o WAV do pyttsx3 passa por `limitar_wav` (`_limitar_fala_wav`, no lugar);
     (4) legado offline: com o limitador ligado a fala é sintetizada em WAV (`_sintetizar_wav_legado` = pyttsx3.save_to_file;
         `_preparar_fala_offline_limitada`), limitada e tocada pelo mixer: passa a ser INTERROMPÍVEL (sem `nao_interrompivel`). Se
-        a síntese falhar ANTES de tocar, cai no `_falar_offline` direto de sempre (nada tocou, não há fala dupla). Limitador
+        a síntese falhar IMEDIATAMENTE (exceção que não seja TimeoutError), cai no `_falar_offline` direto de sempre (nada tocou, não
+        há fala dupla); TimeoutError (espera de LIMITADOR_SINTETIZAR_S = 30 s) NÃO cai nele: sobe o erro de áudio de sempre. Limitador
         desligado: tudo exatamente como na v2.8.7 (inclusive o SAPI direto, não cortável).
-  Qualquer falha do limitador (formato, duração > LIMITADOR_MAX_S = 100 s, erro) = UMA linha de log com só o TIPO do erro e a
+  Fala acima de LIMITADOR_MAX_S (100 s) é TRUNCADA nesse tamanho (nunca recusada); até 8 canais. Falhas visíveis ao ADM: GET e POST
+  /api/voz trazem, no nível de cima da resposta (fora de "voz_loja"), `limitador_falhas_hoje` (int, falas do dia local que o limitador
+  não processou; zera na virada) e `limitador_motivo` (último motivo: formato|canais|erro|sintese, ou null), SÓ para quem tem a
+  capacidade `voz_volume` (os outros não recebem as chaves); cada falha também faz `auditar_agregado("limitador_falhou")`. Qualquer falha do limitador (formato, erro) = UMA linha de log com só o TIPO do erro e a
   fala original toca: o anúncio nunca falha por causa dele. Os arquivos temporários (`anuncio_*.wav`; os `.tmp` órfãos saem na
   limpeza) são apagados no `finally`. Testes: tests/test_limitador.py (a trava global de tests/__init__.py impede o mixer
   e o SAPI reais).
@@ -4689,7 +4693,42 @@ def _falar_offline(texto: str, velocidade_wpm: int, voz_id: str | None, volume: 
 # (digitado, Mensagens, `anuncio` da Programação, "Testar caixas"); nunca para sinetas, `audio` agendado, músicas,
 # /api/som/testar nem "Ouvir". Qualquer falha dele = uma linha de log só com o TIPO do erro e a fala ORIGINAL toca.
 LIMITADOR_DECODIFICAR_S = 30.0    # espera pela decodificação do mp3 na thread de áudio
-LIMITADOR_SINTETIZAR_S = 60.0     # espera pela síntese WAV da voz offline (save_to_file)
+LIMITADOR_SINTETIZAR_S = 30.0     # espera pela síntese WAV da voz offline (save_to_file)
+
+# Falhas do limitador (v2.8.8 rodada 1): quantas falas NÃO foram processadas hoje (dia local; zera na virada) e o ÚLTIMO motivo como
+# TOKEN fixo (nunca texto). Só em memória. Quem tem a capacidade `voz_volume` vê os dois no GET /api/voz.
+LIMITADOR_MOTIVOS = ("formato", "canais", "erro", "sintese")
+_limitador_falhas_lock = threading.Lock()
+_limitador_falhas: dict[str, Any] = {"dia": None, "n": 0, "motivo": None}
+
+
+def _hoje_local() -> date:
+    """O dia local de agora (os testes trocam esta função para simular a virada do dia)."""
+    return datetime.now().date()
+
+
+def _registrar_falha_limitador(motivo: str) -> None:
+    """Conta uma fala que o limitador não conseguiu processar (a fala original tocou). Nunca levanta."""
+    if motivo not in LIMITADOR_MOTIVOS:
+        motivo = "erro"
+    try:
+        hoje = _hoje_local()
+        with _limitador_falhas_lock:
+            if _limitador_falhas["dia"] != hoje:
+                _limitador_falhas.update(dia=hoje, n=0, motivo=None)
+            _limitador_falhas["n"] += 1
+            _limitador_falhas["motivo"] = motivo
+        auditar_agregado("limitador_falhou")   # só a contagem
+    except Exception:  # noqa: BLE001  (a contagem nunca derruba o anúncio)
+        pass
+
+
+def limitador_estado_falhas() -> tuple[int, str | None]:
+    """(falhas de hoje, último motivo ou None); o contador zera na virada do dia local."""
+    with _limitador_falhas_lock:
+        if _limitador_falhas["dia"] != _hoje_local():
+            return 0, None
+        return int(_limitador_falhas["n"]), _limitador_falhas["motivo"]
 
 
 def _ler_pcm_legado(caminho: Path) -> tuple[bytes, int, int, int]:
@@ -4725,10 +4764,11 @@ def _limitar_fala_mp3(mp3: Path, ler_pcm: Callable[[Path], tuple[bytes, int, int
     try:
         bruto, taxa, tamanho, canais = executar_no_audio(ler_pcm, mp3, timeout=LIMITADOR_DECODIFICAR_S)
         if tamanho != -16:
-            raise ValueError("formato do mixer")
+            raise som_limitador.ErroLimitador("formato do mixer", "formato")
         return som_limitador.limitar_pcm16(bruto, taxa, canais, destino)
     except Exception as exc:  # noqa: BLE001 - o anúncio nunca falha por causa do limitador; só o tipo no log
         log.warning("Limitador da voz indisponível (%s); a fala sai sem ele.", type(exc).__name__)
+        _registrar_falha_limitador(getattr(exc, "motivo", "erro"))
         apagar_audio(destino)
         return None
 
@@ -4739,22 +4779,29 @@ def _limitar_fala_wav(wav: Path) -> None:
         som_limitador.limitar_wav(wav, wav)
     except Exception as exc:  # noqa: BLE001
         log.warning("Limitador da voz indisponível (%s); a fala sai sem ele.", type(exc).__name__)
+        _registrar_falha_limitador(getattr(exc, "motivo", "erro"))
 
 
 def _preparar_fala_offline_limitada(texto: str, voz_id: str | None) -> Path | None:
     """
     v2.8.8 (fluxo legado, voz offline, limitador ligado): sintetiza a fala em WAV (thread de áudio, nada toca),
     limita e devolve o arquivo para tocar pelo mixer (INTERROMPÍVEL, ao contrário do SAPI falando direto). None =
-    a síntese falhou ANTES de tocar (nada saiu): quem chama cai no `_falar_offline` de sempre. Já o limitar pode
+    a síntese falhou IMEDIATAMENTE antes de tocar (nada saiu): quem chama cai no `_falar_offline` de sempre. TimeoutError
+    NÃO cai nele (o SAPI antigo pode estar preso): apaga o destino e sobe o erro de áudio de sempre. Já o limitar pode
     falhar sem derrubar: então o WAV sintetizado toca como está. O chamador apaga o arquivo (o `_tocar_mp3` o faz).
     """
     destino = AUDIO_DIR / f"anuncio_{uuid.uuid4().hex}.wav"
     try:
         executar_no_audio(_sintetizar_wav_legado, texto, VELOCIDADE_OFFLINE_WPM, voz_id, destino,
                           timeout=LIMITADOR_SINTETIZAR_S)
+    except TimeoutError:   # a thread de áudio está presa no SAPI: falar direto só prenderia mais
+        apagar_audio(destino)
+        _registrar_falha_limitador("sintese")
+        raise
     except Exception as exc:  # noqa: BLE001
         log.warning("Síntese offline em WAV indisponível (%s); a fala sai direto pela voz do Windows.",
                     type(exc).__name__)
+        _registrar_falha_limitador("sintese")
         apagar_audio(destino)
         return None
     _limitar_fala_wav(destino)
@@ -7440,6 +7487,15 @@ def _tratar_erro_voz_loja(e: ErroVozLoja) -> tuple[Response, int]:
     return jsonify({"ok": False, "error": e.mensagem, "campo": e.campo}), e.status
 
 
+def _limitador_chaves_do_adm() -> dict[str, Any]:
+    """v2.8.8 rodada 1: `limitador_falhas_hoje` (int) e `limitador_motivo` (token|null), no nível de cima da resposta, SÓ para
+    quem tem a capacidade `voz_volume`; os outros não recebem as chaves."""
+    if not _perfil_pode("voz_volume"):
+        return {}
+    n, motivo = limitador_estado_falhas()
+    return {"limitador_falhas_hoje": n, "limitador_motivo": motivo}
+
+
 def _resposta_voz_loja() -> Response:
     """Voz atual + as opções para montar os controles (motores, vozes, avisos)."""
     return jsonify({
@@ -7450,6 +7506,7 @@ def _resposta_voz_loja() -> Response:
             "vozes": [{"id": i, "nome": n} for i, n in VOZES_LOJA_NOMES],
             "avisos": [{"id": a, "nome": NOMES_AVISO.get(a, a)} for a in AVISOS],
         },
+        **_limitador_chaves_do_adm(),
     })
 
 
