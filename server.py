@@ -396,7 +396,7 @@ Contrato v2.8 (Parte A: voz da loja)
   leitura (`voz_loja()`), sem o marcador, `aviso_volume`/`voz_volume` válidos já gravados viram min(gravado, 50) e o marcador é
   gravado sob o _config_lock (só a chave `voz_loja`; sem `voz_loja` nada é gravado; falha de gravação = a leitura já vem
   rebaixada); todo POST /api/voz grava o marcador (o ADM sobe até 100 depois). O marcador nunca aparece no GET /api/voz e o
-  POST o recusa (400, chave fora da lista). Os WAV em audios_temp mudam de conteúdo: a conferência por conteúdo os regrava.
+  POST o recusa (400, chave fora da lista). Rodada 1: marcador aceito só como int 2 (2.0/"2"/True migram); gravação da migração falha = backoff de 300 s (um log por janela, leitura rebaixada); a migração audita UMA linha `voz_migrar` só com números (volumes de/para). Os WAV em audios_temp mudam de conteúdo: a conferência por conteúdo os regrava.
   v2.8.5 "voz_volume": volume da FALA dos anúncios em % — mesma regra do aviso_volume (inteiro 10..100, múltiplo de 10; 400 com
   "campo":"voz_volume"); ausente/torto no config = 50 (v2.8.6; era 100; 100 gravado continua sem processamento). Capacidade NOVA
   "voz_volume" (contas.PODE: só "adm"; gerente/funcionário = 403 "sem_permissao" e nada do corpo é gravado; modo PIN: só o PC
