@@ -589,6 +589,15 @@ Um não mexe no outro, e nenhum dos dois muda as músicas, o YouTube, o Spotify 
 forçando as caixas, baixe aqui em vez de mexer no Windows ou na mesa de som. O gerente não vê esses controles. Sem
 contas criadas, só o computador das caixas muda os volumes.
 
+**Limitador da voz (v2.8.8, só o administrador).** Em **Voz da loja**, o botão **Limitador da voz** vem **ligado**.
+Ele corta os agudos fortes e segura os picos da fala dos anúncios, para mais segurança das caixas e dos amplificadores; a
+fala continua com o mesmo volume e a mesma voz. Vale para os anúncios digitados, as mensagens prontas, os horários
+agendados com anúncio e o **Testar caixas**; não vale para as sinetas, os áudios agendados nem para a música. Recomendado:
+deixe ligado. Se desligar, o painel avisa que a fala sai sem o corte de agudos. Detalhe para quem usa a voz do Windows
+(modo offline): com o limitador ligado a fala passa a poder ser cortada pelo **Parar** dos horários, e o anúncio leva
+um pouco mais de tempo para começar (a fala é preparada antes). Se o limitador não conseguir processar uma fala, ela toca
+como sempre e o anúncio não falha.
+
 **Volumes e travas de segurança (v2.8.7).** Para dar mais segurança ao equipamento, o Proclamare tem travas. Elas
 **avisam e pedem confirmação**; quem decide é você:
 

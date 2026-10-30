@@ -17,6 +17,7 @@ São recomendações preventivas, para dar mais segurança e vida útil às caix
 | Proteção | Como funciona |
 |---|---|
 | Sinetas suaves | Sem distorção e com metade do volume máximo das versões antigas (cerca de 10 dB abaixo). |
+| Limitador da voz | A fala dos anúncios passa por um filtro que corta os agudos fortes (acima de 6 kHz) e por um limitador que segura os picos em -6 dB, para mais segurança das caixas e dos amplificadores. Vem **ligado**; só o administrador liga/desliga (**Voz da loja > Limitador da voz**). A fala continua com o mesmo volume. Não vale para as sinetas, os áudios agendados nem para a música. |
 | Volumes começam baixos | Aviso 30%, voz 50%, áudios agendados 50%, música do Tocador 50%. |
 | Duas travas em todo volume | Para em 50% (aviso amarelo) e em 70% (aviso vermelho sobre as luzinhas de clip). Para passar, é preciso arrastar de novo. |
 | Quem pode mexer | Voz, aviso e áudios agendados: só o administrador. Música: gerente e administrador. |
