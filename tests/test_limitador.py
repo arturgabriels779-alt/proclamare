@@ -668,9 +668,14 @@ class TestContadorDeFalhas(BaseLimitador):
 
 
 class TestChavesPorPerfil(tpm.BasePermissoes):
+    def setUp(self) -> None:
+        super().setUp()
+        zera = mock.patch.dict(server._limitador_falhas, {"dia": None, "n": 0, "motivo": None})   # contador limpo por teste
+        zera.start()
+        self.addCleanup(zera.stop)
+
     def test_adm_ve_gerente_e_funcionario_nao(self) -> None:
         server._registrar_falha_limitador("formato")
-        self.addCleanup(server._limitador_falhas.update, dia=None, n=0, motivo=None)
         for perfil, vê in (("adm", True), ("gerente", False), ("funcionario", False)):
             with self.subTest(perfil=perfil):
                 r = self.chamar("GET", "/api/voz", self.rede[perfil], local=False)
