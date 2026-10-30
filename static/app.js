@@ -1145,7 +1145,7 @@
   const volumeValido = (n) => Number.isInteger(n) && n >= 10 && n <= 100 && n % 10 === 0;
   /** Quem vê e usa o controle: com contas, só quem tem a capacidade; em modo PIN, só o PC das caixas. */
   const podeAvisoVolume = () => (auth.modoContas ? auth.permissoes.includes("aviso_volume") : auth.supported && auth.local);
-  // v2.8.5: volume da VOZ dos anúncios (10..100, passo 10, padrão 100); só o ADM (capacidade voz_volume; modo PIN: só o PC das caixas)
+  // v2.8.5: volume da VOZ dos anúncios (10..100, passo 10, padrão 50); só o ADM (capacidade voz_volume; modo PIN: só o PC das caixas)
   const vozVolRange = $("voz-volume-range");
   const vozVolValue = $("voz-volume-value");
   const vozVolField = $("voz-volume-field");
@@ -1422,12 +1422,24 @@
     range.value = "50";
     trava.msg = true;
     if (novoGesto || !trava.avisoEm) trava.avisoEm = agora;
+    // A4: a mensagem some sozinha quando a janela de 10 s acaba (só muda o DOM se ainda estiver à mostra)
+    clearTimeout(trava.timer);
+    trava.timer = setTimeout(() => {
+      trava.timer = null;
+      if (!trava.msg) return;
+      trava.msg = false;
+      if (trava.atualizar) trava.atualizar();
+    }, VOL_TRAVA_JANELA_MS);
   }
-  /** Cada toque/tecla novo é um gesto novo. */
+  /** Teclas que mudam o valor do range (Shift/Tab/etc. nunca contam como gesto). */
+  const VOL_TECLAS = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"];
+  /** Cada toque novo ou tecla de valor NOVA (sem `repeat`: tecla segurada não libera) é um gesto novo. */
   function volTravaGestos(range, trava) {
-    const novo = () => { trava.gesto = true; };
-    range.addEventListener("pointerdown", novo);
-    range.addEventListener("keydown", novo);
+    range.addEventListener("pointerdown", () => { trava.gesto = true; });
+    range.addEventListener("keydown", (e) => {
+      if (e.repeat || !VOL_TECLAS.includes(e.key)) return;
+      trava.gesto = true;
+    });
   }
   const avisoVolAviso = $("aviso-volume-aviso");
   const vozVolAviso = $("voz-volume-aviso");
@@ -1444,8 +1456,10 @@
   avisoVolRange.addEventListener("input", () => { volTravaInput(avisoVolRange, avisoVolTrava); updateAvisoVolLabel(); });
   avisoVolRange.addEventListener("change", () => {
     const n = Number(avisoVolRange.value);
-    if (volumeValido(n)) vozAgendar({ aviso_volume: n });
+    // A3: só grava se mudou em relação ao confirmado (ou se há algo pendente deste campo a corrigir)
+    if (volumeValido(n) && (n !== voz.aviso_volume || vozCampoPendente("aviso_volume"))) vozAgendar({ aviso_volume: n });
   });
+  avisoVolTrava.atualizar = updateAvisoVolLabel;
   updateAvisoVolLabel();
 
   function updateVozVolLabel() {
@@ -1456,8 +1470,9 @@
   vozVolRange.addEventListener("input", () => { volTravaInput(vozVolRange, vozVolTrava); updateVozVolLabel(); });
   vozVolRange.addEventListener("change", () => {
     const n = Number(vozVolRange.value);
-    if (volumeValido(n)) vozAgendar({ voz_volume: n });
+    if (volumeValido(n) && (n !== voz.voz_volume || vozCampoPendente("voz_volume"))) vozAgendar({ voz_volume: n });
   });
+  vozVolTrava.atualizar = updateVozVolLabel;
   updateVozVolLabel();
 
   /** "Ouvir" toca no volume GRAVADO: se há mudança pendente ou em andamento, grava antes (espera até ~10 s). */
