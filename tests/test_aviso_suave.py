@@ -357,6 +357,18 @@ class TestMigracaoRodada1(taa.BaseAviso):
             self.assertIn(parte, linhas[0])
         self.assertNotIn("aviao", linhas[0])
 
+    def test_auditoria_nunca_copia_texto_do_config(self) -> None:
+        # RT O-1: valor torto gravado à mão no config.json vira "-" na trilha, nunca o texto cru.
+        self.gravar_cru({"aviso_volume": 100, "voz_volume": "Joao da Silva\nacao=forjada"})
+        with self.assertLogs(server.auditoria.name, level="INFO") as cap:
+            server.voz_loja()
+        linhas = [r.getMessage() for r in cap.records if "acao=voz_migrar" in r.getMessage()]
+        self.assertEqual(len(linhas), 1, linhas)
+        self.assertIn("aviso_volume_de=100", linhas[0])
+        self.assertIn("voz_volume_de=-", linhas[0])
+        self.assertNotIn("Joao", linhas[0])
+        self.assertNotIn("forjada", linhas[0])
+
     def test_sem_nada_rebaixado_nao_audita(self) -> None:
         for cru in ({"aviso_volume": 30, "voz_volume": 50}, {"velocidade": 3}):
             with self.subTest(cru=cru):

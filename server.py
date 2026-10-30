@@ -4744,10 +4744,12 @@ def _migrar_volumes_gravados() -> None:
                 cfg["voz_loja"] = bruto
                 _gravar_config_atomico(cfg)
                 if any(bruto.get(c) != antes.get(c) for c in ("aviso_volume", "voz_volume")):
+                    def _num(v: Any) -> Any:   # só volume válido vai para a trilha; o resto (texto do arquivo) vira "-"
+                        return v if volume_valido(v) else "-"
                     try:   # só números: nunca texto, nome de aviso nem conta
-                        auditar("voz_migrar", aviso_volume_de=antes.get("aviso_volume"),
-                                aviso_volume=bruto.get("aviso_volume"), voz_volume_de=antes.get("voz_volume"),
-                                voz_volume=bruto.get("voz_volume"))
+                        auditar("voz_migrar", aviso_volume_de=_num(antes.get("aviso_volume")),
+                                aviso_volume=_num(bruto.get("aviso_volume")),
+                                voz_volume_de=_num(antes.get("voz_volume")), voz_volume=_num(bruto.get("voz_volume")))
                     except Exception:  # noqa: BLE001  (a auditoria nunca derruba a leitura)
                         pass
     except Exception as exc:  # noqa: BLE001  (disco cheio etc.: a leitura já devolve o valor rebaixado)
