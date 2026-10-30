@@ -103,6 +103,14 @@ class TesteComportamentoDaTrava(unittest.TestCase):
         s = self.rodar([["srv", 90], ["srv", 40], ["toque"], ["in", 60, 0]])
         self.assertEqual(s[0]["valor"], 50)
 
+    def test_poll_com_o_valor_travado_nao_apaga_a_janela_do_2o_gesto(self) -> None:
+        # Revisor (regressão A): o Spotify/Tocador relê o volume a cada ~2,5 s e devolve o valor travado (50). Isso não
+        # pode apagar o aviso nem a janela de 10 s: o 2º gesto ainda libera.
+        s = self.rodar([["toque"], ["in", 60, 1000], ["srv", 50], ["srv", 50], ["toque"], ["in", 60, 4000]])
+        self.assertEqual([x["valor"] for x in s], [50, 60])
+        s = self.rodar([["toque"], ["in", 60, 1000], ["srv", 50]])
+        self.assertEqual(s[0]["msg"], 50)
+
     def test_dois_controles_sao_independentes(self) -> None:
         r = subprocess.run([NODE, "-e", DOIS_CONTROLES, str(MODULO)], capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=30, stdin=subprocess.DEVNULL)

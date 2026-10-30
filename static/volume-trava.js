@@ -33,7 +33,11 @@ const VolumeTrava = (function () {
    * trava; se estiver abaixo, aquela trava volta a valer (a liberação nunca só cresce).
    */
   function liberarAte(trava, n) {
-    trava.lib = travaAbaixo(Number(n) || 0);
+    const nova = travaAbaixo(Number(n) || 0);
+    // O poll do Spotify/Tocador devolve o valor travado a cada ~2,5 s: sem mudança de liberação, preserva o aviso e a
+    // janela de 10 s do 2º gesto (senão a trava nunca deixaria passar).
+    if (nova === trava.lib) return;
+    trava.lib = nova;
     trava.msg = 0;
     trava.barreira = 0;
     trava.avisoEm = 0;
