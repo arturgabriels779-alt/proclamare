@@ -36,7 +36,7 @@ de fundo **abaixa sozinha** durante o anúncio e volta ao volume normal no final
 - **Voz da loja:** motor, voz, velocidade e aviso valem para todos os aparelhos (escolheu no celular, muda no computador da loja também).
 - **Mensagens prontas** com um clique — e **editáveis**: troque, apague, reordene e crie as da sua loja (até 24; vêm 6 de exemplo, como farol aceso, caixa rápido e loja fechando, e dá para restaurá-las).
 - **Histórico** dos anúncios do dia, com um toque para repetir.
-- Atalho **Ctrl + Enter** para anunciar e **botão de teste** para conferir as caixas.
+- Atalho **Ctrl + Enter** para anunciar e **botão de teste** para conferir as caixas (e, para o administrador, o **teste das caixas em loop**).
 - Proteção contra atropelo: um segundo anúncio não toca por cima do que já está no ar.
 
 ### 🎵 Música ambiente
@@ -65,7 +65,8 @@ Recomendações preventivas, para dar mais segurança e vida útil às caixas e 
   (e de quem entra com PIN) o poder de mudar a voz, o aviso e o "Ouvir"; música, horários e mensagens não mudam.
 - **Sinetas suaves (v2.8.6):** sem distorção e com metade do volume máximo das versões antigas.
 - **Duas travas em todo volume (v2.8.7):** o controle para em 50% (aviso amarelo) e em 70% (aviso vermelho, para
-  conferir as luzinhas de *clip* da mesa e dos amplificadores); para passar, é preciso arrastar de novo.
+  conferir as luzinhas de *clip* da mesa e dos amplificadores); para passar, é preciso arrastar de novo. Na sineta a
+  primeira trava é em 30% (v2.8.10).
 - **Spotify vigiado (v2.8.7):** se alguém subir o volume direto no aplicativo do Spotify acima do limite, o
   Proclamare baixa sozinho, mesmo com o painel fechado.
 - **Entrada suave (v2.8.7):** os sons do Proclamare começam com uma subida curta, sem "estalo" (a voz do Windows só
@@ -76,7 +77,7 @@ Recomendações preventivas, para dar mais segurança e vida útil às caixas e 
 
 ### 🖥️ Controle de qualquer lugar da rede
 - O som sempre sai no computador ligado ao amplificador; **qualquer PC, tablet ou celular** da rede local abre o painel no navegador, sem instalar nada.
-- **Outros aparelhos pedem um PIN** (6 a 8 números, definido no PC da loja em Configurações → Acesso pela rede, ou por `python server.py --definir-pin`). O PC da loja nunca pede PIN; sem PIN definido, o acesso pela rede fica desligado.
+- **Cada pessoa entra com usuário e senha** (v2.8), com o perfil dela: funcionário, gerente ou administrador (veja "Primeiro acesso" abaixo). Antes de existir a primeira conta, os outros aparelhos pedem um **PIN** (6 a 8 números, definido no PC da loja em Configurações → Acesso pela rede, ou por `python server.py --definir-pin`); sem PIN definido, o acesso pela rede fica desligado.
 - Indicadores ao vivo: servidor online, anúncio no ar, Spotify conectado, tocador do YouTube ativo.
 - **Som da loja:** reconhece tudo o que está ligado ao PC e garante que o anúncio saiu no lugar certo — você testa a saída com um bipe, e o painel avisa se o padrão do Windows mudou, se a saída está mutada ou em 0%, ou se outro app a tomou (seção "Som da loja" do [guia](docs/GUIA.md)).
 
@@ -134,7 +135,7 @@ Abra **http://127.0.0.1:8502** no PC da loja. Nos outros aparelhos, use **http:/
 ## 👥 Primeiro acesso (contas e perfis)
 
 1. No **PC da loja**, abra o painel e clique em **Criar conta de administrador** (aviso no topo, ou *Configurações → Acesso pela rede*). Essa conta pode tudo; a partir dela o PIN deixa de valer.
-2. Em *Configurações → Contas*, crie uma conta para cada pessoa: **funcionário** (só anuncia), **gerente** (anuncia, música, horários, contas de funcionários) ou **administrador** (tudo, inclusive som, segurança e Spotify). Contas não são apagadas, só desativadas.
+2. Em *Configurações → Contas*, crie uma conta para cada pessoa: **funcionário** (só anuncia), **gerente** (anuncia, música, horários, mensagens, contas de funcionários e a voz da loja, que o administrador pode travar) ou **administrador** (tudo, inclusive som, segurança, Spotify, os volumes da voz e da sineta e o teste das caixas em loop). Contas não são apagadas, só desativadas.
 3. Cada um entra com o próprio usuário e senha (o PC da loja sai sozinho após 5 min sem clique/tecla; o Tocador e os horários seguem tocando). O *Histórico* mostra quem anunciou o quê, por 90 dias.
 4. Esqueceu a senha do último administrador? Com o Proclamare desligado: `python server.py --redefinir-senha <usuario>`.
 
