@@ -286,8 +286,9 @@
     loopbackSuspenso: false, supported: true, local: true, pinConfigured: false, authenticated: true, falhas: 0, bloqueioS: 0, podeDesligar: false,
     // v2.8 (Parte B): modo contas = login por usuário e senha; "conta" = {id, usuario, nome, funcao, perfil} (pública)
     // e "permissoes" = capacidades do perfil (contas.CAPACIDADES). Modo PIN: tudo como antes (pode() = sempre true).
-    modoContas: false, conta: null, permissoes: [], precisaCriarAdm: false,
+    modoContas: false, conta: null, permissoes: [], permissoesLidas: false, precisaCriarAdm: false,
   };
+  const TESTE_MUSICA_MSG = "Teste das caixas tocando. Aguarde o administrador parar."; // v2.8.10 (409 teste_tocando)
   const REMOTE_SPOTIFY_MSG = "As credenciais do Spotify são configuradas no computador da loja.";
   const isRemote = () => auth.supported && !auth.local;
 
@@ -296,7 +297,11 @@
    * A tela só esconde; quem recusa de verdade é o servidor (403 "sem_permissao").
    */
   function pode(capacidade) {
-    return !auth.modoContas || auth.permissoes.includes(capacidade);
+    if (auth.modoContas) return auth.permissoes.includes(capacidade);
+    // v2.8.10: no modo PIN só "voz" segue a lista do servidor (a trava da voz para gerentes vale para o celular remoto);
+    // o resto continua valendo tudo. Servidor antigo (sem a lista) = tudo, como antes.
+    if (capacidade === "voz" && auth.permissoesLidas) return auth.permissoes.includes("voz");
+    return true;
   }
 
   // ---- Autor (v2.8, P1): quem criou/alterou por último um horário, lista, playlist salva ou mensagem pronta ----
@@ -940,6 +945,7 @@
   const powerError = $("power-error");
   const btnPowerCancel = $("btn-power-cancel");
   const btnPowerConfirm = $("btn-power-confirm");
+  const powerTeste = $("power-teste");
   // acesso por PIN: configurações
   const netSection = $("net-section");
   const netLocal = $("net-local");
@@ -1156,7 +1162,7 @@
   const VOZ_OUVIR_TIMEOUT_MS = 45000; // > espera do servidor pela thread de áudio: até 2 x 3 s + 0,6 s + 15 s = 21,6 s
   const VOZ_CAMPOS = ["motor", "voz", "velocidade", "aviso"];
   // aviso: o padrão de fábrica do servidor (AVISO_PADRAO, "microfone"); vale só até a 1ª leitura de /api/voz
-  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "microfone", aviso_volume: 30, voz_volume: 50, agendado_volume: 50, limitador: true, definida: true, carregada: false };
+  const voz = { motor: "auto", voz: "francisca", velocidade: 0, aviso: "microfone", aviso_volume: 30, voz_volume: 50, agendado_volume: 50, limitador: true, travar_gerentes: false, definida: true, carregada: false };
   // v2.8.4: volume da sineta (10..100, passo 10); só o ADM (capacidade aviso_volume; em modo PIN, só o PC das caixas)
   const avisoVolRange = $("aviso-volume-range");
   const avisoVolValue = $("aviso-volume-value");
@@ -1176,6 +1182,8 @@
   const limitadorSwitch = $("limitador-switch");
   const limitadorAviso = $("limitador-aviso");
   const limitadorFalhas = $("limitador-falhas");
+  // v2.8.10: trava da voz para gerentes (bool, padrão desligada); MESMA capacidade dos volumes (voz_volume)
+  const travarSwitch = $("travar-switch");
   const limitadorInfo = { falhas: 0, motivo: null }; // do nível de cima da resposta (só quem tem voz_volume)
   let vozTimer = null; // debounce da gravação
   let vozPend = {}; // mudanças do usuário ainda não enviadas
@@ -1210,6 +1218,7 @@
     vozVolRange.disabled = !on || !podeVozVolume();
     agendadoVolRange.disabled = !on || !podeVozVolume();
     limitadorSwitch.disabled = !on || !podeVozVolume();
+    travarSwitch.disabled = !on || !podeVozVolume();
     btnAvisoOuvir.disabled = !on || vozOuvindo || !avisoSelect.value || avisoSelect.value === "nenhum";
   }
   vozHabilitar();
@@ -1285,6 +1294,11 @@
     if (typeof v.limitador === "boolean" && !vozCampoPendente("limitador")) {
       voz.limitador = v.limitador;
       if (limitadorSwitch.checked !== v.limitador) limitadorSwitch.checked = v.limitador;
+    }
+    const tg = typeof v.travar_gerentes === "boolean" ? v.travar_gerentes : data.travar_gerentes;
+    if (typeof tg === "boolean" && !vozCampoPendente("travar_gerentes")) {
+      voz.travar_gerentes = tg;
+      if (travarSwitch.checked !== tg) travarSwitch.checked = tg;
     }
     voz.definida = v.definida !== false;
     voz.carregada = true;
@@ -1363,6 +1377,12 @@
     } catch (e) { /* preferências corrompidas ou sem rede: não migra */ }
   }
 
+  // v2.8.10: o ADM travou a voz da loja para gerentes. O 403 "sem_permissao" já faz o request() reler o /api/auth/status
+  // (permissoesReler, no máximo a cada 30 s) e o aplicarPermissoes() esconde o quadro; aqui só troca o texto do aviso.
+  // Não há poll novo: o auth/status também é relido pelas rotinas de conta existentes.
+  const VOZ_TRAVADA_MSG = "A voz da loja foi travada pelo administrador.";
+  const vozTravadaPara403 = (r) => !!r && r.status === 403 && r.data && r.data.codigo === "sem_permissao" && !podeVozVolume();
+
   /** Junta as mudanças e grava 400 ms depois da última. */
   function vozAgendar(campos) {
     if (!voz.carregada) return;
@@ -1399,6 +1419,7 @@
     } else {
       const msg = resp.status === 429
         ? "Muitas mudanças seguidas. Espere um minuto e tente de novo."
+        : vozTravadaPara403(resp) ? VOZ_TRAVADA_MSG
         : typeof resp.data.error === "string" && resp.data.error ? resp.data.error : "Não foi possível salvar a voz da loja.";
       toast(msg, "error", { silent: true });
     }
@@ -1426,6 +1447,8 @@
       limitadorSwitch.checked = voz.limitador;
       updateLimitador();
     }
+    // v2.8.10: a chave da trava volta ao último valor CONFIRMADO (rollback visual; vale também no 403)
+    if ("travar_gerentes" in corpo && !vozCampoPendente("travar_gerentes")) travarSwitch.checked = voz.travar_gerentes;
     return false;
   }
 
@@ -1443,6 +1466,9 @@
    */
   const VOL_TRAVA_MSG = "Acima de 50% pode forçar os amplificadores. Para subir mesmo assim, arraste de novo.";
   const VOL_TRAVA_MSG_70 = "Volume alto: confira se as luzinhas vermelhas (clip/peak) dos amplificadores e da mesa não estão acendendo. Para subir mesmo assim, arraste de novo.";
+  // v2.8.10: a sineta tem a primeira trava em 30% (as demais continuam em 50%)
+  const VOL_TRAVA_MSG_30 = "Acima de 30% a sineta pode forçar os amplificadores. Para subir mesmo assim, arraste de novo.";
+  const AVISO_TRAVAS = [30, 70];
   const VOL_ACIMA_70_MSG = "Acima de 70%: fique de olho nas luzinhas vermelhas (clip) dos amplificadores e da mesa.";
   const VT = VolumeTrava; // static/volume-trava.js (lógica pura das travas; carregado antes deste arquivo)
   const VOL_TRAVA_JANELA_MS = VT.JANELA_MS;
@@ -1457,12 +1483,12 @@
       msg = VOL_TRAVA_MSG_70;
       nivel = "perigo";
     } else if (trava.msg) {
-      msg = VOL_TRAVA_MSG;
+      msg = trava.msg === 30 ? VOL_TRAVA_MSG_30 : VOL_TRAVA_MSG;
       nivel = "atencao";
     } else if (n > VOL_TETO) {
       msg = VOL_ACIMA_70_MSG;
       nivel = "perigo";
-    } else if (n > 50) {
+    } else if (n > (trava.cuidadoAcima || 50)) { // a sineta avisa "Cuidado" a partir de 50% (acima de 40)
       msg = "Acima do recomendado. Confira se os amplificadores não distorcem.";
       nivel = "atencao";
     }
@@ -1493,7 +1519,8 @@
   }
   const avisoVolAviso = $("aviso-volume-aviso");
   const vozVolAviso = $("voz-volume-aviso");
-  const avisoVolTrava = volTravaNova();
+  const avisoVolTrava = volTravaNova({ travas: AVISO_TRAVAS });
+  avisoVolTrava.cuidadoAcima = 40;
   const vozVolTrava = volTravaNova();
   volTravaGestos(avisoVolRange, avisoVolTrava);
   volTravaGestos(vozVolRange, vozVolTrava);
@@ -1562,6 +1589,10 @@
     if (b !== voz.limitador || vozCampoPendente("limitador")) vozAgendar({ limitador: b });
   });
   updateLimitador();
+  travarSwitch.addEventListener("change", () => {
+    const b = travarSwitch.checked;
+    if (b !== voz.travar_gerentes || vozCampoPendente("travar_gerentes")) vozAgendar({ travar_gerentes: b });
+  });
 
   /** "Ouvir" toca no volume GRAVADO: se há mudança pendente ou em andamento, grava antes (espera até ~10 s). */
   async function vozSalvarPendente() {
@@ -1584,6 +1615,10 @@
       const { ok, status, data } = await postJSON("/api/voz/ouvir", { aviso }, { timeout: VOZ_OUVIR_TIMEOUT_MS });
       if (!(ok && data.ok)) {
         const erro = typeof data.error === "string" && data.error ? data.error : "";
+        if (status === 403 && data.codigo === "sem_permissao" && !podeVozVolume()) { // v2.8.10: voz travada para gerentes
+          toast(VOZ_TRAVADA_MSG, "warn");
+          return;
+        }
         // 409: o servidor diz o quê (anúncio tocando, "Programação tocando: <nome>"...)
         const msg = status === 409 ? erro || "Já existe um anúncio tocando"
           : status === 429 ? "Muitos testes seguidos. Espere um minuto."
@@ -1720,6 +1755,7 @@
     quickMessages.replaceChildren(...m.items.map(buildChip));
     quickMessages.hidden = m.items.length === 0;
     quickEmpty.hidden = m.items.length > 0;
+    testeMontarSelect(); // v2.8.10: o seletor do teste das caixas usa a mesma lista
   }
 
   /** Relê em silêncio (início e a cada minuto): falhar mantém o que já está na tela. */
@@ -2310,6 +2346,242 @@
   });
 
   // ======================================================================
+  // 11c. Teste das caixas em loop (v2.8.10)
+  // ======================================================================
+  // GET /api/teste-caixas (qualquer sessão) -> {tocando, titulo, repeticao, restante_s, teto_s, fim_motivo}.
+  // POST /iniciar {mensagem_id} e /parar {} só com a capacidade "teste_caixas" (ADM; modo PIN: só o PC das caixas).
+  // Quem não tem a capacidade NUNCA chama os POST: vê só a caixa de status enquanto toca (o tile some quando parado).
+  // Título e demais textos entram só por textContent.
+  const testeTile = $("tile-teste");
+  const testeCtl = $("teste-ctl");
+  const testeSelect = $("teste-select");
+  const btnTesteIniciar = $("btn-teste-iniciar");
+  const btnTesteParar = $("btn-teste-parar");
+  const testeMsg = $("teste-msg");
+  const testeBox = $("teste-status");
+  const testeBoxTitulo = $("teste-status-titulo");
+  const testeBoxDet = $("teste-status-det");
+  const testeUso = $("teste-uso");
+  const TESTE_POLL_PARADO_MS = 4000; // parado: ~4 s (o agendador roda a cada 2 s e pula o que sobra)
+  const TESTE_TITULO_MAX = 80;
+  const TESTE_FIM = {
+    parado: "Loop parado.",
+    tempo: "Loop desligado: 1 h 30 min completos.",
+    erro: "O loop parou por um erro.",
+    desligando: "O Proclamare foi desligado.",
+    limite_diario: "Loop desligado: limite de 3 h de teste por dia.",
+  };
+  const PRONTO_PARA_ANUNCIAR = "Pronto para anunciar."; // = o texto inicial de #announce-status no index.html
+  const TESTE_BLOQUEIO_MSG = "Teste das caixas tocando. Anúncios bloqueados até o administrador parar.";
+  const podeTesteCaixas = () => (auth.modoContas ? auth.permissoes.includes("teste_caixas") : auth.supported && auth.local);
+
+  // `tocando` começa null: o 1º GET só define o ponto de partida (um fim antigo nunca é mostrado ao recarregar).
+  const teste = { tocando: null, titulo: "", repeticao: 0, restanteS: null, recebidoEm: 0, ultimoGet: 0, seq: 0, usadoS: null, limiteS: null, ocupado: false, parando: false, msgTimer: 0, tick: 0 };
+
+  /** "1 h 21 min", "45 min", "30 s": minutos arredondados para cima, para o teto de 5400 s aparecer como 1 h 30 min. */
+  function testeDuracao(s) {
+    if (s < 60) return Math.max(0, s) + " s";
+    const min = Math.ceil(s / 60);
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return h ? (m ? h + " h " + m + " min" : h + " h") : min + " min";
+  }
+
+  /** Tempo já usado, em minutos para baixo ("0 min", "45 min", "1 h 05 min"). */
+  function testeMinutos(s) {
+    const min = Math.floor(Math.max(0, s) / 60);
+    const h = Math.floor(min / 60);
+    return h ? h + " h " + String(min % 60).padStart(2, "0") + " min" : min + " min";
+  }
+  const testeDiaEsgotado = () => teste.usadoS !== null && teste.limiteS !== null && teste.usadoS >= teste.limiteS;
+
+  /** Mensagem da linha de resultado do tile (some sozinha); `tom`: "" | "warn" | "error". */
+  function testeAviso(texto, tom) {
+    clearTimeout(teste.msgTimer);
+    testeMsg.classList.toggle("is-warn", tom === "warn");
+    testeMsg.classList.toggle("is-error", tom === "error");
+    setText(testeMsg, texto || "");
+    testeMsg.hidden = !texto;
+    if (texto) teste.msgTimer = setTimeout(() => testeAviso("", ""), 8000);
+  }
+
+  /** Reconstrói o <select> com as Mensagens prontas atuais (chamado quando a lista muda); mantém a escolha se ainda existe. */
+  function testeMontarSelect() {
+    const antes = testeSelect.value;
+    const itens = msgs.loaded ? msgs.items : [];
+    if (!itens.length) {
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = msgs.loaded ? "Nenhuma mensagem pronta" : "Carregando mensagens…";
+      testeSelect.replaceChildren(o);
+    } else {
+      testeSelect.replaceChildren(...itens.map((m) => {
+        const o = document.createElement("option");
+        o.value = m.id;
+        o.textContent = m.titulo;
+        return o;
+      }));
+      if (itens.some((m) => m.id === antes)) testeSelect.value = antes;
+    }
+    testeRender();
+  }
+
+  /** Pinta o tile conforme perfil e estado (só troca o que mudou: setText e toggles não mexem no DOM à toa). */
+  function testeRender() {
+    const pode = podeTesteCaixas();
+    const tocando = teste.tocando === true;
+    testeTile.hidden = !(pode || tocando);
+    testeCtl.classList.toggle("perm-off", !pode);
+    testeBox.hidden = !tocando;
+    btnTesteIniciar.hidden = tocando;
+    btnTesteParar.hidden = !tocando;
+    const temItens = msgs.loaded && msgs.items.length > 0;
+    testeSelect.disabled = !pode || tocando || teste.ocupado || !temItens;
+    btnTesteIniciar.disabled = !pode || teste.ocupado || !temItens || testeDiaEsgotado();
+    if (teste.usadoS !== null && teste.limiteS !== null) {
+      setText(testeUso, testeDiaEsgotado()
+        ? "Limite de " + testeMinutos(teste.limiteS) + " de teste por dia atingido. Tente amanhã."
+        : "Hoje: " + testeMinutos(teste.usadoS) + " usados de " + testeMinutos(teste.limiteS));
+    }
+    btnTesteIniciar.classList.toggle("is-loading", teste.ocupado);
+    btnTesteIniciar.setAttribute("aria-busy", String(teste.ocupado));
+    btnTesteParar.disabled = !pode || teste.parando;
+    btnTesteParar.classList.toggle("is-loading", teste.parando);
+    if (tocando) {
+      const t = teste.titulo ? " “" + teste.titulo + "”" : "";
+      setText(testeBoxTitulo, pode ? "Tocando em loop:" + t : "Teste das caixas tocando:" + t);
+      testeAtualizarDet();
+    }
+    // contagem regressiva no cliente entre um poll e outro (1 s; só com o loop tocando e a aba à vista)
+    if (tocando && !teste.tick) teste.tick = setInterval(() => { if (!document.hidden) testeAtualizarDet(); }, 1000);
+    else if (!tocando && teste.tick) { clearInterval(teste.tick); teste.tick = 0; }
+  }
+
+  function testeAtualizarDet() {
+    let txt = "Repetição " + teste.repeticao;
+    if (teste.restanteS !== null) {
+      const resta = Math.max(0, teste.restanteS - Math.floor((performance.now() - teste.recebidoEm) / 1000));
+      txt += " · desliga sozinho em " + testeDuracao(resta);
+    }
+    setText(testeBoxDet, txt);
+  }
+
+  /** Lê o corpo do GET/POST; devolve null se vier fora do formato. */
+  function testeLer(d) {
+    if (!d || typeof d !== "object" || typeof d.tocando !== "boolean") return null;
+    const inteiro = (v, max) => (Number.isInteger(v) && v >= 0 ? Math.min(v, max) : null);
+    return {
+      tocando: d.tocando,
+      titulo: typeof d.titulo === "string" ? truncate(d.titulo.replace(/\s+/g, " ").trim(), TESTE_TITULO_MAX) : "",
+      repeticao: inteiro(d.repeticao, 1e6) || 0,
+      restanteS: inteiro(d.restante_s, 86400),
+      usadoS: inteiro(d.usado_hoje_s, 86400),
+      limiteS: inteiro(d.limite_dia_s, 86400),
+      fim: Object.prototype.hasOwnProperty.call(TESTE_FIM, d.fim_motivo) ? d.fim_motivo : null,
+    };
+  }
+
+  /** Aplica um estado novo: avisa início/fim vistos NESTA sessão do painel e repinta. */
+  function testeAplicar(d) {
+    const n = testeLer(d);
+    if (!n) return;
+    const antes = teste.tocando;
+    teste.tocando = n.tocando;
+    teste.titulo = n.titulo;
+    teste.repeticao = n.repeticao;
+    teste.restanteS = n.restanteS;
+    teste.usadoS = n.usadoS;
+    teste.limiteS = n.limiteS;
+    teste.recebidoEm = performance.now();
+    if (n.tocando && antes !== true) {
+      // começou (por mim, por outro aparelho ou já tocava ao abrir o painel): o servidor bloqueia os anúncios
+      if (!announcing) setStatus(TESTE_BLOQUEIO_MSG, "warn");
+    } else if (antes === true && !n.tocando) {
+      const fim = n.fim ? TESTE_FIM[n.fim] : TESTE_FIM.parado;
+      toast(fim, n.fim === "erro" ? "warn" : "info");
+      if (podeTesteCaixas()) testeAviso(fim, n.fim === "erro" ? "warn" : "");
+      if (!announcing && announceStatus.textContent === TESTE_BLOQUEIO_MSG) setStatus(PRONTO_PARA_ANUNCIAR, "");
+    }
+    testeRender();
+  }
+
+  /** Tarefa do agendador: parado ~4 s, tocando 2 s; a aba oculta pausa (agendador). Erro de rede = silêncio. */
+  async function testePoll() {
+    if (authLocked) return;
+    if (teste.tocando === false && Date.now() - teste.ultimoGet < TESTE_POLL_PARADO_MS - 100) return;
+    teste.ultimoGet = Date.now();
+    const s = ++teste.seq; // um GET velho nunca sobrescreve o estado de um POST que veio depois
+    try {
+      const r = await getJSON("/api/teste-caixas", { timeout: 6000 });
+      if (s !== teste.seq) return;
+      if (r.ok) testeAplicar(r.data);
+    } catch (e) { /* tenta de novo no próximo ciclo */ }
+  }
+
+  /** Texto de erro dos POST: o do servidor quando existe (cortado), senão um padrão por status. */
+  function testeErroTexto(r, padrao) {
+    if (typeof r.data.error === "string" && r.data.error) return truncate(r.data.error, 200);
+    if (r.status === 429) return "Muitos pedidos seguidos. Espere um pouco e tente de novo.";
+    if (r.status === 403) return "Só o administrador pode controlar o teste das caixas.";
+    return padrao;
+  }
+
+  async function testeIniciar() {
+    if (teste.ocupado || teste.tocando === true || !podeTesteCaixas()) return;
+    const id = testeSelect.value;
+    if (!id) { testeAviso("Escolha uma mensagem pronta.", "warn"); return; }
+    teste.ocupado = true;
+    testeAviso("", "");
+    testeRender();
+    try {
+      ++teste.seq; // invalida GET em voo (antes e depois do POST)
+      const r = await postJSON("/api/teste-caixas/iniciar", { mensagem_id: id }, { timeout: 15000 });
+      ++teste.seq;
+      if (r.ok) {
+        testeAplicar(r.data);
+      } else if (r.status === 404 && r.data.codigo === "mensagem_inexistente") {
+        testeAviso("Essa mensagem não existe mais. A lista foi atualizada: escolha de novo.", "warn");
+        refreshMessages();
+      } else if (r.status === 409) {
+        testeAviso(testeErroTexto(r, "Já há um som tocando. Tente de novo em instantes."), "warn");
+        if (r.data.codigo === "teste_tocando") scheduler.kick("teste-caixas");
+      } else {
+        testeAviso(testeErroTexto(r, "Não foi possível iniciar o loop."), "error");
+      }
+    } catch (e) {
+      testeAviso(e && e.name === "TimeoutError" ? "O servidor demorou demais para responder." : "Erro de conexão com o servidor.", "error");
+    } finally {
+      teste.ocupado = false;
+      testeRender();
+    }
+  }
+
+  async function testeParar() {
+    if (teste.parando || !podeTesteCaixas()) return;
+    teste.parando = true;
+    testeRender();
+    try {
+      ++teste.seq;
+      const r = await postJSON("/api/teste-caixas/parar", {}, { timeout: 15000 });
+      ++teste.seq;
+      if (r.ok) {
+        testeAplicar(r.data);
+        // fala do Windows não cortável: o servidor ainda não parou; avisa em vez de reabilitar em silêncio
+        if (teste.tocando === true) testeAviso("Parando ao fim da fala atual…", "warn");
+      }
+      else testeAviso(testeErroTexto(r, "Não foi possível parar o loop. Tente de novo."), "error");
+    } catch (e) {
+      testeAviso("Erro de conexão com o servidor. Tente parar de novo.", "error");
+    } finally {
+      teste.parando = false;
+      testeRender();
+    }
+  }
+
+  btnTesteIniciar.addEventListener("click", testeIniciar);
+  btnTesteParar.addEventListener("click", testeParar);
+
+  // ======================================================================
   // 12. Anunciar / Testar (o abaixamento da música acontece no servidor)
   // ======================================================================
   let announcing = false;
@@ -2381,6 +2653,11 @@
         // v2.3: saída de anúncio em fallback (a configurada estava indisponível): o operador precisa saber onde saiu
         if (typeof data.aviso === "string" && data.aviso) toast(data.aviso, "warn", { duration: 9000 });
         if (!isTest) addHistory(text);
+      } else if (status === 403 && data.codigo === "sem_permissao") {
+        // v2.8.10: voz da loja travada para gerentes/remotos: a mensagem é a do servidor; o request() já relê as permissões
+        const msg = typeof data.error === "string" && data.error ? str(data.error, 200) : "Seu perfil não pode usar esta função.";
+        setStatus(msg, "warn");
+        toast(msg, "warn", { silent: true });
       } else if (status === 429) {
         // v2.7.1: aparelhos da rede podem anunciar até 10 vezes por minuto
         const msg = "Muitos anúncios seguidos. Espere um minuto e tente de novo.";
@@ -2985,6 +3262,10 @@
 
   /** Aviso (toast) para a falha de um comando/ativação, com atalho para o que resolve. */
   function toastSpotifyFailure(data, fallback) {
+    if (data && data.codigo === "teste_tocando") { // v2.8.10: música bloqueada durante o teste das caixas
+      toast(typeof data.error === "string" && data.error ? str(data.error, 200) : TESTE_MUSICA_MSG, "info");
+      return;
+    }
     const codigo = noteSpotifyFailure(data, "cmd");
     const msg = typeof data.error === "string" && data.error ? data.error : fallback;
     const opts = {};
@@ -3184,6 +3465,7 @@
         return true;
       }
       // o servidor manda o texto pronto por causa (error) e um código fixo (codigo)
+      if (o.quiet && data.codigo === "teste_tocando") return false;
       if (o.quiet) noteSpotifyFailure(data, "cmd");
       else toastSpotifyFailure(data, "O Spotify não aceitou o comando. Confira se o app está aberto no computador da loja.");
     } catch (e) {
@@ -4246,7 +4528,8 @@
         if (Number.isInteger(data.queue_version)) ytqHold = { version: data.queue_version, until: Date.now() + 3000 };
         return data;
       }
-      toast(typeof data.error === "string" && data.error ? data.error : "A fila não aceitou o pedido.", "error");
+      toast(typeof data.error === "string" && data.error ? data.error : "A fila não aceitou o pedido.",
+        data.codigo === "teste_tocando" ? "info" : "error");
     } catch (e) {
       toast("Sem resposta do servidor.", "error");
     }
@@ -4393,7 +4676,8 @@
         }
         return true;
       }
-      toast(typeof data.error === "string" && data.error ? data.error : "Comando não aceito pelo servidor.", "error");
+      toast(typeof data.error === "string" && data.error ? data.error : "Comando não aceito pelo servidor.",
+        data.codigo === "teste_tocando" ? "info" : "error"); // v2.8.10: música bloqueada durante o teste das caixas
     } catch (e) {
       toast("Sem resposta do servidor.", "error");
     }
@@ -6542,6 +6826,7 @@
     audio_longo: ["áudio longo demais", "Em horário marcado o áudio pode ter até 10 minutos."],
     lista_sem_musicas: ["nada da lista podia tocar", "Confira se as músicas estão na pasta e se o Tocador da loja está aberto."],
     lista_inexistente: ["a lista foi apagada", "Escolha outra lista neste horário."],
+    teste_caixas: ["teste das caixas tocando", "O administrador estava com o teste das caixas em loop. Os horários esperam o loop parar."],
     lendo_pasta: ["o Proclamare ainda lia a pasta de músicas", "Isso acontece logo depois de ligar. No próximo horário deve funcionar."],
     sem_internet: ["sem internet para a voz online", "Na voz do anúncio, escolha o motor Auto ou Offline."],
     sem_saida: ["a saída de som não estava disponível", "Confira a caixa ou o cabo e a saída escolhida em “Minhas saídas de som”."],
@@ -9881,6 +10166,7 @@
   function openPowerDialog() {
     if (!auth.podeDesligar || shuttingDown || powerDialog.open || authLocked) return;
     showPowerError("");
+    powerTeste.hidden = teste.tocando !== true; // D1: desligar também corta o teste das caixas em loop
     powerDialog.showModal();
     btnPowerCancel.focus(); // o padrão seguro é NÃO desligar
   }
@@ -11093,7 +11379,7 @@
   // ---- Conta logada e permissões (v2.8, Parte B) ----
   const PERFIL_NOMES = { adm: "Administrador", gerente: "Gerente", funcionario: "Funcionário" };
   const CAPACIDADES = ["anunciar", "mensagens_editar", "voz", "musica", "programacao", "historico_todos",
-    "contas", "som", "seguranca", "spotify_config", "desligar", "aviso_volume", "voz_volume"]; // = contas.CAPACIDADES (lista fixa: o resto é ignorado)
+    "contas", "som", "seguranca", "spotify_config", "desligar", "aviso_volume", "voz_volume", "teste_caixas"]; // = contas.CAPACIDADES (lista fixa: o resto é ignorado)
   const USUARIO_RE = /^[a-z0-9._]{3,30}$/; // = contas.normalizar_usuario
   const SENHA_MIN = 8;
   const SENHA_MAX = 128;
@@ -11113,6 +11399,7 @@
   function lerConta(st) {
     auth.modoContas = !st.legacy && st.modo_contas === true;
     auth.precisaCriarAdm = !st.legacy && st.precisa_criar_adm === true && st.local === true && !auth.modoContas;
+    auth.permissoesLidas = Array.isArray(st.permissoes);
     auth.permissoes = Array.isArray(st.permissoes) ? CAPACIDADES.filter((c) => st.permissoes.includes(c)) : [];
     const c = st.conta;
     auth.conta = auth.modoContas && c && typeof c === "object" && typeof c.id === "string" ? {
@@ -11176,6 +11463,8 @@
     // v2.8.4: volume do aviso. Em modo PIN pode() é sempre true, mas o servidor só aceita o PC das caixas (remoto = 403)
     avisoVolField.classList.toggle("perm-off", !podeAvisoVolume());
     vozVolField.classList.toggle("perm-off", !podeVozVolume()); // v2.8.5: idem, volume da voz
+    $("travar-field").classList.toggle("perm-off", !podeVozVolume()); // v2.8.10: idem, trava da voz para gerentes
+    testeRender(); // v2.8.10: tile do teste das caixas (ADM controla; os outros só veem a caixa de status tocando)
     vozHabilitar();
     // Abas do celular: só as do perfil; com uma aba só (funcionário) a barra some
     const abas = Array.from(tabbar.querySelectorAll("[data-value]")).filter((b) => !b.classList.contains("perm-off"));
@@ -11193,7 +11482,7 @@
   let permissoesRelidoEm = -Infinity;
   let permissoesRelendo = false;
   async function permissoesReler() {
-    if (!auth.modoContas || permissoesRelendo || authLocked || performance.now() - permissoesRelidoEm < 30000) return;
+    if (permissoesRelendo || authLocked || performance.now() - permissoesRelidoEm < 30000) return;
     permissoesRelendo = true;
     permissoesRelidoEm = performance.now();
     try {
@@ -12231,7 +12520,7 @@
   };
   const HIST_ORIGENS = { local: "PC das caixas", rede: "Pela rede" };
   // v2.8 (P6): "Pelo painel" (antes era Digitado): inclui as mensagens prontas, que ninguém digitou na hora
-  const HIST_TIPOS = { digitado: "Pelo painel", tocar_agora: "Tocar agora", agendado: "Agendado" };
+  const HIST_TIPOS = { digitado: "Pelo painel", tocar_agora: "Tocar agora", agendado: "Agendado", teste_caixas: "Teste das caixas" };
   const temChave = (obj, k) => typeof k === "string" && Object.prototype.hasOwnProperty.call(obj, k);
   const histDiaFmt = new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long" });
   const histDiaAnoFmt = new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
@@ -13592,6 +13881,8 @@
     // Voz da loja (v2.8): lê agora e relê a cada minuto (pausa com a aba oculta e enquanto há mudança a gravar)
     scheduler.add("voz", vozCarregar, VOZ_POLL_MS, { immediate: true, enabled: () => pode("voz") && !vozOcupada() });
     // Mensagens prontas (v2.5): lê agora e relê a cada minuto, pausado com a aba oculta e com o editor aberto
+    // Teste das caixas (v2.8.10): todos os perfis leem o estado (parado ~4 s, tocando 2 s); pausa com a aba oculta
+    scheduler.add("teste-caixas", testePoll, 2000, { immediate: true, enabled: () => !authLocked });
     scheduler.add("mensagens", refreshMessages, MSG_POLL_MS, { immediate: true, enabled: () => !msgsDialog.open });
     // Listas (v2.6): só com a biblioteca à vista (a versão do arquivo muda quando outro aparelho edita)
     scheduler.add("lib-lists", listsPoll, 20000, { enabled: libActive, immediate: true });

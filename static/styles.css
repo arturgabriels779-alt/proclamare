@@ -864,6 +864,36 @@ html[data-announcing="true"] .onstage::before { display: none; }
 .status.is-warn { color: var(--warn); }
 .status.is-error { color: var(--live); }
 
+/* ---- v2.8.10: Teste das caixas em loop ---- */
+.tile--teste { gap: 14px; }
+.teste__ctl { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.teste__ctl .hint { margin: 0; }
+.teste__msg { flex: none; }
+.teste__uso { font-variant-numeric: tabular-nums; }
+.teste__uso:empty { display: none; }
+.teste__msg[hidden] { display: none; }
+.teste__status {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--live);
+  border-radius: var(--radius-sm, 10px);
+  background: var(--live-soft);
+}
+.teste__titulo { font-weight: 600; font-size: 15px; line-height: 20px; color: var(--live); overflow-wrap: anywhere; }
+.teste__titulo::before {
+  content: "";
+  display: inline-block;
+  width: 9px; height: 9px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--live-dot);
+  vertical-align: 1px;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.teste__det { font-size: 14px; line-height: 20px; color: var(--text-1); }
+.teste__ciclo { font-size: 13px; line-height: 18px; color: var(--text-2); }
+@media (prefers-reduced-motion: reduce) { .teste__titulo::before { animation: none; } }
+
 /* ---- Mensagens prontas ---- */
 .chips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .chip {
@@ -1849,6 +1879,7 @@ html[data-vt="theme"]::view-transition-new(root) { animation: fade-in 280ms var(
     grid-template-rows: auto auto 1fr;
     align-content: stretch;
   }
+  .bento-col--announce:has(> .tile--teste:not([hidden])) { grid-template-rows: auto auto auto 1fr; }
   .bento-col--announce > .tile { grid-column: 1 / -1; }
   .bento-col--announce > .tile--voice { grid-column: span 3; }
   .bento-col--announce > .tile--history { grid-column: span 4; }

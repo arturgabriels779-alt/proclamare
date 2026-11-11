@@ -206,7 +206,7 @@ class TesteMatriz(BasePermissoes):
         self.assertEqual(liberadas("funcionario"), {
             ("POST", "/api/announce"), ("GET", "/api/mensagens"), ("GET", "/api/voz"), ("GET", "/api/voices"),
             ("POST", "/api/auth/primeiro-adm"), ("POST", "/api/conta/senha"), ("GET", "/api/historico"),
-            ("POST", "/api/conta/sair-de-todos"),
+            ("POST", "/api/conta/sair-de-todos"), ("GET", "/api/teste-caixas"),   # v2.8.10: todo perfil vê o teste
         })
         # gerente: tudo menos saídas de som (mudar), segurança/rede e credenciais/conexão do Spotify
         self.assertEqual(set(rotas_protegidas()) - liberadas("gerente"), {
@@ -215,6 +215,7 @@ class TesteMatriz(BasePermissoes):
             ("GET", "/api/seguranca/remotos"), ("POST", "/api/seguranca/remotos/aprovar"),
             ("GET", "/api/spotify/config"), ("POST", "/api/spotify/config"), ("POST", "/api/spotify/desconectar"),
             ("GET", "/spotify/login"),
+            ("POST", "/api/teste-caixas/iniciar"), ("POST", "/api/teste-caixas/parar"),   # v2.8.10: só o ADM
         })
         self.assertEqual(liberadas("adm"), set(rotas_protegidas()))
         # desligar: gerente e ADM (continua só no PC das caixas, na própria rota)

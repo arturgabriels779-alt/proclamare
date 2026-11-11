@@ -45,10 +45,11 @@ _ITER_MAX_ACEITA = 5_000_000  # mesmo teto do PIN: um valor armazenado absurdo n
 CAPACIDADES = frozenset({
     "anunciar", "mensagens_editar", "voz", "musica", "programacao", "historico_todos",
     "contas", "som", "seguranca", "spotify_config", "desligar", "aviso_volume", "voz_volume",
+    "teste_caixas",   # v2.8.10: teste das caixas em loop (só ADM)
 })
 PODE: dict[str, frozenset[str]] = {
     "funcionario": frozenset({"anunciar"}),
-    "gerente": CAPACIDADES - {"som", "seguranca", "spotify_config", "aviso_volume", "voz_volume"},   # v2.8.4/5: volumes só ADM
+    "gerente": CAPACIDADES - {"som", "seguranca", "spotify_config", "aviso_volume", "voz_volume", "teste_caixas"},   # v2.8.4/5: volumes só ADM; v2.8.10: teste das caixas só ADM
     "adm": CAPACIDADES,
 }
 

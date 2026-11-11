@@ -21,7 +21,7 @@ NODE = shutil.which("node")
 DRIVER = r"""
 const VT = require(process.argv[1]);
 const passos = JSON.parse(process.argv[2]);
-const t = VT.nova();
+const t = VT.nova(process.argv[3] ? { travas: JSON.parse(process.argv[3]) } : undefined);
 const saida = [];
 for (const p of passos) {
   if (p[0] === "toque") VT.toqueGesto(t);
@@ -45,8 +45,9 @@ console.log(JSON.stringify({ a1, b1, a2, b2 }));
 
 @unittest.skipUnless(NODE, "node não instalado")
 class TesteComportamentoDaTrava(unittest.TestCase):
-    def rodar(self, passos):
-        r = subprocess.run([NODE, "-e", DRIVER, str(MODULO), json.dumps(passos)], capture_output=True, text=True,
+    def rodar(self, passos, travas=None):
+        args = [json.dumps(passos)] + ([json.dumps(travas)] if travas else [])
+        r = subprocess.run([NODE, "-e", DRIVER, str(MODULO), *args], capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=30, stdin=subprocess.DEVNULL)
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])
         return json.loads(r.stdout)
@@ -117,6 +118,53 @@ class TesteComportamentoDaTrava(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])
         d = json.loads(r.stdout)
         self.assertEqual((d["a1"], d["b1"], d["a2"], d["b2"]), (50, 50, 70, 0))
+
+    # ---- v2.8.10: sineta com travas [30, 70] ----
+    T30 = [30, 70]
+
+    def test_travas_30_70_arrasto_para_em_30(self) -> None:
+        s = self.rodar([["toque"], ["in", 50, 0], ["in", 100, 10]], self.T30)
+        self.assertEqual([x["valor"] for x in s], [30, 30])
+        self.assertEqual(s[-1]["msg"], 30)
+
+    def test_travas_30_70_segundo_gesto_libera_ate_70_e_depois_100(self) -> None:
+        s = self.rodar([["toque"], ["in", 100, 0], ["toque"], ["in", 100, 2000], ["toque"], ["in", 100, 4000]], self.T30)
+        self.assertEqual([x["valor"] for x in s], [30, 70, 100])
+        self.assertEqual([x["msg"] for x in s], [30, 70, 0])
+
+    def test_travas_30_70_segundo_gesto_libera_40_sem_parar_em_50(self) -> None:
+        # 50 deixa de ser trava na sineta: liberada a de 30, o 40 e o 50 passam direto
+        s = self.rodar([["toque"], ["in", 40, 0], ["toque"], ["in", 40, 1000], ["in", 50, 1100]], self.T30)
+        self.assertEqual([x["valor"] for x in s], [30, 40, 50])
+        self.assertEqual(s[-1]["msg"], 0)
+
+    def test_travas_30_70_gesto_depois_de_10_s_trava_de_novo(self) -> None:
+        s = self.rodar([["toque"], ["in", 40, 0], ["toque"], ["in", 40, 10001]], self.T30)
+        self.assertEqual([x["valor"] for x in s], [30, 30])
+
+    def test_travas_30_70_descer_fecha_de_novo(self) -> None:
+        s = self.rodar([["toque"], ["in", 40, 0], ["toque"], ["in", 40, 500],     # libera 30
+                        ["toque"], ["in", 20, 1000],                               # desce abaixo de 30: fecha
+                        ["toque"], ["in", 40, 2000]], self.T30)
+        self.assertEqual([x["valor"] for x in s], [30, 40, 20, 30])
+
+    def test_travas_30_70_valor_do_servidor_liberado_ate_ali(self) -> None:
+        s = self.rodar([["srv", 50], ["toque"], ["in", 50, 0],     # 50 vindo do servidor: como está
+                        ["toque"], ["in", 90, 100]], self.T30)     # subir: 70 segura
+        self.assertEqual([x["valor"] for x in s], [50, 70])
+        s = self.rodar([["srv", 50], ["srv", 20], ["toque"], ["in", 40, 0]], self.T30)  # servidor mandou menor
+        self.assertEqual(s[0]["valor"], 30)
+
+    def test_trava_70_continua_com_30_liberada(self) -> None:
+        s = self.rodar([["srv", 40], ["toque"], ["in", 100, 0]], self.T30)
+        self.assertEqual(s[0]["valor"], 70)
+        self.assertEqual(s[0]["msg"], 70)
+
+    def test_padrao_continua_50_70_e_lista_invalida_cai_no_padrao(self) -> None:
+        s = self.rodar([["toque"], ["in", 100, 0]])
+        self.assertEqual(s[0]["valor"], 50)
+        s = self.rodar([["toque"], ["in", 100, 0]], [70, 30])  # fora de ordem: ignorada
+        self.assertEqual(s[0]["valor"], 50)
 
     def test_sintaxe_do_arquivo_novo(self) -> None:
         r = subprocess.run([NODE, "--check", str(MODULO)], capture_output=True, text=True, encoding="utf-8",

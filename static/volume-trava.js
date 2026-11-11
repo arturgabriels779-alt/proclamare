@@ -1,6 +1,7 @@
 /**
  * Proclamare v2.8.7: lógica PURA das travas de volume (sem DOM, sem timer, sem relógio próprio).
  * Duas travas com a mesma função: em 50 (aviso amarelo) e em 70 (aviso vermelho, luzinhas de clip).
+ * v2.8.10: a trava é configurável por controle (`nova({travas:[30,70]})`, usado só na sineta); padrão [50, 70].
  * O app.js liga isto aos controles (valor do range, mensagem, temporizador). Carregado ANTES do app.js.
  * Também exporta para o Node (tests/test_painel_trava_node.py).
  */
@@ -17,14 +18,19 @@ const VolumeTrava = (function () {
    * lib = maior trava hoje liberada; barreira = trava que gerou o último aviso; avisoEm = quando; msg = trava com aviso
    * à mostra (0 = nenhum); gesto = o próximo `input` pertence a um gesto novo.
    */
-  function nova() {
-    return { lib: 0, barreira: 0, avisoEm: 0, msg: 0, gesto: true };
+  function nova(opcoes) {
+    let travas = TRAVAS;
+    if (opcoes && Array.isArray(opcoes.travas) && opcoes.travas.length &&
+        opcoes.travas.every((t, i, a) => Number.isFinite(t) && t > 0 && (i === 0 || t > a[i - 1]))) {
+      travas = opcoes.travas.slice(); // só lista crescente de números positivos; senão vale o padrão
+    }
+    return { lib: 0, barreira: 0, avisoEm: 0, msg: 0, gesto: true, travas };
   }
 
-  /** Maior trava ABAIXO do valor (0 se nenhuma): é o que está "como está" para esse valor. */
-  function travaAbaixo(n) {
+  /** Maior trava ABAIXO do valor (0 se nenhuma): é o que está "como está" para esse valor. `travas` opcional. */
+  function travaAbaixo(n, travas) {
     let r = 0;
-    for (const t of TRAVAS) if (n > t) r = t;
+    for (const t of travas || TRAVAS) if (n > t) r = t;
     return r;
   }
 
@@ -33,7 +39,7 @@ const VolumeTrava = (function () {
    * trava; se estiver abaixo, aquela trava volta a valer (a liberação nunca só cresce).
    */
   function liberarAte(trava, n) {
-    const nova = travaAbaixo(Number(n) || 0);
+    const nova = travaAbaixo(Number(n) || 0, trava.travas);
     // O poll do Spotify/Tocador devolve o valor travado a cada ~2,5 s: sem mudança de liberação, preserva o aviso e a
     // janela de 10 s do 2º gesto (senão a trava nunca deixaria passar).
     if (nova === trava.lib) return;
@@ -62,9 +68,9 @@ const VolumeTrava = (function () {
    */
   function entrada(trava, n, agora) {
     // descer fecha de novo toda trava que o valor deixou para trás
-    trava.lib = Math.min(trava.lib, travaAbaixo(n));
+    trava.lib = Math.min(trava.lib, travaAbaixo(n, trava.travas));
     for (;;) {
-      const alvo = TRAVAS.find((t) => n > t && trava.lib < t);
+      const alvo = trava.travas.find((t) => n > t && trava.lib < t);
       if (!alvo) {
         trava.msg = 0;
         return n;

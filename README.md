@@ -46,7 +46,7 @@ de fundo **abaixa sozinha** durante o anúncio e volta ao volume normal no final
 - **Listas e programação de horários:** crie listas de músicas no painel e marque a hora para tocar um áudio da pasta (ex.: a Ave Maria às 18:00), uma lista (ex.: "Manhã calma" de segunda a sexta às 8:00) ou um anúncio de texto — todo dia, em dias da semana ou numa data. No horário a música que estiver tocando (aba Tocador e Spotify) é **pausada e volta de onde parou**; áudio (MP3, OGG, WAV ou FLAC, até 10 min) e anúncio tocam mesmo com o navegador fechado; a lista precisa da aba "Tocador da loja" aberta. No painel: seção **Listas** em *Minhas músicas* (Nova lista, Tocar, Embaralhar, Editar, "＋ Lista" em cada música) e bloco **Programação** (aba **Horários** no celular), que substitui o Agendador do Windows. Passo a passo no `docs/GUIA.md` (seções 4b e 4c).
 - **Abaixa a música automaticamente** durante cada anúncio (Spotify, YouTube e Minhas músicas) e restaura o volume no final.
 
-### 🔊 Segurança do som (v2.8.4-v2.8.8)
+### 🔊 Segurança do som (v2.8.4-v2.8.10)
 Recomendações preventivas, para dar mais segurança e vida útil às caixas e aos amplificadores:
 - **Limitador da voz (v2.8.8):** corta os agudos fortes (acima de 6 kHz) e segura os picos da fala em −6 dB, sem
   baixar o volume da voz. Vale para todo anúncio (digitado, Mensagens prontas, Programação e "Testar caixas"). **Vem
@@ -54,6 +54,15 @@ Recomendações preventivas, para dar mais segurança e vida útil às caixas e 
   administrador avisa quantas foram no dia.
 - **Volumes separados (v2.8.4-v2.8.7):** volume do aviso sonoro, da voz e dos áudios agendados, só para o
   administrador. Começam em 30% (aviso) e 50% (voz e áudios agendados); a música do Tocador começa em 50%.
+- **Teste das caixas em loop (v2.8.10):** só o administrador escolhe uma Mensagem pronta e ela toca repetidamente
+  (sineta → fala → sineta do fim → pausa de 3 s), com a voz, o aviso, os volumes e o limitador da loja, para ouvir o
+  efeito de cada ajuste. Para pelo botão **Parar** (só o administrador), pelo **Desligar** do PC das caixas ou
+  sozinho depois de 1 h 30 (no máximo 3 h de teste por dia, somando todos os loops); enquanto toca, anúncios,
+  horários e play de música ficam bloqueados (os outros perfis veem que está tocando).
+- **Trava da sineta em 30% (v2.8.10):** o volume do aviso para em 30% (arraste de novo para passar); "Cuidado" a
+  partir de 50% e a trava vermelha de 70% continua.
+- **Travar a voz para gerentes (v2.8.10):** o administrador pode ligar, em *Voz da loja*, a trava que tira dos gerentes
+  (e de quem entra com PIN) o poder de mudar a voz, o aviso e o "Ouvir"; música, horários e mensagens não mudam.
 - **Sinetas suaves (v2.8.6):** sem distorção e com metade do volume máximo das versões antigas.
 - **Duas travas em todo volume (v2.8.7):** o controle para em 50% (aviso amarelo) e em 70% (aviso vermelho, para
   conferir as luzinhas de *clip* da mesa e dos amplificadores); para passar, é preciso arrastar de novo.

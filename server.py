@@ -1,5 +1,5 @@
 """
-Proclamare — servidor local (v2.8.9 "Vozes Seraphina e Remy; Antônio saiu"; v2.8.8 "Limitador da voz"; v2.8.7 "Segurança do som"; v2.8.6 "Sinetas suaves"; v2.8.5 "Volume da voz"; v2.8.4 "Volume do aviso"; v2.8.3 "Atualizador: ignora ZIP antigo"; v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
+Proclamare — servidor local (v2.8.10 "Teste das caixas em loop; trava da sineta em 30%"; v2.8.9 "Vozes Seraphina e Remy; Antônio saiu"; v2.8.8 "Limitador da voz"; v2.8.7 "Segurança do som"; v2.8.6 "Sinetas suaves"; v2.8.5 "Volume da voz"; v2.8.4 "Volume do aviso"; v2.8.3 "Atualizador: ignora ZIP antigo"; v2.8.2 "Nome das músicas = nome do arquivo"; v2.8.1 "Aviso Avião (ding-dong)"; v2.8 "Aviso sonoro, contas e perfis"; v2.7.1 "Segurança"; v2.7 "Salvar playlists"; v2.6 "Listas" e "Programação"; v2.5 "Mensagens e Desligar"; base v2.4.2 "Spotify", v2.4.1 "tempo da música", v2.4 "Minhas músicas", v2.3 saídas de som, v2.2.1 e v2.2 com PIN)
 =========================================================================
 Backend Flask que roda no computador ligado ao amplificador/caixas de som
 da loja. Serve a interface (static/) e cuida de três coisas:
@@ -68,6 +68,9 @@ Inventário de rotas (v2.8)
   GET  /api/voz                            pin | - | -
   POST /api/voz                            pin | 20/min | {"motor"?,"voz"?,"velocidade"?,"aviso"?,"aviso_volume"? (so ADM),"voz_volume"? (so ADM),"limitador"? (bool, so ADM)}
   POST /api/voz/ouvir                      pin | 6/min por IP remoto, 20/10 min no total | {"aviso"}
+  GET  /api/teste-caixas                   pin | - | - (v2.8.10)
+  POST /api/teste-caixas/iniciar           pin | 10/min por IP e conta | {"mensagem_id"} (so ADM)
+  POST /api/teste-caixas/parar             pin | - | {} (so ADM)
   GET  /api/youtube/state                  pin | - | -
   POST /api/youtube/state                  pin | 60/10 s | heartbeat da aba Tocador (chaves conhecidas; outra = 400)
   GET  /api/youtube/commands               pin | 4 long-polls simultâneos | -
@@ -146,7 +149,9 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
   Perfis (contas.PERFIS) e capacidades (contas.PODE; contas.pode(perfil, capacidade) falha fechado):
     funcionario = anunciar
     gerente     = anunciar, mensagens_editar, voz, musica, programacao, historico_todos, contas, desligar
-    adm         = as do gerente + som, seguranca, spotify_config
+    adm         = as do gerente + som, seguranca, spotify_config, aviso_volume, voz_volume, teste_caixas (v2.8.4/5/10)
+    EXCECAO DINAMICA (v2.8.10): com config.json["voz_loja"]["travar_gerentes"] = true o gerente NAO tem `voz` (veja o Contrato
+    v2.8.10); o ADM nunca perde nada. Tudo passa por `_pode_seguro` (contas.pode continua sendo a matriz estatica).
   Hierarquia (contas.pode_gerenciar): ADM gerencia qualquer perfil; gerente só funcionário; funcionário ninguém.
   Limites de conta (contas.py): até CONTAS_MAX 50; usuário 3..30 [a-z0-9._]; senha 8..128 e diferente do usuário; nome
   até 60; função até 40; PBKDF2 (contas.ITERACOES 600000 nas senhas novas, revisão final S6; o PIN segue com
@@ -369,6 +374,78 @@ Contrato v2.8 (Parte B: contas e perfis - B3 login e sessão, B4 permissões por
                      delas). Os GETs mostram só "autor_nome" (horários, resumo/detalhe de lista, atalho, mensagem) e
                      só quando existe: sem ele = "antes das contas" (itens de antes da atualização continuam
                      funcionando; quem salvar de novo vira o autor). Carimbo torto no disco é descartado.
+
+Contrato v2.8.10 (Teste das caixas em loop)
+-------------------------------------------
+  So o ADM (capacidade `teste_caixas`, so em contas.PODE["adm"]; modo PIN: so o PC das caixas = perfil "adm"; a sessao de
+  PIN remota vale "gerente" e leva 403 "sem_permissao" na propria rota) escolhe uma das Mensagens prontas e ela toca em
+  LOOP: sineta da loja -> fala -> sineta do fim (o MESMO caminho do anuncio comum: aviso, motor/voz/velocidade, voz_volume,
+  aviso_volume e limitador da loja, relidos a cada volta) -> pausa de TESTE_CAIXAS_PAUSA_S (3 s) -> de novo. Para pelo
+  "Parar" (so o ADM) ou sozinho no que vier primeiro: TESTE_CAIXAS_TETO_S (5400 s = 1 h 30 por loop, relogio monotonico
+  `_teste_relogio`) ou o saldo do DIA (TESTE_CAIXAS_LIMITE_DIA_S = 10800 s = 3 h somando todos os loops). Os limites sao
+  conferidos ENTRE as voltas: o fim pode passar do limite ate uma volta inteira (fala + sinetas, no maximo ~90 s). Estado do
+  loop so em memoria: reiniciar o servidor acaba com o loop. O USO DO DIA fica em config.json["teste_caixas_uso"] =
+  {"data": "AAAA-MM-DD", "segundos": N} (dia do relogio do PC; gravado a cada ~60 s em loop e no fim; dia diferente = zera;
+  nunca sai em resposta alguma alem dos inteiros abaixo). Leitura FALHA FECHADO: segundos finito = min(max(v, 0), limite);
+  tipo errado/NaN/infinito/valor que nao e objeto = limite atingido (hoje); data malformada = hoje. So um dia POSTERIOR ao
+  gravado zera; relogio voltando no tempo mantem o uso gravado. Loop que atravessa a meia-noite: na primeira soma depois da
+  virada o uso zera e o trecho corrido desde a ultima soma (no maximo uma volta) conta no dia novo (simplificacao).
+  GET  /api/teste-caixas -> {"tocando": bool, "titulo": str|null, "repeticao": int, "restante_s": int|null, "teto_s": 5400,
+                             "limite_dia_s": 10800, "usado_hoje_s": int,
+                             "fim_motivo": "parado"|"tempo"|"limite_diario"|"erro"|"desligando"|null} (qualquer sessao;
+                             `fim_motivo` = o do ULTIMO loop encerrado desde que o servidor ligou; um novo inicio o zera;
+                             `restante_s` = min(teto do loop, saldo do dia)).
+  POST /api/teste-caixas/iniciar {"mensagem_id"} -> 202 com o corpo do GET. 403 sem a capacidade; 400 (chave desconhecida;
+                             id nao-string/vazio/> 64); 429 (10/min por IP e conta; auditoria agregada); 404 codigo
+                             "mensagem_inexistente"; 409 codigo "limite_diario" (saldo do dia < 60 s,
+                             MSG_TESTE_CAIXAS_LIMITE_DIA, antes da checagem da trava); 409 "desligando"; 409 "teste_tocando"
+                             (ja ha loop); 409 trava de audio ocupada (`_msg_ocupado`); 503 voz da loja "online" sem
+                             internet (MSG_SEM_INTERNET_VOZ_ONLINE). O servidor le o TEXTO da mensagem.
+  POST /api/teste-caixas/parar {} -> 200 com o corpo do GET (idempotente; corta NA HORA: a fala/sineta e a pausa).
+  A thread "teste-caixas" SEGURA `_anuncio_lock` do inicio ao fim e usa `_musica_pausada` (a musica pausa e volta no fim, so a que
+  tocava). Durante o loop: /api/announce, /api/voz/ouvir e "Tocar agora" da Programacao dao 409 com MSG_TESTE_CAIXAS_TOCANDO
+  ("Teste das caixas tocando. Aguarde o administrador parar."); QUALQUER item agendado (audio, anuncio, lista, spotify) vira
+  "nao tocou" com motivo `teste_caixas` (texto "Teste das caixas tocando"), sem esperar a trava.
+  D1 (emergencia): POST /api/sistema/desligar (so local, como sempre; remoto = 403 e o loop segue) com o loop como UNICO
+  obstaculo responde 202 SEMPRE: marca `_desligamento_agendado` (anuncio/iniciar/horarios passam a ser recusados), corta o loop
+  (fim_motivo "desligando") e o desligamento HERDA a trava de audio do loop (`_teste["entregar_trava"]`: o loop, ao acabar, NAO a
+  solta; ninguem a pega no meio). Fala que nao da para cortar (voz do Windows no legado) so atrasa o loop: o vigia de 10 s do
+  desligamento forca a saida. Fim por "desligando" (painel, Ctrl+C, _encerrar_servicos) NAO retoma a musica do Tocador nem do
+  Spotify (`_marcar_musica_substituida` antes de sair do `_musica_pausada`). Anuncio, teste de saida e envio de musicas em
+  andamento continuam dando 409 no desligar. O "Parar" continua so do ADM.
+  D2 (musica bloqueada): durante o loop dao 409 codigo "teste_tocando" (MSG_TESTE_CAIXAS_TOCANDO) tudo o que COMECA/retoma/
+  troca musica: POST /api/spotify/play, /next e /previous, /api/spotify/atalhos/<id>/tocar, /api/listas/<id>/tocar,
+  /api/youtube/command com action load|play|next|prev|play_index (YOUTUBE_ACOES_QUE_TOCAM), /api/youtube/queue com op
+  play_now e op add_many com tirar_primeiro ("Tocar pasta"); `tocar_lista()` e `tocar_atalho_spotify()` TAMBEM reconferem o
+  loop logo antes do load/PUT (409 `teste_tocando`; na Programacao = "nao tocou" `teste_caixas`). Livres: spotify pause/volume/activate, youtube pause/volume/seek,
+  fila add/remove/clear/move/pop e add_many sem tirar_primeiro (so adiciona). A protecao do teto de volume do Spotify (70)
+  SEGUE valendo no loop (`_anuncio_ocupa_a_musica`: a trava do teste nao abaixa a musica).
+  D3: 3 h por dia (veja acima); o limite e do teste, nao de outros anuncios.
+  A sintese do edge-tts e REAPROVEITADA entre as voltas (`_CacheFalaTeste`: mesmo texto + voz + velocidade; muda = sintetiza de
+  novo); o limitador e as sinetas rodam a cada volta. Erro numa volta (sintese, motor, saida) = `fim_motivo:"erro"`. Ctrl+C /
+  desligar (`_encerrar_servicos`) = "desligando". Auditoria: `teste_caixas_iniciar` (resultado) e `teste_caixas_fim`
+  (repeticoes=N, motivo=..., usado_dia_s=N), nunca texto, titulo nem id da mensagem. Historico (anuncios.jsonl): UMA linha por
+  loop, no fim, tipo "teste_caixas", resultado ok (tempo/limite_diario) | interrompido (parado/desligando) | erro.
+  Residuais aceitos: (a) `tocar_lista()`/`tocar_atalho_spotify()` reconferem o loop logo antes do load/PUT, mas um iniciar que
+  chegue DEPOIS dessa conferencia pode sobrepor por alguns instantes (so funcional: nada de seguranca); (b) trocar o motor da
+  voz da loja para "online" sem internet DURANTE o loop o encerra com fim_motivo "erro" (quem pode mexer na voz e quem tem a
+  capacidade `voz`; o gerente pode ser impedido com `travar_gerentes`, abaixo).
+  `travar_gerentes` (Travar a voz da loja para gerentes): bool em config.json["voz_loja"], padrao false (ausente/torto = false;
+  sem migracao; erro ao ler a config = false, como todo o voz_loja(), que nunca levanta). Entra no GET /api/voz e no POST
+  /api/voz (so bool, senao 400 "campo":"travar_gerentes"; exige a capacidade `voz_volume` = so ADM, modo PIN: so o PC das
+  caixas; ordem 400 -> 429 -> 403 sem gravar nada do corpo). Ligada, o perfil "gerente" PERDE a capacidade `voz` em TODO lugar
+  (`_pode_seguro`: camada PERMISSOES_ROTAS, `_perfil_pode`, `permissoes` do /api/auth/status e login; no modo PIN o remoto com PIN
+  conta como gerente e as rotas conferem na propria rota): POST /api/voz e POST /api/voz/ouvir = 403 "sem_permissao" ("Peca a um
+  administrador"; no modo PIN, MSG_VOZ_SO_PC: "So o PC das caixas pode mudar a voz da loja."; os dois gravam auditoria
+  resultado=sem_permissao; o voz_salvar reconfere a trava DENTRO do _config_lock, sobre o cfg ja lido). /api/announce com
+  teste:true de GERENTE (modo contas) ou de remoto com PIN (modo PIN) com a trava ligada = 403 "sem_permissao" com
+  MSG_VOZ_TRAVADA ("A voz da loja foi travada pelo administrador."), sem tocar nada (painel desatualizado nunca toca um anuncio de
+  verdade; auditoria anuncio resultado=sem_permissao so com o tamanho; 403 nao entra no historico). teste:true de quem nao tem
+  `voz` por outro motivo (funcionario) segue ignorado (anuncio comum). "adm" nunca e afetado; funcionario ja nao tinha `voz`. Nao
+  muda: YouTube/Spotify/Tocador/musica, Programacao (inclusive motor/voz/velocidade dos itens `anuncio`), Mensagens prontas e o
+  teste das caixas. Auditoria `voz_travar_gerentes valor=0|1 conta=c<10 hex>` so quando o valor MUDA. Testes:
+  tests/test_voz_travar_gerentes.py.
+  Testes: tests/test_teste_caixas.py.
 
 Contrato v2.8.8 (Limitador da voz; segurança preventiva: mais segurança para as caixas e os amplificadores)
 ------------------------------------------------------------------
@@ -1229,6 +1306,7 @@ import asyncio
 import atexit
 import base64
 import contextlib
+import contextvars
 import copy
 import functools
 import getpass
@@ -2414,8 +2492,17 @@ def perfil_da_requisicao() -> str | None:
 
 
 def _permissoes(perfil: str | None) -> list[str]:
-    """Capacidades do perfil efetivo, em ordem (lista vazia sem sessão)."""
-    return sorted(contas.PODE[perfil]) if perfil in contas.PODE else []
+    """Capacidades do perfil efetivo, em ordem (lista vazia sem sessão). v2.8.10: já sem `voz` para o gerente travado."""
+    return [c for c in sorted(contas.PODE[perfil]) if _pode_seguro(perfil, c)] if perfil in contas.PODE else []
+
+
+def _travar_gerentes_ligado() -> bool:
+    """v2.8.10: `voz_loja.travar_gerentes` é exatamente True? Nunca levanta (config ilegível/torta = False, o padrão)."""
+    try:
+        bruto = load_config().get("voz_loja")
+        return isinstance(bruto, dict) and bruto.get("travar_gerentes") is True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _sessao_ok(cfg: dict | None = None) -> bool:
@@ -2474,6 +2561,9 @@ PERMISSOES_ROTAS: dict[tuple[str, str], str | None] = {
     ("GET", "/api/voz"): None,                        # leitura da voz da loja (o painel mostra qual é)
     ("POST", "/api/voz"): "voz",   # v2.8.4: com "aviso_volume" no corpo a rota exige também a capacidade aviso_volume
     ("POST", "/api/voz/ouvir"): "voz",
+    ("GET", "/api/teste-caixas"): None,               # v2.8.10: todo perfil VÊ que o teste está tocando
+    ("POST", "/api/teste-caixas/iniciar"): "teste_caixas",   # só ADM (modo PIN: só o PC das caixas, na própria rota)
+    ("POST", "/api/teste-caixas/parar"): "teste_caixas",
     ("GET", "/api/voices"): None,                     # diagnóstico; continua SÓ LOCAL (somente_local)
     # Acesso / segurança do PC das caixas (as rotas também exigem ADM no PC: _exigir_adm_local).
     # /api/auth/pin e /api/auth/revogar NÃO entram aqui: estão em API_PUBLICAS (veja
@@ -2632,10 +2722,16 @@ def _exigir_contas_disponiveis() -> tuple[Response, int] | None:
     return jsonify({"ok": False, "codigo": "contas_indisponivel", "error": MSG_CONTAS_INDISPONIVEIS}), 503
 
 
+MSG_VOZ_SO_PC = "Só o PC das caixas pode mudar a voz da loja."          # modo PIN: 403 por `voz`
+MSG_VOZ_TRAVADA = "A voz da loja foi travada pelo administrador."       # teste:true de gerente com a trava ligada
+
+
 def _resp_sem_permissao(capacidade: str | None = None) -> tuple[Response, int]:
     """403 "sem_permissao". O pedido vai ao ADM quando nem o gerente tem a capacidade (som, segurança, Spotify) ou
     a rota não tem linha na tabela (só o ADM passa); senão, ao gerente."""
-    so_adm = capacidade is None or not contas.pode("gerente", capacidade)
+    so_adm = capacidade is None or not _pode_seguro("gerente", capacidade)
+    if capacidade == "voz" and not modo_contas():   # v2.8.10: no modo PIN não há ADM; quem manda é o PC das caixas
+        return jsonify({"ok": False, "codigo": "sem_permissao", "error": MSG_VOZ_SO_PC}), 403
     quem = "um administrador" if so_adm else "um gerente"
     return jsonify({"ok": False, "codigo": "sem_permissao",
                     "error": f"Seu perfil não tem acesso a isso. Peça a {quem}."}), 403
@@ -2646,6 +2742,8 @@ def _pode_seguro(perfil: Any, capacidade: str | None) -> bool:
     if capacidade is None:
         return True
     try:
+        if capacidade == "voz" and perfil == "gerente" and _travar_gerentes_ligado():
+            return False   # v2.8.10: a ÚNICA exceção dinâmica da matriz (o ADM nunca é afetado)
         return contas.pode(perfil, capacidade)
     except (KeyError, ValueError, TypeError):
         return False
@@ -4552,6 +4650,8 @@ def _tocar_aviso_e_fim(caminho: Path, fim: Path) -> None:
 
 
 _ultima_limpeza = 0.0
+PREFIXO_FALA_TESTE = "fala_teste_"   # v2.8.10: o mp3 mestre do loop do teste das caixas (fora do padrão anuncio_*)
+FALA_TESTE_IDADE_S = 3 * 3600.0      # sobra de um loop que não limpou (o teto do loop é 1 h 30)
 
 
 AVISO_TMP_IDADE_S = 600.0   # aviso_*.tmp mais velho que isto é sobra de uma gravação interrompida
@@ -4577,6 +4677,14 @@ def limpar_audios_antigos(forcar: bool = False) -> None:
     arquivos.sort()
     for _, p in arquivos[: max(len(arquivos) - MAX_ARQUIVOS_TEMP, 0)]:
         apagar_audio(p)
+    # v2.8.10: mp3 mestre do teste das caixas que sobrou (queda no meio do loop). Ao ligar (forcar) saem todos; depois, os velhos.
+    limite_teste = time.time() - FALA_TESTE_IDADE_S
+    for p in AUDIO_DIR.glob(f"{PREFIXO_FALA_TESTE}*.mp3"):
+        try:
+            if forcar or p.stat().st_mtime < limite_teste:
+                apagar_audio(p)
+        except OSError:
+            continue
     # v2.8 (Red Team L2): temporários do caminho_do_aviso que sobraram de uma queda no meio da gravação. Só os
     # antigos: um recente pode estar sendo gravado agora (a gravação leva milissegundos).
     limite = time.time() - AVISO_TMP_IDADE_S
@@ -4610,9 +4718,40 @@ async def _gerar_audio_online_async(texto: str, voz: str, taxa: str, caminho: Pa
     await asyncio.wait_for(communicate.save(str(caminho)), timeout=TIMEOUT_GERACAO_S)
 
 
+class _CacheFalaTeste:
+    """
+    v2.8.10: o mp3 do edge-tts do "Teste das caixas em loop", sintetizado UMA vez e copiado a cada volta (cada anúncio apaga o
+    arquivo que tocou). Vale só para a thread do loop (ContextVar abaixo); a chave é (texto, voz, velocidade): mudou = a
+    próxima volta sintetiza de novo. O limitador e as sinetas continuam rodando a cada volta (leem a loja de novo).
+    """
+
+    def __init__(self) -> None:
+        self.chave: tuple[str, str, int] | None = None
+        self.arquivo: Path | None = None
+        self.sinteses = 0   # quantas vezes o edge-tts foi realmente chamado (os testes conferem)
+
+    def descartar(self) -> None:
+        apagar_audio(self.arquivo)
+        self.arquivo = None
+        self.chave = None
+
+
+_fala_cache_ctx: contextvars.ContextVar[_CacheFalaTeste | None] = contextvars.ContextVar("fala_cache_teste", default=None)
+
+
 def gerar_audio_online(texto: str, voz: str, velocidade_pct: int) -> Path:
-    """Gera o mp3 com edge-tts (nome único); em caso de falha não deixa lixo."""
+    """Gera o mp3 com edge-tts (nome único); em caso de falha não deixa lixo. (v2.8.10: o loop do teste reaproveita o mp3.)"""
     taxa = f"{velocidade_pct:+d}%"
+    cache = _fala_cache_ctx.get()
+    chave = (texto, voz, velocidade_pct)
+    if cache is not None and cache.chave == chave and cache.arquivo is not None:
+        copia = AUDIO_DIR / f"anuncio_{uuid.uuid4().hex}.mp3"
+        try:
+            shutil.copyfile(cache.arquivo, copia)
+            return copia
+        except OSError:   # o mestre sumiu: sintetiza de novo
+            apagar_audio(copia)
+            cache.descartar()
     caminho = AUDIO_DIR / f"anuncio_{uuid.uuid4().hex}.mp3"
     try:
         asyncio.run(_gerar_audio_online_async(texto, voz, taxa, caminho))
@@ -4621,6 +4760,15 @@ def gerar_audio_online(texto: str, voz: str, velocidade_pct: int) -> Path:
     except BaseException:
         apagar_audio(caminho)
         raise
+    if cache is not None:
+        cache.sinteses += 1
+        mestre = AUDIO_DIR / f"{PREFIXO_FALA_TESTE}{uuid.uuid4().hex}.mp3"
+        try:
+            shutil.copyfile(caminho, mestre)
+            cache.descartar()
+            cache.arquivo, cache.chave = mestre, chave
+        except OSError:   # sem espaço: o loop segue sintetizando a cada volta
+            apagar_audio(mestre)
     return caminho
 
 
@@ -4875,12 +5023,14 @@ AGENDADO_VOLUME_PADRAO = 50
 VOZ_LOJA_PADRAO: dict[str, Any] = {"motor": "auto", "voz": "francisca", "velocidade": 0, "aviso": AVISO_PADRAO,
                                    "aviso_volume": VOLUME_PADRAO, "voz_volume": VOZ_VOLUME_PADRAO,
                                    "agendado_volume": AGENDADO_VOLUME_PADRAO,
-                                   "limitador": True}   # v2.8.8: começa LIGADO (só o ADM liga/desliga)
+                                   "limitador": True,   # v2.8.8: começa LIGADO (só o ADM liga/desliga)
+                                   "travar_gerentes": False}   # v2.8.10: True = o gerente perde a capacidade `voz` (só o ADM muda)
 CAMPOS_VOLUME_LOJA = ("aviso_volume", "voz_volume", "agendado_volume")
 # capacidade exigida para gravar cada volume (v2.8.7: o do agendado reaproveita `voz_volume`; volumes são só do ADM)
 CAPACIDADE_DO_VOLUME = {"aviso_volume": "aviso_volume", "voz_volume": "voz_volume", "agendado_volume": "voz_volume",
-                        "limitador": "voz_volume"}   # v2.8.8: o limitador da voz reaproveita a capacidade do volume da voz
-CAMPOS_COM_CAPACIDADE = (*CAMPOS_VOLUME_LOJA, "limitador")   # o que o POST /api/voz só aceita de quem tem a capacidade
+                        "limitador": "voz_volume",   # v2.8.8: o limitador da voz reaproveita a capacidade do volume da voz
+                        "travar_gerentes": "voz_volume"}   # v2.8.10: travar a voz para gerentes também é só do ADM
+CAMPOS_COM_CAPACIDADE = (*CAMPOS_VOLUME_LOJA, "limitador", "travar_gerentes")   # o que o POST /api/voz só aceita de quem tem a capacidade
 VOZES_LOJA_NOMES = (("francisca", "Francisca (feminina)"),
                     ("seraphina", "Seraphina (feminina)"), ("remy", "Remy (masculina)"))
 # v2.8.9: o Antônio saiu; "antonio" gravado (config, aba antiga) vale como "remy". Mapa único, o da programacao.py.
@@ -4898,7 +5048,7 @@ def _voz_loja_campo_ok(campo: str, valor: Any) -> bool:
         return isinstance(valor, int) and not isinstance(valor, bool) and -50 <= valor <= 50
     if campo == "aviso":
         return isinstance(valor, str) and valor in AVISOS
-    if campo == "limitador":   # v2.8.8: só bool (1, "sim", None = inválido)
+    if campo in ("limitador", "travar_gerentes"):   # v2.8.8/v2.8.10: só bool (1, "sim", None = inválido)
         return isinstance(valor, bool)
     if campo in CAMPOS_VOLUME_LOJA:   # mesma regra (10..100, múltiplo de 10); acima de 70 (2ª trava) só ganha a auditoria volume_alto
         return volume_valido(valor)
@@ -5565,7 +5715,7 @@ def _corrigir_teto_spotify(dados: Any) -> None:
     Roda FORA do `_player_lock`. Auditoria só com números (de/para).
     """
     try:
-        if not isinstance(dados, dict) or not dados.get("is_playing") or _anuncio_lock.locked():
+        if not isinstance(dados, dict) or not dados.get("is_playing") or _anuncio_ocupa_a_musica():
             return
         atual = (dados.get("device") or {}).get("volume_percent")
         limite = _limite_spotify()
@@ -5581,7 +5731,7 @@ def _corrigir_teto_spotify(dados: Any) -> None:
                 return
             _teto_spotify["proxima"] = agora + SPOTIFY_TETO_INTERVALO_S
         with _spotify_volume_lock:
-            if _anuncio_lock.locked():   # reconferido DENTRO do lock, logo antes do PUT: o anúncio começou no meio
+            if _anuncio_ocupa_a_musica():   # reconferido DENTRO do lock, logo antes do PUT: o anúncio começou no meio
                 return
             status, reason = spotify_comando("PUT", "/me/player/volume",
                                              params={"volume_percent": limite, "device_id": device_id})
@@ -5608,7 +5758,7 @@ _teto_vigia_thread: threading.Thread | None = None
 def _teto_vigia_passo() -> bool:
     """Um ciclo do vigia (testável, sem esperar). True = fez a leitura. Nunca levanta."""
     try:
-        if _desligando.is_set() or _anuncio_lock.locked():
+        if _desligando.is_set() or _anuncio_ocupa_a_musica():
             return False
         cfg = load_config()
         if not (cfg.get("spotify_client_id") and cfg.get("spotify_client_secret")
@@ -6231,6 +6381,7 @@ def _resposta_comando(status: int, reason: str | None) -> Response:
 
 @app.post("/api/spotify/play")
 def spotify_play() -> Response | tuple[Response, int]:
+    _exigir_sem_teste()   # v2.8.10 (D2)
     _limitar_comandos_spotify()
     body = corpo_json()
     exigir_chaves(body, ("uri", "context_uri"))
@@ -6259,6 +6410,8 @@ def spotify_play() -> Response | tuple[Response, int]:
 
 def _comando_simples(method: str, path: str, *, critico: bool = False) -> Response:
     """pause/next/previous: mesmo formato, só muda o método e o caminho."""
+    if path != "/me/player/pause":   # v2.8.10 (D2): next/previous tocariam a música; pause segue livre
+        _exigir_sem_teste()
     _limitar_comandos_spotify()
     corpo_json()  # valida que veio um objeto JSON
     if critico and not _bypass_critico_da_rota():
@@ -6547,7 +6700,7 @@ def _loop_reaplicacao() -> None:
                         _reaplic_thread = None
                         return
                     visto = _pendente_bruto()
-            if _anuncio_lock.locked():   # anúncio tocando: o duck/restore dele cuida do volume
+            if _anuncio_ocupa_a_musica():   # anúncio tocando: o duck/restore dele cuida do volume (o teste das caixas não abaixa a música)
                 continue
             if _reaplicar_pendente(volume):   # rede fora dos locks (não atrasa o anúncio)
                 with _pendente_lock:
@@ -6692,6 +6845,8 @@ YOUTUBE_WAIT_MAX = 25
 YOUTUBE_ACOES_CLIENTE = frozenset(
     {"load", "play", "pause", "next", "prev", "volume", "play_index", "seek"}
 )
+# v2.8.10 (D2): ações do Tocador que COMEÇAM/retomam/trocam a reprodução (bloqueadas durante o teste das caixas)
+YOUTUBE_ACOES_QUE_TOCAM = frozenset({"load", "play", "next", "prev", "play_index"})
 YOUTUBE_HOSTS = frozenset(
     {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
 )
@@ -7113,6 +7268,8 @@ def youtube_queue() -> Response:
             flags[nome] = body.get(nome, False)
             if not isinstance(flags[nome], bool):
                 raise ErroApi(f"Campo '{nome}' inválido.")
+        if flags["tirar_primeiro"]:   # v2.8.10 (D2): "Tocar pasta" (o front manda tocar o 1º); só adicionar segue livre
+            _exigir_sem_teste()
         if flags["tirar_primeiro"] and not flags["substituir"]:
             raise ErroApi("'tirar_primeiro' só vale junto com 'substituir'.")
         achadas = [m for m in (ACERVO.obter(i) for i in ids) if m is not None]
@@ -7198,6 +7355,7 @@ def youtube_queue() -> Response:
 
     # remove / play_now: tiram o item da fila
     if op == "play_now":
+        _exigir_sem_teste()   # v2.8.10 (D2)
         # Só consome o item se há tocador vivo (senão o comando ficaria retido e tocaria
         # muito depois). Ordem de locks: estado -> fila (único lugar que aninha os dois).
         with _yt_estado_lock:
@@ -7239,6 +7397,8 @@ def youtube_command() -> Response:
     # "duck"/"restore" são internos do servidor: o cliente nunca pode enviá-los.
     if not isinstance(action, str) or action not in YOUTUBE_ACOES_CLIENTE:
         raise ErroApi("Ação inválida.")
+    if action in YOUTUBE_ACOES_QUE_TOCAM:   # v2.8.10 (D2): pause/volume/seek seguem livres
+        _exigir_sem_teste()
     # v2.4.1: limite de taxa por aparelho (o buffer de comandos é pequeno e o seek força rede na aba
     # tocadora). Uso normal (volume com throttle de 600 ms, toques na barra) fica bem abaixo.
     ip = request.remote_addr or "?"
@@ -7540,6 +7700,9 @@ def voz_salvar() -> Response:
             raise ErroVozLoja(f"Campo '{campo}' inválido.", campo)
     if _excedeu_limite_ip_e_conta("voz:", VOZ_LOJA_ESCRITA_MAX_POR_MIN, 60.0):   # v2.8: IP e conta
         raise ErroApi("Muitas alterações seguidas. Aguarde um minuto.", 429)
+    if not _perfil_pode("voz"):   # v2.8.10: modo PIN (remoto = gerente) com a voz travada; em modo contas a camada já barrou
+        auditar("voz_salvar", resultado="sem_permissao", conta=_conta_auditoria())
+        return _resp_sem_permissao("voz")
     # v2.8.4: o teto vem ANTES do 403, então um 403 repetido gasta a cota (e não enche o auditoria.log)
     for volume_campo in CAMPOS_COM_CAPACIDADE:   # cada volume tem a sua capacidade (v2.8.7: agendado_volume usa `voz_volume`; v2.8.8: o limitador também; todas só do ADM)
         if volume_campo in corpo and not _perfil_pode(CAPACIDADE_DO_VOLUME[volume_campo]):
@@ -7547,8 +7710,14 @@ def voz_salvar() -> Response:
             return _resp_sem_permissao(CAPACIDADE_DO_VOLUME[volume_campo])
     with _config_lock:
         cfg = load_config()
+        bruto_voz = cfg.get("voz_loja")   # v2.8.10: a trava pode ter sido ligada entre a checagem acima e este lock
+        if (perfil_da_requisicao() == "gerente" and isinstance(bruto_voz, dict)
+                and bruto_voz.get("travar_gerentes") is True):
+            auditar("voz_salvar", resultado="sem_permissao", conta=_conta_auditoria())
+            return _resp_sem_permissao("voz")
         atual = voz_loja()
         atual.pop("definida")
+        travar_antes = atual["travar_gerentes"]
         atual.update(corpo)
         atual["voz"] = VOZES_ANTIGAS.get(atual["voz"], atual["voz"])   # v2.8.9: aba antiga manda "antonio" -> grava "remy"
         atual[AVISO_SOM_V_CHAVE] = AVISO_SOM_V   # v2.8.6: o que o ADM grava agora nunca é rebaixado de novo
@@ -7557,6 +7726,8 @@ def voz_salvar() -> Response:
     for c in CAMPOS_VOLUME_LOJA:   # v2.8.7: volume acima de 70 (segunda trava) fica na trilha, só números
         if c in corpo and corpo[c] > VOLUME_TETO_SEGURO:
             auditar("volume_alto", onde=c, valor=corpo[c], conta=_conta_auditoria())
+    if "travar_gerentes" in corpo and corpo["travar_gerentes"] != travar_antes:   # v2.8.10: só quando o valor muda
+        auditar("voz_travar_gerentes", valor=int(corpo["travar_gerentes"]), conta=_conta_auditoria())
     # só quantos campos (+ o volume do aviso, um número sem texto de ninguém)
     auditar("voz_salvar", campos=len(corpo), conta=_conta_auditoria(),
             **{c: corpo[c] for c in CAMPOS_VOLUME_LOJA if c in corpo},
@@ -7577,6 +7748,9 @@ def voz_ouvir() -> Response | tuple[Response, int]:
     silêncio e a do fim. Mesma trava dos anúncios: 409 se outro anúncio/teste/programação toca.
     Limites: 6/min por aparelho remoto e 20 por 10 min no total ("voz_ouvir:global", vale também para o PC local).
     """
+    if not _perfil_pode("voz"):   # v2.8.10: modo PIN (remoto = gerente) com a voz travada; em modo contas a camada já barrou
+        auditar("voz_ouvir", resultado="sem_permissao", conta=_conta_auditoria())
+        return _resp_sem_permissao("voz")
     corpo = corpo_json()
     exigir_chaves(corpo, ("aviso",))
     nome = corpo.get("aviso")
@@ -7829,7 +8003,12 @@ def announce() -> Response | tuple[Response, int]:
     teste = data.get("teste", False)
     if not isinstance(teste, bool):
         raise ErroApi("Campo 'teste' inválido.")
-    if teste and modo_contas() and not _perfil_pode("voz"):
+    if teste and not _perfil_pode("voz") and perfil_da_requisicao() == "gerente" and _travar_gerentes_ligado():
+        # v2.8.10: trava ligada + "Testar caixas" de gerente/remoto com PIN (painel desatualizado): NUNCA vira anúncio comum
+        # com sineta. 403 sem tocar nada; auditoria só com o tamanho (403 não entra no histórico, como os outros).
+        auditar("anuncio", caracteres=len(texto), resultado="sem_permissao", conta=_conta_auditoria())
+        return jsonify({"ok": False, "codigo": "sem_permissao", "error": MSG_VOZ_TRAVADA}), 403
+    if teste and not _perfil_pode("voz"):
         # v2.8 (B4): "Testar caixas" (sem o aviso sonoro) é de quem mexe na voz; para os outros perfis o campo é
         # ignorado e o anúncio sai como qualquer outro (com o aviso da loja).
         teste = False
@@ -9877,11 +10056,11 @@ HISTORICO_CHEIO_AVISO_S = 3600.0
 _historico_cheio_avisado: float | None = None   # monotonic do último aviso "histórico cheio"
 HISTORICO_RESULTADOS = frozenset({"ok", "ocupado", "erro", "sem_internet", "limite", "interrompido"})
 HISTORICO_ORIGENS = frozenset({"local", "rede"})
-HISTORICO_TIPOS = frozenset({"digitado", "tocar_agora", "agendado"})
+HISTORICO_TIPOS = frozenset({"digitado", "tocar_agora", "agendado", "teste_caixas"})   # v2.8.10: + teste das caixas
 _HISTORICO_PARAMS = frozenset({"de", "ate", "conta", "q", "antes"})
 _RE_DATA_ISO = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 # Resultado do histórico para um "não tocou" da Programação (motivo do NaoTocou); o resto vira "erro".
-_PROG_RESULTADO_HISTORICO = {"ocupado": "ocupado", "sem_internet": "sem_internet"}
+_PROG_RESULTADO_HISTORICO = {"ocupado": "ocupado", "sem_internet": "sem_internet", "teste_caixas": "ocupado"}
 _historico_lock = threading.Lock()
 _historico_poda_ultima: float | None = None   # time.monotonic() da última poda bem-sucedida (None = ainda não podou)
 
@@ -10849,6 +11028,8 @@ def tocar_lista(lista_id: str, embaralhar: bool = False) -> dict[str, Any]:
             if not achadas:
                 raise ErroLista("O player do YouTube desta aba ainda não carregou. Confira a internet ou "
                                 "toque uma música do computador.", 409, codigo="youtube_indisponivel")
+        if _teste_caixas_ativo():   # v2.8.10 (D2): reconferido logo antes de trocar a fila e dar o "load"
+            raise ErroLista(MSG_TESTE_CAIXAS_TOCANDO, 409, codigo="teste_tocando")
         for a in achadas[:YOUTUBE_FILA_MAX]:   # o título guardado aparece na fila sem esperar o oEmbed
             if isinstance(a, dict) and a.get("titulo"):
                 _semear_titulo(_yt_url_canonica(a["video_id"], a["list_id"]), a["titulo"])
@@ -10874,6 +11055,7 @@ def listas_tocar(lista_id: str) -> Response:
     embaralhar = corpo.get("embaralhar", False)
     if not isinstance(embaralhar, bool):
         raise ErroLista("Campo 'embaralhar' inválido.", campo="embaralhar")
+    _exigir_sem_teste()   # v2.8.10 (D2)
     if excedeu_limite("listas-tocar:" + (request.remote_addr or "?"), LISTAS_TOCAR_MAX_POR_10S, 10.0):
         raise ErroLista("Muitos pedidos seguidos. Aguarde um instante.", 429)
     resultado = tocar_lista(lista_id, embaralhar)
@@ -11092,6 +11274,8 @@ def tocar_atalho_spotify(atalho_id: str) -> dict[str, Any]:
         if spotify_get_token() is None and _motivo_sem_token(load_config()) != "rede":
             raise ErroTocarSpotify(MSG_SPOTIFY["reconectar"], "reconectar")
         raise ErroTocarSpotify("Nenhum dispositivo Spotify selecionado.", "sem_dispositivo", 400)
+    if _teste_caixas_ativo():   # v2.8.10 (D2): reconferido logo antes do PUT (cobre horário que já esperava)
+        raise ErroTocarSpotify(MSG_TESTE_CAIXAS_TOCANDO, "teste_tocando", 409)
     status, reason = spotify_comando(
         "PUT", "/me/player/play", params={"device_id": device_id}, json_body={"context_uri": atalho["uri"]})
     if not _sucesso(status):
@@ -11117,6 +11301,7 @@ def spotify_atalhos_tocar(atalho_id: str) -> tuple[Response, int] | Response:
     _atalho_da_rota(atalho_id)
     if corpo_json():
         raise ErroLista("Campo desconhecido.", campo="chave")
+    _exigir_sem_teste()   # v2.8.10 (D2)
     _limitar_comandos_spotify()
     if excedeu_limite("spotify-atalho-tocar:" + (request.remote_addr or "?"), ATALHO_TOCAR_MAX_POR_10S, 10.0):
         raise ErroApi("Muitos pedidos seguidos. Aguarde um instante.", 429)
@@ -11226,6 +11411,7 @@ PROG_RETOMAR_TENTATIVAS = 3              # play do Spotify no fim (a API às vez
 PROG_RETOMAR_ESPERA_S = 1.5
 PROG_ESPERA_TOCADOR_S = 15.0             # lista agendada: quanto esperar a aba Tocador reconectar (religou há pouco)
 PROG_ESPERA_ACERVO_S = 10.0              # logo depois de ligar: quanto esperar a 1ª leitura da pasta de músicas
+MSG_PROG_TESTE_CAIXAS = "Teste das caixas tocando"   # v2.8.10: motivo `teste_caixas` do "não tocou"
 MSG_PROG_NAO_EXISTE = "Esse horário não existe mais. Recarregue a programação."
 MSG_PROG_VERSAO_MUDOU = "Outro aparelho mudou a programação. Recarregue para ver a versão atual."
 MSG_SPOTIFY_NAO_PAUSOU = "A música do Spotify não pôde ser pausada durante a programação."
@@ -11285,6 +11471,8 @@ def _prog_auditar_execucao(registro: dict) -> None:
 
 def _msg_ocupado(padrao: str, sufixo: str = "") -> str:
     """Mensagem do 409 de quem não conseguiu a trava de áudio: diz qual programação está tocando."""
+    if _teste_caixas_ativo():   # v2.8.10: o teste das caixas segura a trava; vale para todo 409 de trava ocupada
+        return MSG_TESTE_CAIXAS_TOCANDO
     t = PROGRAMACAO.tocando
     return f"Programação tocando: {t['nome']}{sufixo}" if t else padrao
 
@@ -11410,6 +11598,8 @@ def _prog_aguardar_trava(ctx: programacao.Execucao) -> None:
     while True:
         if _desligamento_agendado or _desligando.is_set():
             raise programacao.NaoTocou("desligando", "O Proclamare estava sendo desligado.")
+        if _teste_caixas_ativo():   # v2.8.10: não espera o fim do loop (até 1 h 30)
+            raise programacao.NaoTocou("teste_caixas", MSG_PROG_TESTE_CAIXAS)
         if _anuncio_lock.acquire(blocking=False):
             return
         restante = ctx.prazo_mono - ctx.monotonic()
@@ -11456,6 +11646,8 @@ def _prog_executar_lista(item: dict, ctx: programacao.Execucao) -> dict:
             raise programacao.NaoTocou("lendo_pasta", "O Proclamare ainda estava lendo a pasta de músicas.") from None
         if e.codigo == "sem_musicas":
             raise programacao.NaoTocou("lista_sem_musicas", "Nada da lista pode tocar agora.") from None
+        if e.codigo == "teste_tocando":
+            raise programacao.NaoTocou("teste_caixas", MSG_PROG_TESTE_CAIXAS) from None
         if e.codigo == "youtube_indisponivel":
             raise programacao.NaoTocou("youtube_indisponivel",
                                        "O player do YouTube do Tocador da loja não carregou.") from None
@@ -11491,6 +11683,8 @@ def _prog_executar_spotify(item: dict, ctx: programacao.Execucao) -> dict:
     try:
         tocar_atalho_spotify(item["alvo"])   # {"tocador_pausado": bool}: nada a avisar (o Spotify substitui a aba)
     except ErroTocarSpotify as e:
+        if e.codigo == "teste_tocando":
+            raise programacao.NaoTocou("teste_caixas", MSG_PROG_TESTE_CAIXAS) from None
         raise programacao.NaoTocou(_MOTIVO_SPOTIFY.get(e.codigo, "spotify_indisponivel"), e.mensagem) from None
     return {"aviso": None}
 
@@ -11627,6 +11821,8 @@ def _prog_executar_som(item: dict, ctx: programacao.Execucao) -> dict:
     tem_trava = ctx.lock_tomado
     try:
         if not tem_trava:
+            if _teste_caixas_ativo():   # v2.8.10: "não tocou" na hora, sem esperar os 60 s da trava
+                raise programacao.NaoTocou("teste_caixas", MSG_PROG_TESTE_CAIXAS)
             _prog_aguardar_trava(ctx)
             tem_trava = True
         if _desligamento_agendado or _desligando.is_set():
@@ -11655,6 +11851,8 @@ def _prog_executar(item: dict, ctx: programacao.Execucao) -> dict | None:
     if item["tipo"] in ("lista", "spotify"):
         if _desligamento_agendado or _desligando.is_set():
             raise programacao.NaoTocou("desligando", "O Proclamare estava sendo desligado.")
+        if _teste_caixas_ativo():   # v2.8.10: lista/Spotify não pegam a trava, mas trocariam a música do teste
+            raise programacao.NaoTocou("teste_caixas", MSG_PROG_TESTE_CAIXAS)
         return _prog_executar_lista(item, ctx) if item["tipo"] == "lista" else _prog_executar_spotify(item, ctx)
     if item["tipo"] == "anuncio":
         return _prog_executar_anuncio(item, ctx)
@@ -12493,6 +12691,8 @@ def programacao_testar(item_id: str) -> tuple[Response, int]:
     if _desligamento_agendado:
         raise ErroProg("O Proclamare está sendo desligado.", 409, codigo="desligando")
     if item["tipo"] in ("lista", "spotify"):
+        if _teste_caixas_ativo():   # v2.8.10
+            raise ErroProg(MSG_TESTE_CAIXAS_TOCANDO, 409, codigo="ocupado")
         if PROGRAMACAO.tocando is not None:
             raise ErroProg(_msg_ocupado(""), 409, codigo="ocupado")
         if item["tipo"] == "spotify":   # sem a trava de áudio: o som sai pelo Spotify do PC
@@ -12541,6 +12741,357 @@ def programacao_parar() -> Response:
 
 
 # ---------------------------------------------------------------------------
+# Teste das caixas em loop (contrato v2.8.10)
+# O ADM escolhe uma Mensagem pronta e ela toca em loop (sineta -> fala -> sineta do fim -> pausa de 3 s) até o "Parar",
+# 1 h 30 por loop ou 3 h por dia. Roda numa thread própria que SEGURA `_anuncio_lock` do início ao fim (um som por vez) e usa
+# o MESMO caminho do anúncio comum (`_anunciar` / `_anunciar_na_saida`) com o `SinalParada` da Programação; a música é
+# pausada UMA vez (`_musica_pausada`) e volta no fim. Estado só em memória (o uso do dia também vai ao config.json). Nada de
+# texto, título ou id na auditoria nem no log. Os limites são conferidos ENTRE as voltas: o fim pode passar do limite até
+# uma volta inteira (fala + sinetas, no máximo ~90 s).
+# ---------------------------------------------------------------------------
+TESTE_CAIXAS_TETO_S = 5400                 # 1 h 30 por loop (relógio monotônico `_teste_relogio`)
+TESTE_CAIXAS_LIMITE_DIA_S = 10800          # 3 h por dia (soma de todos os loops; dia do relógio do PC da loja)
+TESTE_CAIXAS_DIA_MIN_S = 60                # com menos que isto de saldo no dia, o iniciar recusa
+TESTE_CAIXAS_GRAVAR_A_CADA_S = 60.0        # uso do dia no config.json durante o loop (queda de energia não apaga)
+TESTE_CAIXAS_PAUSA_S = 3.0                 # silêncio entre uma volta e a seguinte
+TESTE_CAIXAS_INICIOS_MAX_POR_MIN = 10      # POST .../iniciar, por IP e por conta
+TESTE_CAIXAS_PARAR_ESPERA_S = 5.0          # quanto o "Parar" espera a thread acabar para responder tocando:false
+MSG_TESTE_CAIXAS_TOCANDO = "Teste das caixas tocando. Aguarde o administrador parar."
+MSG_TESTE_CAIXAS_LIMITE_DIA = "Limite de 3 h de teste por dia atingido. Tente amanhã."
+# resultado do histórico (anuncios.jsonl) por motivo de fim; "desligando" reaproveita "interrompido" (token já conhecido)
+_TESTE_CAIXAS_RESULTADO = {"tempo": "ok", "limite_diario": "ok", "parado": "interrompido",
+                           "desligando": "interrompido", "erro": "erro"}
+_teste_relogio: Callable[[], float] = time.monotonic   # os testes trocam por um relógio de mentira
+_teste_data: Callable[[], str] = lambda: datetime.now().date().isoformat()   # o dia do PC da loja (testes injetam)
+_teste_lock = threading.Lock()
+_teste_desligando = False
+_teste: dict[str, Any] = {"ativo": False, "titulo": None, "repeticao": 0, "fim_mono": None, "fim_motivo": None,
+                          "parar": None, "sinal": None, "thread": None, "pedido": None,
+                          "entregar_trava": False}   # True = o desligar do painel herda a trava de áudio do loop
+# uso do dia: data (None = ainda não lido do config.json), segundos já somados, último instante somado (None = parado)
+_teste_uso: dict[str, Any] = {"data": None, "s": 0.0, "mono": None, "gravado_mono": None}
+
+
+def _teste_caixas_ativo() -> bool:
+    """True enquanto o loop do teste das caixas está tocando (a trava de áudio é dele)."""
+    return bool(_teste["ativo"])
+
+
+def _anuncio_ocupa_a_musica() -> bool:
+    """
+    True quando um anúncio/aviso tem a trava de áudio E está com a música abaixada (duck/restore cuidam do volume). O loop do
+    teste das caixas segura a trava mas PAUSA a música e nunca a abaixa: a proteção do volume do Spotify segue valendo nele.
+    """
+    return _anuncio_lock.locked() and not _teste_caixas_ativo()
+
+
+def _exigir_sem_teste() -> None:
+    """D2 (v2.8.10): durante o loop, o que COMEÇA ou retoma música pelo painel dá 409 `teste_tocando`."""
+    if _teste_caixas_ativo():
+        raise ErroMensagem(MSG_TESTE_CAIXAS_TOCANDO, 409, codigo="teste_tocando")
+
+
+def _teste_segundos_sanos(valor: Any) -> float:
+    """Segundos de uso lidos do config: finito vira min(max(v, 0), limite); tipo errado, NaN e infinito = LIMITE."""
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        return float(TESTE_CAIXAS_LIMITE_DIA_S)
+    v = float(valor)
+    if v != v or v in (float("inf"), float("-inf")):
+        return float(TESTE_CAIXAS_LIMITE_DIA_S)
+    return min(max(v, 0.0), float(TESTE_CAIXAS_LIMITE_DIA_S))
+
+
+def _teste_uso_garantir() -> None:
+    """Lê `config.json["teste_caixas_uso"]` na 1ª vez (um reinício não zera o dia). Fora do `_teste_lock`."""
+    if _teste_uso["data"] is not None:
+        return
+    data, segundos = None, 0.0
+    try:
+        bruto = load_config().get("teste_caixas_uso")
+        if bruto is not None:   # FALHA FECHADO: valor torto = limite atingido (hoje), nunca "dia novo"
+            hoje = _teste_data()
+            if isinstance(bruto, dict):
+                gravada = bruto.get("data")
+                data = gravada if isinstance(gravada, str) and _RE_DATA_ISO.fullmatch(gravada) else hoje
+                segundos = _teste_segundos_sanos(bruto.get("segundos"))
+            else:
+                data, segundos = hoje, float(TESTE_CAIXAS_LIMITE_DIA_S)
+    except Exception:  # noqa: BLE001 - config ilegível: o dia começa do zero
+        data, segundos = None, 0.0
+    with _teste_lock:
+        if _teste_uso["data"] is None:
+            _teste_uso["data"], _teste_uso["s"] = (data, segundos) if data else (_teste_data(), 0.0)
+
+
+def _teste_uso_somar() -> float:
+    """(Com `_teste_lock`) soma o tempo corrido desde a última soma ao dia ATUAL e devolve os segundos usados hoje.
+    Virada de dia: zera, e o trecho corrido desde a última soma (no máximo uma volta) conta no dia novo."""
+    agora, hoje = _teste_relogio(), _teste_data()
+    if hoje > _teste_uso["data"]:   # só dia POSTERIOR zera (ISO compara como texto); relógio voltando mantém o uso
+        _teste_uso["data"], _teste_uso["s"] = hoje, 0.0
+    if _teste_uso["mono"] is not None:
+        _teste_uso["s"] += max(0.0, agora - _teste_uso["mono"])
+        _teste_uso["mono"] = agora
+    return float(_teste_uso["s"])
+
+
+def _teste_uso_gravar() -> None:
+    """Grava o uso do dia no config.json (sob o `_config_lock` do `update_config`). Falha = só o tipo no log."""
+    with _teste_lock:
+        corpo = {"data": _teste_uso["data"], "segundos": int(_teste_uso["s"])}
+        _teste_uso["gravado_mono"] = _teste_relogio()
+    try:
+        update_config(teste_caixas_uso=corpo)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Teste das caixas: não foi possível gravar o uso do dia (%s).", type(exc).__name__)
+
+
+def _teste_publico() -> dict[str, Any]:
+    """O corpo do GET /api/teste-caixas (e das respostas do iniciar/parar)."""
+    _teste_uso_garantir()
+    with _teste_lock:
+        ativo = bool(_teste["ativo"])
+        usado = _teste_uso_somar()
+        restante = None
+        if ativo and _teste["fim_mono"] is not None:
+            restante = max(0, int(math.ceil(min(_teste["fim_mono"] - _teste_relogio(),
+                                                TESTE_CAIXAS_LIMITE_DIA_S - usado))))
+        return {"tocando": ativo, "titulo": _teste["titulo"] if ativo else None,
+                "repeticao": int(_teste["repeticao"]) if ativo else 0, "restante_s": restante,
+                "teto_s": TESTE_CAIXAS_TETO_S, "limite_dia_s": TESTE_CAIXAS_LIMITE_DIA_S,
+                "usado_hoje_s": int(usado), "fim_motivo": _teste["fim_motivo"]}
+
+
+def _teste_tocar_volta(texto: str, sinal: Any) -> None:
+    """
+    UMA volta: relê a voz da loja (o ADM pode mexer em volume, sineta, voz e limitador durante o teste) e toca pelo mesmo
+    caminho do anúncio comum, com a música JÁ pausada pelo chamador (contexto vazio). Levanta em qualquer problema.
+    """
+    loja = voz_loja()
+    modo, chave_voz, velocidade = loja["motor"], loja["voz"], loja["velocidade"]
+    if not SOM.motor_ok:   # contaminado: o pygame ficou preso numa thread órfã
+        raise ErroSom("O áudio do Proclamare travou. Reinicie o Proclamare.", 503, "motor_contaminado")
+    internet_ok = tem_internet()
+    if modo == "online" and not internet_ok:
+        raise RuntimeError("sem internet")
+    usar_online = internet_ok and modo != "offline"
+    som = SOM.config_som()
+    if som is not None and som["saida_anuncio"] is not None:
+        _anunciar_na_saida(texto, modo, VOZES_ONLINE[chave_voz], velocidade, VOZ_OFFLINE_PADRAO, usar_online, som,
+                           contexto=contextlib.nullcontext, parar=sinal, aviso=loja["aviso"])
+    else:
+        _anunciar(texto, modo, VOZES_ONLINE[chave_voz], velocidade, VOZ_OFFLINE_PADRAO, usar_online,
+                  contexto=contextlib.nullcontext, parar=sinal, aviso=loja["aviso"])
+
+
+def _teste_restantes() -> tuple[float, float]:
+    """(restante do loop, restante do dia) em segundos, já somando o tempo corrido ao dia."""
+    with _teste_lock:
+        usado = _teste_uso_somar()
+        return _teste["fim_mono"] - _teste_relogio(), TESTE_CAIXAS_LIMITE_DIA_S - usado
+
+
+def _teste_caixas_thread(texto: str, quem: dict[str, Any]) -> None:
+    """Corpo da thread "teste-caixas": o laço, a limpeza e o registro do fim. Quem a cria já tem `_anuncio_lock`."""
+    parar_ev: threading.Event = _teste["parar"]
+    sinal = _teste["sinal"]
+    cache = _CacheFalaTeste()
+    ficha = _fala_cache_ctx.set(cache)
+    motivo, voltas = "erro", 0
+    try:
+        with _musica_pausada():
+            while True:
+                if _teste_desligando or _desligamento_agendado or _desligando.is_set():
+                    motivo = "desligando"
+                    break
+                if parar_ev.is_set():
+                    motivo = _teste["pedido"] or "parado"
+                    break
+                loop_s, dia_s = _teste_restantes()
+                if min(loop_s, dia_s) <= 0:
+                    motivo = "limite_diario" if dia_s <= loop_s else "tempo"
+                    break
+                if _teste_uso["gravado_mono"] is None or _teste_relogio() - _teste_uso["gravado_mono"] >= TESTE_CAIXAS_GRAVAR_A_CADA_S:
+                    _teste_uso_gravar()
+                voltas += 1
+                with _teste_lock:
+                    _teste["repeticao"] = voltas
+                try:
+                    _teste_tocar_volta(texto, sinal)
+                except Exception as exc:  # noqa: BLE001 - só o tipo no log; "parar" que corta a volta não é erro
+                    if parar_ev.is_set():
+                        continue
+                    log.warning("Teste das caixas: a volta falhou (%s); encerrando.", type(exc).__name__)
+                    motivo = "erro"
+                    break
+                loop_s, dia_s = _teste_restantes()
+                restante = min(loop_s, dia_s)
+                if restante > 0:
+                    parar_ev.wait(min(TESTE_CAIXAS_PAUSA_S, restante))   # a pausa também é cortada pelo "Parar"
+            if motivo == "desligando":
+                _marcar_musica_substituida()   # o `finally` de _musica_pausada NÃO retoma: o processo vai acabar
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Teste das caixas: falha inesperada (%s).", type(exc).__name__)
+        motivo = "erro"
+    finally:
+        _fala_cache_ctx.reset(ficha)
+        cache.descartar()
+        _teste_caixas_finalizar(texto, quem, motivo, voltas)
+
+
+def _teste_caixas_finalizar(texto: str, quem: dict[str, Any], motivo: str, voltas: int) -> None:
+    """Soma e grava o uso do dia, auditoria, histórico (UMA linha por loop); marca parado e só então solta a trava."""
+    usado_dia = 0
+    try:
+        with _teste_lock:
+            usado_dia = int(_teste_uso_somar())
+            _teste_uso["mono"] = None   # parado: o relógio do dia só corre em loop
+        _teste_uso_gravar()
+        auditoria.info("acao=teste_caixas_fim ip=%s origem=%s repeticoes=%d motivo=%s usado_dia_s=%d%s", quem["ip"],
+                       quem["origem"], voltas, motivo, usado_dia,
+                       f" conta={quem['conta_token']}" if quem.get("conta_token") else "")
+        registrar_anuncio(conta=quem["conta"], texto=texto, resultado=_TESTE_CAIXAS_RESULTADO[motivo],
+                          origem=quem["origem_hist"], tipo="teste_caixas", quando=quem["quando"])
+    except Exception as exc:  # noqa: BLE001 - registrar nunca impede soltar a trava
+        log.error("Teste das caixas: não foi possível registrar o fim (%s).", type(exc).__name__)
+    finally:
+        with _teste_lock:   # `ativo` cai imediatamente ANTES de a trava ser solta (revisor #3)
+            _teste_uso["mono"] = None
+            entregar = bool(_teste["entregar_trava"])
+            _teste.update(ativo=False, titulo=None, repeticao=0, fim_mono=None, fim_motivo=motivo, entregar_trava=False)
+            if not entregar:   # desligar do painel em curso: a trava NUNCA é solta, passa direto para o desligamento
+                _anuncio_lock.release()
+
+
+def _teste_cortar(motivo: str) -> threading.Thread | None:
+    """Pede o fim do loop agora (fala, sineta e pausa) com o motivo dado. Devolve a thread (None = nada tocando)."""
+    with _teste_lock:
+        if not _teste["ativo"]:
+            return None
+        if _teste["pedido"] != "desligando":   # um "parado" depois do desligar nunca troca o motivo (nem religa a música)
+            _teste["pedido"] = motivo
+        sinal, parar_ev, thread = _teste["sinal"], _teste["parar"], _teste["thread"]
+    if sinal is not None:
+        sinal.parar()
+    if parar_ev is not None:
+        parar_ev.set()
+    return thread
+
+
+def _teste_caixas_parar_no_desligamento() -> None:
+    """`_encerrar_servicos` (Ctrl+C, desligar): corta o loop e espera um instante; a thread é daemon e não segura o processo."""
+    global _teste_desligando
+    _teste_desligando = True
+    thread = _teste_cortar("desligando")
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(timeout=3.0)
+
+
+@app.get("/api/teste-caixas")
+def teste_caixas_ler() -> Response:
+    """Estado do teste (qualquer sessão logada vê; só o ADM inicia/para)."""
+    return jsonify(_teste_publico())
+
+
+def _teste_auditar_inicio(resultado: str) -> None:
+    auditar("teste_caixas_iniciar", resultado=resultado)   # só o token do resultado: nada de texto, título nem id
+
+
+@app.post("/api/teste-caixas/iniciar")
+def teste_caixas_iniciar() -> tuple[Response, int]:
+    """
+    Inicia o loop com uma Mensagem pronta (o servidor lê o texto). Ordem: 403 (sem a capacidade; modo PIN: só o PC das
+    caixas), 400, 429, 404, 409 `limite_diario`, 409 (desligando / já tocando / trava ocupada), 503 (voz online sem
+    internet), 202.
+    """
+    if not _perfil_pode("teste_caixas"):   # modo contas: já barrado por PERMISSOES_ROTAS; modo PIN: perfil "gerente" não passa
+        return _resp_sem_permissao("teste_caixas")
+    dados = corpo_json()
+    exigir_chaves(dados, {"mensagem_id"})
+    mensagem_id = dados.get("mensagem_id")
+    if not isinstance(mensagem_id, str) or not mensagem_id or len(mensagem_id) > 64:
+        raise ErroMensagem("Campo 'mensagem_id' inválido.", campo="mensagem_id")
+    if _excedeu_limite_ip_e_conta("teste-caixas:", TESTE_CAIXAS_INICIOS_MAX_POR_MIN, 60.0):
+        auditar_agregado("teste_caixas_limite")   # agregado: uma linha por janela, não por recusa
+        raise ErroMensagem("Muitos pedidos seguidos. Aguarde um instante.", 429, codigo="limite")
+    lista, _ = _mensagens_do_config(load_config())
+    escolhida = next((m for m in lista if m["id"] == mensagem_id), None)
+    texto: str | None = None
+    if escolhida is not None:
+        try:
+            texto = _texto_do_anuncio(escolhida["texto"])   # a mesma higienização do anúncio comum
+        except ErroApi:
+            texto = None
+    if escolhida is None or texto is None:
+        raise ErroMensagem("Essa mensagem não existe mais. Recarregue a lista.", 404, codigo="mensagem_inexistente")
+    _teste_uso_garantir()
+    with _teste_lock:
+        saldo_dia = TESTE_CAIXAS_LIMITE_DIA_S - _teste_uso_somar()
+    if saldo_dia < TESTE_CAIXAS_DIA_MIN_S:
+        _teste_auditar_inicio("limite_diario")
+        raise ErroMensagem(MSG_TESTE_CAIXAS_LIMITE_DIA, 409, codigo="limite_diario")
+    if _desligamento_agendado or _teste_desligando:
+        raise ErroMensagem("O Proclamare está sendo desligado.", 409, codigo="desligando")
+    if _teste_caixas_ativo():
+        _teste_auditar_inicio("tocando")
+        raise ErroMensagem("O teste das caixas já está tocando.", 409, codigo="teste_tocando")
+    if not _anuncio_lock.acquire(blocking=False):
+        _teste_auditar_inicio("ocupado")
+        raise ErroMensagem(_msg_ocupado("Já existe um anúncio tocando. Aguarde terminar."), 409, codigo="ocupado")
+    iniciou, marcou, anterior = False, False, None
+    try:
+        parar_ev, sinal = threading.Event(), programacao.SinalParada()
+        with _teste_lock:   # ativo JÁ aqui: quem chegar nesta janela recebe a mensagem do teste (revisor #4)
+            anterior = _teste["fim_motivo"]
+            _teste.update(ativo=True, titulo=escolhida["titulo"], repeticao=0, fim_motivo=None, thread=None, pedido=None,
+                          entregar_trava=False,
+                          fim_mono=_teste_relogio() + TESTE_CAIXAS_TETO_S, parar=parar_ev, sinal=sinal)
+            _teste_uso.update(mono=_teste_relogio(), gravado_mono=None)
+            marcou = True
+        if not SOM.motor_ok:
+            raise ErroSom("O áudio do Proclamare travou. Reinicie o Proclamare.", 503, "motor_contaminado")
+        if voz_loja()["motor"] == "online" and not tem_internet():
+            _teste_auditar_inicio("sem_internet")
+            return _resp_erro(MSG_SEM_INTERNET_VOZ_ONLINE, 503)   # o finally reverte e solta a trava
+        ip, origem = _quem()
+        quem = {"ip": ip, "origem": origem, "conta_token": _conta_auditoria(), "conta": conta_da_requisicao(),
+                "origem_hist": "local" if _requisicao_local() else "rede", "quando": _historico_agora()}
+        thread = threading.Thread(target=_teste_caixas_thread, args=(texto, quem), name="teste-caixas", daemon=True)
+        with _teste_lock:
+            _teste["thread"] = thread
+        thread.start()
+        iniciou = True   # daqui em diante a trava é da thread (ela a solta no fim)
+    finally:
+        if not iniciou:
+            with _teste_lock:
+                herdada = False
+                if marcou:
+                    herdada = bool(_teste["entregar_trava"])   # o desligar do painel já herdou a trava no meio do iniciar
+                    _teste.update(ativo=False, titulo=None, repeticao=0, fim_mono=None, fim_motivo=anterior, thread=None,
+                                  entregar_trava=False)
+                    _teste_uso["mono"] = None
+                if not herdada:   # herdada = fica com o desligamento: nada de soltá-la aqui (dupla liberação)
+                    _anuncio_lock.release()
+    _teste_auditar_inicio("ok")
+    return jsonify(_teste_publico()), 202
+
+
+@app.post("/api/teste-caixas/parar")
+def teste_caixas_parar() -> Response:
+    """Corta o loop NA HORA (fala, sineta e pausa). Idempotente: sem loop devolve o mesmo corpo do GET."""
+    if not _perfil_pode("teste_caixas"):
+        return _resp_sem_permissao("teste_caixas")
+    if corpo_json():
+        raise ErroApi("Campo desconhecido.")
+    thread = _teste_cortar("parado")
+    if _teste_caixas_ativo() or thread is not None:
+        auditar("teste_caixas_parar", resultado="ok")
+        if thread is not None:
+            thread.join(timeout=TESTE_CAIXAS_PARAR_ESPERA_S)   # a resposta já diz tocando:false quando a thread sai
+    return jsonify(_teste_publico())
+
+
+# ---------------------------------------------------------------------------
 # Desligar pelo painel (contrato v2.5) — SÓ no PC da loja
 # A rota responde 202 e, numa thread, ~0,5 s depois, pede ao laço do servidor (thread principal)
 # que saia pelo MESMO caminho do Ctrl+C/SIGTERM (main() fecha a porta, para os serviços e
@@ -12562,6 +13113,16 @@ def _vigia_de_saida() -> None:
     os._exit(0)
 
 
+def _devolver_trava_do_desligar() -> None:
+    """(Com `_desligar_lock`) desfaz um desligamento que não vai acontecer: solta a trava de áudio, ou, se o teste das caixas
+    ainda a tem e ia entregá-la, deixa de entregar (ele mesmo a solta ao acabar)."""
+    with _teste_lock:
+        if _teste["ativo"] and _teste["entregar_trava"]:
+            _teste["entregar_trava"] = False
+            return
+    _anuncio_lock.release()
+
+
 def _desligar_apos_resposta() -> None:
     """Corpo da thread "desligar-painel": acorda quem espera e interrompe o laço do servidor."""
     global _desligamento_agendado
@@ -12571,7 +13132,7 @@ def _desligar_apos_resposta() -> None:
         log.warning("Pedido de desligar sem servidor em execução; ignorado.")
         with _desligar_lock:
             _desligamento_agendado = False
-            _anuncio_lock.release()
+            _devolver_trava_do_desligar()
         return
     _desligando.set()                      # long-polls e a reaplicação do Spotify saem logo
     with _yt_cond:
@@ -12594,7 +13155,9 @@ def sistema_desligar() -> tuple[Response, int]:
     """
     Desliga o Proclamare. Ordem: 403 (remoto, mesmo com PIN), 400 (corpo diferente de {}),
     409 (envio de músicas em andamento; anúncio ou teste de saída tocando), 202. Um 2º pedido
-    durante o desligamento repete o 202.
+    durante o desligamento repete o 202. v2.8.10: com o TESTE DAS CAIXAS como único obstáculo responde 202 SEMPRE: o
+    desligamento HERDA a trava de áudio do loop (o loop não a solta ao acabar: `entregar_trava`), o loop é cortado
+    ("desligando") e nenhuma requisição consegue pegar a trava no meio.
     """
     global _desligamento_agendado
     if corpo_json():
@@ -12605,11 +13168,20 @@ def sistema_desligar() -> tuple[Response, int]:
         # Só conta o envio já em processamento (o waitress recebe o corpo antes de a rota rodar).
         if _envios_ativos > 0:
             raise ErroApi("Há músicas sendo enviadas. Espere terminar.", 409)
+        # v2.8.10 (D1): teste das caixas tocando = EMERGÊNCIA. A trava do loop é HERDADA (marcada sob o mesmo lock que o
+        # loop usa ao acabar: ou ele a entrega, ou já acabou e a pegamos normalmente abaixo).
+        entregou = False
+        with _teste_lock:
+            if _teste["ativo"]:
+                _teste["entregar_trava"] = True
+                entregou = True
         # Segura o lock dos anúncios: nenhum anúncio novo começa e nenhum tocando é cortado.
-        if not _anuncio_lock.acquire(blocking=False):
+        if not entregou and not _anuncio_lock.acquire(blocking=False):
             # v2.6: com um áudio/anúncio da programação tocando, a mensagem diz qual (e que dá para parar)
             raise ErroApi(_msg_ocupado("Espere o anúncio terminar.", ". Toque em Parar ou espere terminar."), 409)
         _desligamento_agendado = True
+    if entregou:
+        _teste_cortar("desligando")   # fala/sineta/pausa cortadas; o loop termina sem retomar a música nem soltar a trava
     log.info("Desligado pelo painel (PC local).")
     auditar("desligar", resultado="aceito")
     # A aba "Tocador da loja" pode estar em OUTRA aba ou aparelho: manda uma pausa agora, para ela
@@ -12621,7 +13193,7 @@ def sistema_desligar() -> tuple[Response, int]:
     except Exception:   # noqa: BLE001  (não conseguiu criar a thread: volta ao normal)
         with _desligar_lock:
             _desligamento_agendado = False
-            _anuncio_lock.release()
+            _devolver_trava_do_desligar()
         raise
     return jsonify({"ok": True}), 202
 
@@ -13030,6 +13602,7 @@ def _encerrar_servicos(servidor: Any) -> None:
         close if callable(close) else (lambda: None),
         _seg_flush_falhas,   # os PINs errados em lote ainda não gravados vão ao disco
         lambda: PROGRAMACAO.parar(),   # v2.6: para o relógio, corta o que tocava e grava o "visto"
+        _teste_caixas_parar_no_desligamento,   # v2.8.10: corta o loop do teste das caixas (fim_motivo "desligando")
         parar_vigia_teto_spotify,   # v2.8.7
         SOM.parar,   # desregistra o callback do Windows (também registrado no atexit)
         ACERVO.parar,

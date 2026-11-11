@@ -24,7 +24,7 @@ class TesteTravaDoVolume(unittest.TestCase):
             self.assertIn('aria-live="polite"', m.group(0))
 
     def test_dica_fixa_e_textos_exatos(self) -> None:
-        self.assertEqual(HTML.count("Recomendado: até 50%. Acima de 70% só o administrador."), 1)  # bloco Volumes (loja)
+        self.assertEqual(HTML.count("Recomendado: voz até 50% e sineta até 30%. Acima de 70% só o administrador."), 1)  # bloco Volumes (loja)
         self.assertEqual(HTML.count("Recomendado: até 50%. Acima de 70%, confira as luzinhas de clip."), 2)  # Spotify + Tocador
         for texto in (
             "Acima do recomendado.",

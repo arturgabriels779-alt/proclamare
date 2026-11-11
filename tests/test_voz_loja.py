@@ -55,14 +55,14 @@ class TestVozLoja(Base):
         self.assertEqual(r.status_code, 200)
         v = r.get_json()["voz_loja"]
         self.assertEqual(v, {"motor": "auto", "voz": "francisca", "velocidade": 0,
-                             "aviso": "microfone", "aviso_volume": 30, "voz_volume": 50, "agendado_volume": 50, "limitador": True, "definida": False})   # v2.8: padrão de fábrica = Microfone
+                             "aviso": "microfone", "aviso_volume": 30, "voz_volume": 50, "agendado_volume": 50, "limitador": True, "travar_gerentes": False, "definida": False})   # v2.8: padrão de fábrica = Microfone
 
     def test_post_parcial_grava_e_preserva_resto(self) -> None:
         self.assertEqual(self.c.post("/api/voz", json={"voz": "remy", "velocidade": 10}).status_code, 200)
         r = self.c.post("/api/voz", json={"aviso": "aeroporto"})
         v = r.get_json()["voz_loja"]
         self.assertEqual(v, {"motor": "auto", "voz": "remy", "velocidade": 10, "aviso": "aeroporto",
-                             "aviso_volume": 30, "voz_volume": 50, "agendado_volume": 50, "limitador": True, "definida": True})
+                             "aviso_volume": 30, "voz_volume": 50, "agendado_volume": 50, "limitador": True, "travar_gerentes": False, "definida": True})
         self.assertEqual(self.c.get("/api/voz").get_json()["voz_loja"], v)
         self.assertEqual(server.voz_loja()["voz"], "remy")
 
@@ -85,7 +85,7 @@ class TestVozLoja(Base):
                 r = self.c.get("/api/voz")
                 self.assertEqual(r.status_code, 200)
                 self.assertEqual(r.get_json()["voz_loja"], {"motor": "offline", "voz": "seraphina", "velocidade": 10,
-                                                            "aviso": "microfone", "aviso_volume": 30, "voz_volume": 50, "agendado_volume": 50, "limitador": True,
+                                                            "aviso": "microfone", "aviso_volume": 30, "voz_volume": 50, "agendado_volume": 50, "limitador": True, "travar_gerentes": False,
                                                             "definida": True})
                 # gravar outro campo não ressuscita o id antigo: a resposta já mostra o padrão
                 r = self.c.post("/api/voz", json={"velocidade": 5})

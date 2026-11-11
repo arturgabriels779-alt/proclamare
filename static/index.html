@@ -354,6 +354,41 @@
         <p class="hint" id="quick-empty" hidden>Nenhuma mensagem pronta. Toque em “Editar” para criar as suas.</p>
       </div>
 
+      <!-- v2.8.10: Teste das caixas em loop. Controles só do ADM (data-perm); gerente/funcionário veem só a caixa de
+           status enquanto toca. O app.js esconde o tile inteiro quando não há o que mostrar. -->
+      <div class="tile tile--teste" id="tile-teste" aria-labelledby="title-teste" hidden>
+        <div class="tile__head">
+          <svg class="icon tile__icon" aria-hidden="true"><use href="#i-volume"/></svg>
+          <h2 class="tile__title" id="title-teste">Teste das caixas em loop</h2>
+        </div>
+        <div class="teste__ctl" id="teste-ctl" data-perm="teste_caixas">
+          <p class="hint" id="teste-hint">Repete a mensagem com a sineta até você parar. Desliga sozinho em 1 h 30 min. Limite de 3 h de teste por dia.</p>
+          <p class="hint teste__uso" id="teste-uso"></p>
+          <div class="field__row">
+            <div class="select">
+              <label class="sr-only" for="teste-select">Mensagem do teste</label>
+              <select id="teste-select" aria-describedby="teste-hint" disabled>
+                <option value="">Carregando mensagens…</option>
+              </select>
+            </div>
+            <button type="button" class="btn btn--primary" id="btn-teste-iniciar" disabled>
+              <span class="spinner" aria-hidden="true"></span>
+              <span>Iniciar loop</span>
+            </button>
+            <button type="button" class="btn btn--danger-solid" id="btn-teste-parar" hidden>
+              <span class="spinner" aria-hidden="true"></span>
+              <span>Parar loop</span>
+            </button>
+          </div>
+          <p class="status teste__msg" id="teste-msg" aria-live="polite" hidden></p>
+        </div>
+        <div class="teste__status" id="teste-status" hidden>
+          <p class="teste__titulo" id="teste-status-titulo" role="status"></p>
+          <p class="teste__det" id="teste-status-det"></p>
+          <p class="teste__ciclo" id="teste-status-ciclo" data-perm="teste_caixas">Sineta → mensagem → sineta → pausa de 3 s → de novo</p>
+        </div>
+      </div>
+
       <!-- Voz -->
       <div class="tile tile--voice" data-perm="voz">
         <div class="tile__head">
@@ -395,10 +430,19 @@
               <button type="button" class="btn btn--ghost btn--sm" id="btn-aviso-ouvir" disabled>Ouvir</button>
             </div>
           </div>
-          <!-- v2.8.7: Volumes (só o ADM). Até 100%; travas em 50% (amarela) e 70% (vermelha); recomendado até 50%. -->
+          <!-- v2.8.10: trava da voz da loja para gerentes (só o ADM; mesma capacidade dos volumes) -->
+          <div class="field" id="travar-field" data-perm="voz_volume">
+            <label class="switch" for="travar-switch">
+              <input type="checkbox" role="switch" class="switch__input" id="travar-switch" aria-describedby="travar-hint" disabled>
+              <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+              <span class="switch__text">Travar a voz da loja para gerentes</span>
+            </label>
+            <p class="hint" id="travar-hint">Ligada: gerentes não mudam motor, voz, velocidade nem a sineta da loja, e não usam Ouvir nem Testar caixas. YouTube, Spotify, volumes e a Programação de horários não mudam.</p>
+          </div>
+          <!-- v2.8.10: Volumes (só o ADM). Até 100%; travas em 50% (amarela) e 70% (vermelha); a sineta trava em 30% e 70%. -->
           <div class="vol-bloco" role="group" aria-labelledby="vol-bloco-titulo" data-perm="voz_volume aviso_volume">
             <p class="label" id="vol-bloco-titulo">Volumes</p>
-            <p class="hint">Recomendado: até 50%. Acima de 70% só o administrador.</p>
+            <p class="hint">Recomendado: voz até 50% e sineta até 30%. Acima de 70% só o administrador.</p>
             <div class="field" id="voz-volume-field" data-perm="voz_volume">
               <label class="label label--split" for="voz-volume-range">Volume da voz <output class="label__value" id="voz-volume-value" for="voz-volume-range">50%</output></label>
               <input type="range" id="voz-volume-range" class="range" min="10" max="100" step="10" value="50" aria-describedby="voz-volume-hint voz-volume-aviso" disabled>
@@ -418,7 +462,7 @@
             <div class="field" id="aviso-volume-field" data-perm="aviso_volume">
               <label class="label label--split" for="aviso-volume-range">Volume do aviso <output class="label__value" id="aviso-volume-value" for="aviso-volume-range">30%</output></label>
               <input type="range" id="aviso-volume-range" class="range" min="10" max="100" step="10" value="30" aria-describedby="aviso-volume-hint aviso-volume-aviso" disabled>
-              <p class="hint" id="aviso-volume-hint">Só a sineta antes e depois do anúncio. A voz não muda.</p>
+              <p class="hint" id="aviso-volume-hint">Só a sineta antes e depois do anúncio. A voz não muda. Recomendado: até 30%.</p>
               <p class="vol-aviso" id="aviso-volume-aviso" aria-live="polite" hidden></p>
             </div>
             <div class="field" id="agendado-volume-field" data-perm="voz_volume">
@@ -1453,10 +1497,11 @@
 
 <!-- ============================ DESLIGAR (v2.5) ============================
      Confirmação própria (nunca window.confirm). O foco começa em "Cancelar". -->
-<dialog id="power-dialog" class="dialog--narrow" aria-labelledby="power-title" aria-describedby="power-text">
+<dialog id="power-dialog" class="dialog--narrow" aria-labelledby="power-title" aria-describedby="power-teste power-text">
   <div class="sheet sheet--power">
     <span class="callout__icon callout__icon--danger" aria-hidden="true"><svg class="icon"><use href="#i-power"/></svg></span>
     <h2 class="sheet__title" id="power-title">Desligar o Proclamare?</h2>
+    <p class="callout__text" id="power-teste" hidden>O teste das caixas em loop está tocando: desligar também encerra esse teste.</p>
     <p class="callout__text" id="power-text">Os anúncios e o Tocador da loja param até você ligar de novo pelo ícone Proclamare. Se o Spotify estiver tocando, ele continua no aplicativo Spotify.</p>
     <p class="form-error" id="power-error" role="alert" hidden></p>
     <div class="actions actions--end">
